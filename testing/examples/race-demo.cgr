@@ -1,0 +1,31 @@
+--- Race demo ---
+
+set work_dir = "/workspace/racetest"
+
+target "local" local:
+
+  [prepare]:
+    skip if $ test -d ${work_dir}
+    run    $ mkdir -p ${work_dir}
+
+  [download package]:
+    first [prepare]
+
+    race:
+      [from fast mirror]:
+        run $ echo "fast mirror" > ${work_dir}/package.tar.gz
+
+      [from slow mirror]:
+        run $ sleep 2 && echo "slow mirror" > ${work_dir}/package.tar.gz
+
+      [from flaky mirror]:
+        run $ exit 1
+
+  [install package]:
+    first [download package]
+    skip if $ test -f ${work_dir}/installed
+    run    $ cat ${work_dir}/package.tar.gz && echo "installed" > ${work_dir}/installed
+
+  verify "package installed":
+    first [install package]
+    run $ test -f ${work_dir}/installed

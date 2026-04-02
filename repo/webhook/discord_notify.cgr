@@ -1,0 +1,18 @@
+# webhook/discord_notify — Post a message to a Discord channel via webhook
+#
+# Uses the HTTP feature — no curl required.
+#
+# Parameters:
+#   webhook_url  (required) — Discord webhook URL
+#   message      (required) — message content (supports Discord markdown)
+#   username     (optional) — bot display name, default "CommandGraph"
+
+template discord_notify(webhook_url, message, username = "CommandGraph"):
+  version 1.0.0
+  description "Discord notification: ${message}"
+
+  post "${webhook_url}"
+  header "Content-Type" = "application/json"
+  body json '{"content": "${message}", "username": "${username}"}'
+  expect 204
+  timeout 10s, retry 2x wait 3s

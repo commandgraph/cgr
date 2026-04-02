@@ -1,0 +1,22 @@
+--- Reduce and Collect Demo ---
+set services = "bash,ls,cat,grep"
+set work_dir = "/tmp/cgr-reduce-demo"
+
+target "local" local:
+
+  [setup]:
+    skip if $ test -d ${work_dir}
+    run $ mkdir -p ${work_dir}
+
+  [check services]:
+    first [setup]
+    each service in ${services}:
+      [check ${service}]:
+        run $ echo "${service}: $(command -v ${service} >/dev/null 2>&1 && echo installed || echo missing)"
+        collect "service_status"
+
+  [summarize]:
+    first [check services]
+    reduce "service_status"
+    run $ echo "Service check complete"
+    collect "summary"

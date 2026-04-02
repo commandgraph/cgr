@@ -1,0 +1,88 @@
+# Parallelism test — .cg brace-delimited format
+# Equivalent to parallel_test.cgr
+
+var servers = "web-1,web-2,web-3,web-4"
+var version = "2.4.1"
+
+node "deploy" {
+  via local
+
+  resource build_release {
+    check `test -f /tmp/cg_par_test/release.tar.gz`
+    run   `mkdir -p /tmp/cg_par_test && echo "built" > /tmp/cg_par_test/release.tar.gz`
+  }
+
+  # ── Test 1: parallel block ──────────────────────────
+  resource configure_everything {
+    needs build_release
+
+    parallel 2, if_one_fails wait {
+      resource write_config_a {
+        run `echo "config_a" > /tmp/cg_par_test/a.conf`
+      }
+      resource write_config_b {
+        run `echo "config_b" > /tmp/cg_par_test/b.conf`
+      }
+      resource write_config_c {
+        run `echo "config_c" > /tmp/cg_par_test/c.conf`
+      }
+    }
+
+    run `echo "all configs written"`
+  }
+
+  # ── Test 2: race block ──────────────────────────────
+  resource fetch_package {
+    needs build_release
+
+    race {
+      resource try_local_cache {
+        run `test -f /tmp/cg_par_test/release.tar.gz && echo "cache hit"`
+      }
+      resource try_remote_mirror {
+        run `echo "downloaded from mirror"`
+      }
+    }
+  }
+
+  # ── Test 3: each loop ───────────────────────────────
+  resource distribute_to_fleet {
+    needs build_release
+
+    each server in "${servers}", 2 {
+      resource upload_to_server {
+        run `echo "uploading to ${server}" > /tmp/cg_par_test/${server}.uploaded`
+      }
+    }
+  }
+
+  # ── Test 4: stage with phases ───────────────────────
+  resource rolling_deploy {
+    needs distribute_to_fleet, configure_everything, fetch_package
+
+    stage "rollout" {
+      phase "canary" 1 from "${servers}" {
+        resource deploy_to_server {
+          run `echo "deployed ${version} to ${server}" > /tmp/cg_par_test/${server}.deployed`
+        }
+        verify "canary healthy" {
+          run `test -f /tmp/cg_par_test/web-1.deployed`
+          retry 1
+        }
+      }
+      phase "remaining" rest from "${servers}" {
+        each server, 2 {
+          resource deploy_to_server {
+            run `echo "deployed ${version} to ${server}" > /tmp/cg_par_test/${server}.deployed`
+          }
+        }
+      }
+    }
+  }
+
+  verify "all servers deployed" {
+    needs rolling_deploy
+    run `ls /tmp/cg_par_test/*.deployed | wc -l | grep -q 4`
+    retry 2
+  }
+}

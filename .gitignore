@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime artifacts
+*.state
+*.output
+
+# Generated HTML visualizations (regenerable via cgr visualize)
+nginx_setup.html
+webserver.html
+parallel_test.html
+multinode_test.html
+system_audit.html
+
+# OS
+.DS_Store

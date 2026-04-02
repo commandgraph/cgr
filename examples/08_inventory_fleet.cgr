@@ -1,0 +1,25 @@
+--- Inventory Fleet Demo ---
+# Demonstrates loading host definitions from an INI inventory file.
+# The inventory file separates host definitions from graph logic.
+# Pass -i production.ini to swap environments without changing the graph.
+
+inventory "08_inventory.ini"
+set check_cmd = "uptime"
+
+target "local" local:
+
+  [show inventory]:
+    run $ echo "Fleet loaded from inventory file"
+
+  [check hosts]:
+    first [show inventory]
+    each name in ${webservers}:
+      [check ${name}]:
+        run $ echo "${name}: $(${check_cmd})"
+        collect "fleet_status"
+
+  [fleet summary]:
+    first [check hosts]
+    reduce "fleet_status"
+    run $ echo "Fleet check complete"
+    collect "summary"

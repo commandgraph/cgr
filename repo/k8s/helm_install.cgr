@@ -1,0 +1,39 @@
+# k8s/helm_install — Install or upgrade a Helm chart
+#
+# Parameters:
+#   release     (required) — Helm release name
+#   chart       (required) — chart name or path (e.g. "bitnami/nginx" or "./charts/myapp")
+#   namespace   (optional) — Kubernetes namespace, default "default"
+#   values_file (optional) — local path to a values.yaml override file, default ""
+#   extra_flags (optional) — additional helm flags (e.g. "--set image.tag=v1.2"), default ""
+
+template helm_install(release, chart, namespace = "default", values_file = "", extra_flags = ""):
+  version 1.0.0
+  description "Helm install/upgrade ${release} (${chart})"
+
+  [assert helm]:
+    assert $ which helm, "helm must be installed"
+
+  [create namespace] timeout 15s:
+    first [assert helm]
+    skip if $ kubectl get namespace "${namespace}" >/dev/null 2>&1
+    run $ kubectl create namespace "${namespace}"
+
+  [upgrade with values] timeout 5m:
+    first [create namespace]
+    when "${values_file} != ''"
+    put "${values_file}" > "/tmp/cgr_helm_values.yaml"
+    run $ helm upgrade --install "${release}" "${chart}" \
+        --namespace "${namespace}" \
+        --values /tmp/cgr_helm_values.yaml \
+        --wait ${extra_flags}
+
+  [upgrade default] timeout 5m:
+    first [create namespace]
+    when "${values_file} == ''"
+    run $ helm upgrade --install "${release}" "${chart}" \
+        --namespace "${namespace}" \
+        --wait ${extra_flags}
+
+  run $ helm status "${release}" --namespace "${namespace}"
+  collect "helm_status"

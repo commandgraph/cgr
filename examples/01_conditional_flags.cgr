@@ -1,0 +1,23 @@
+--- Conditional Flags Demo ---
+set work_dir = "/tmp/cgr-flags-demo"
+set paths = "/etc /home"
+set tags = ""
+set exclude = ""
+set aws_key = ""
+
+target "local" local:
+
+  [create work dir]:
+    skip if $ test -d ${work_dir}
+    run $ mkdir -p ${work_dir}
+
+  [run backup]:
+    first [create work dir]
+    run $ echo "backup ${paths}" > ${work_dir}/backup.log
+    flag "--tag ${tags}" when "${tags} != ''"
+    flag "--exclude ${exclude}" when "${exclude} != ''"
+    env AWS_ACCESS_KEY = "${aws_key}" when "${aws_key} != ''"
+
+  [show result]:
+    first [run backup]
+    run $ cat ${work_dir}/backup.log && echo "Flags applied successfully"

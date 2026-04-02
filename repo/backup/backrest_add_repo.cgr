@@ -1,0 +1,23 @@
+# backup/backrest_add_repo — Add a restic repository to Backrest via its API
+#
+# Configures a new repository in Backrest using the HTTP API.
+# Backrest must already be running. The repository must already be
+# initialized with restic init.
+#
+# Parameters:
+#   backrest_url  (optional) — Backrest API base URL, default "http://localhost:9898"
+#   repo_id       (required) — unique repository identifier in Backrest
+#   repo_uri      (required) — restic repository URI, e.g. "/backups/myrepo" or "s3:..."
+#   password      (required) — repository password
+#   prune_policy  (optional) — auto-prune schedule cron, default "" (manual only)
+
+template backrest_add_repo(repo_id, repo_uri, password, backrest_url = "http://localhost:9898", prune_policy = ""):
+  version 1.0.0
+  description "Add repo ${repo_id} to Backrest"
+
+  post "${backrest_url}/v1/config"
+  auth header "Content-Type" = "application/json"
+  body json '{"modno": 0, "config": {"repos": [{"id": "${repo_id}", "uri": "${repo_uri}", "password": "${password}", "prunePolicy": {"schedule": "${prune_policy}"}}]}}'
+  expect 200..299
+  timeout 15s
+  collect "add_repo_result"

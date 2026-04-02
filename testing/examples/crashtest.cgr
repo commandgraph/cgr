@@ -1,0 +1,38 @@
+--- Crash recovery demo ---
+
+set work_dir = "/workspace/crashtest"
+
+target "local" local:
+
+  [prepare workspace]:
+    skip if $ test -d ${work_dir}
+    run    $ mkdir -p ${work_dir}
+
+  [step one]:
+    first [prepare workspace]
+    skip if $ test -f ${work_dir}/step1.done
+    run    $ echo "step 1 complete" > ${work_dir}/step1.done
+
+  [step two]:
+    first [step one]
+    skip if $ test -f ${work_dir}/step2.done
+    run    $ echo "step 2 complete" > ${work_dir}/step2.done
+
+  [step three - will fail]:
+    first [step two]
+    skip if $ test -f ${work_dir}/step3.done
+    run    $ test -f ${work_dir}/magic_fix && echo "step 3 complete" > ${work_dir}/step3.done
+
+  [step four]:
+    first [step three - will fail]
+    skip if $ test -f ${work_dir}/step4.done
+    run    $ echo "step 4 complete" > ${work_dir}/step4.done
+
+  [step five]:
+    first [step four]
+    skip if $ test -f ${work_dir}/step5.done
+    run    $ echo "step 5 complete" > ${work_dir}/step5.done
+
+  verify "all steps done":
+    first [step five]
+    run $ test -f ${work_dir}/step5.done

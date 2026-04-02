@@ -1,0 +1,68 @@
+--- Full-stack Nginx + TLS deployment ---
+
+using
+  apt/install_package,
+  firewall/allow_port,
+  systemd/enable_service,
+  tls/certbot,
+  nginx/vhost
+
+set domain   = "app.example.com"
+set ssh_user = "deploy"
+set ssh_host = "10.0.1.5"
+
+target "web-1" ssh ${ssh_user}@${ssh_host}:
+
+  # ── Packages (from templates) ──────────────────────────
+
+  [install web packages] from apt/install_package:
+    name = "nginx curl"
+
+  # ── Firewall ───────────────────────────────────────────
+
+  [open http] from firewall/allow_port:
+    port = "80"
+
+  [open https] from firewall/allow_port:
+    port = "443"
+
+  # ── TLS certificate ───────────────────────────────────
+
+  [get tls cert] from tls/certbot:
+    domain = "${domain}"
+    email  = "ops@example.com"
+
+  # ── Nginx virtual host ─────────────────────────────────
+
+  [configure vhost] from nginx/vhost:
+    domain   = "${domain}"
+    port     = "443"
+    doc_root = "/var/www/${domain}"
+
+  # ── Deployment (inline steps) ──────────────────────────
+
+  [deploy app files] as root:
+    first [install web packages], [configure vhost]
+    skip if $ test -f /var/www/${domain}/index.html
+    run    $ echo '<h1>${domain} is live</h1>' > /var/www/${domain}/index.html
+
+  [start nginx] as root, if fails stop:
+    first [deploy app files], [get tls cert], [open https], [open http]
+
+    [write ssl params] as root:
+      skip if $ test -f /etc/nginx/snippets/ssl-params.conf
+      run    $ printf 'ssl_protocols TLSv1.2 TLSv1.3;\nssl_prefer_server_ciphers on;\nssl_ciphers HIGH:!aNULL:!MD5;\n' > /etc/nginx/snippets/ssl-params.conf
+
+    first [write ssl params]
+    skip if $ systemctl is-active nginx | grep -q active
+    run    $ systemctl reload-or-restart nginx
+
+  [enable on boot] from systemd/enable_service:
+    service = "nginx"
+
+  # ── Verify ─────────────────────────────────────────────
+
+  verify "HTTPS 200 on ${domain}":
+    first [start nginx], [enable on boot], [install web packages]
+    run   $ curl -sfk -o /dev/null -w '%{http_code}' https://${domain}/ | grep -q 200
+    retry 3x wait 2s

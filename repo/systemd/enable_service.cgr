@@ -1,0 +1,17 @@
+# systemd/enable_service — Enable and start a systemd service
+#
+# Parameters:
+#   service  (required) — service name, e.g. "nginx"
+
+template enable_service(service):
+  version 1.0.0
+  description "Enable and start ${service}"
+
+  [enable] as root, timeout 30s:
+    skip if $ systemctl is-enabled ${service} 2>/dev/null | grep -q enabled
+    run    $ systemctl enable ${service}
+
+  first [enable]
+  skip if $ systemctl is-active ${service} 2>/dev/null | grep -q active
+  run    $ systemctl reload-or-restart ${service}
+  as root, timeout 30s, if fails stop

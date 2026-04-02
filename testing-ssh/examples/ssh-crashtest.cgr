@@ -1,0 +1,35 @@
+--- SSH crash recovery ---
+
+set deploy_user = "deploy"
+set target_host = "target"
+set work_dir = "/opt/deploy_test"
+
+target "webserver" ssh ${deploy_user}@${target_host}:
+
+  [prepare workspace] as root:
+    skip if $ test -d ${work_dir}
+    run    $ mkdir -p ${work_dir} && chown deploy:deploy ${work_dir}
+
+  [download release]:
+    first [prepare workspace]
+    skip if $ test -f ${work_dir}/release.tar.gz
+    run    $ echo "release-v2.0" > ${work_dir}/release.tar.gz
+
+  [extract release]:
+    first [download release]
+    skip if $ test -f ${work_dir}/extracted
+    run    $ echo "extracted" > ${work_dir}/extracted
+
+  [run migrations]:
+    first [extract release]
+    skip if $ test -f ${work_dir}/migrated
+    run    $ test -f ${work_dir}/db_ready && echo "migrated" > ${work_dir}/migrated
+
+  [start service]:
+    first [run migrations]
+    skip if $ test -f ${work_dir}/running
+    run    $ echo "service started on $(hostname)" > ${work_dir}/running
+
+  verify "service is running":
+    first [start service]
+    run $ cat ${work_dir}/running

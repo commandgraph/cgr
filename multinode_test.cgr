@@ -1,0 +1,68 @@
+--- Multi-node orchestration test ---
+
+set app_version = "3.0.1"
+set db_host = "10.0.2.3"
+set web_host = "10.0.1.5"
+
+# ── Database target ──────────────────────────────────────────
+
+target "db" ssh deploy@${db_host}:
+
+  [install postgres]:
+    skip if $ dpkg -l | grep -q postgresql
+    run $ apt-get install -y postgresql
+
+  [setup schema]:
+    first [install postgres]
+    skip if $ psql -U app -d myapp -c "SELECT 1 FROM schema_versions LIMIT 1" 2>/dev/null
+    run $ psql -U postgres -c "CREATE DATABASE myapp" && psql -U postgres -d myapp -f /opt/schema.sql
+
+  [seed data]:
+    first [setup schema]
+    skip if $ psql -U app -d myapp -c "SELECT count(*) FROM config" | grep -q "[1-9]"
+    run $ psql -U app -d myapp -f /opt/seed.sql
+
+# ── Cache target ─────────────────────────────────────────────
+
+target "cache" local:
+
+  [start redis]:
+    skip if $ redis-cli ping | grep -q PONG
+    run $ systemctl start redis
+
+# ── Web target (depends on db and cache) ─────────────────────
+
+target "web" ssh deploy@${web_host}, after "db", "cache":
+
+  [deploy app]:
+    run $ tar xzf /tmp/app-${app_version}.tar.gz -C /opt/app
+
+  [configure app]:
+    first [deploy app]
+    run $ printf "DB_HOST=${db_host}\nCACHE_HOST=localhost\nAPP_VERSION=${app_version}\n" > /opt/app/config.env
+
+  [start app]:
+    first [configure app]
+    skip if $ systemctl is-active --quiet myapp
+    run $ systemctl start myapp
+
+  verify "app is healthy":
+    first [start app]
+    run $ curl -sf http://localhost:8080/health
+    retry 3x wait 5s
+
+# ── Monitor target (cross-node step refs, no node-level after) ──
+
+target "monitor" local:
+
+  [register db check]:
+    first [db/setup schema]
+    run $ echo "monitor db at ${db_host}" >> /etc/monitors.conf
+
+  [register web check]:
+    first [web/start app]
+    run $ echo "monitor web at ${web_host}" >> /etc/monitors.conf
+
+  [reload monitors]:
+    first [register db check], [register web check]
+    run $ systemctl reload monitoring

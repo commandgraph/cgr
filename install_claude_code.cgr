@@ -1,0 +1,21 @@
+--- Install Claude Code ---
+
+using apt/install_package
+
+target "local" local:
+  [install npm] from apt/install_package:
+    name = "npm"
+
+  [install Claude Code] as root, timeout 5m, retry 1x wait 10s:
+    first [install npm]
+    skip if $ command -v claude >/dev/null 2>&1
+    run $ npm install -g @anthropic-ai/claude-code
+
+  [update Claude Code] as root, timeout 5m, retry 1x wait 10s:
+    first [install npm]
+    skip if $ ! command -v claude >/dev/null 2>&1
+    run $ claude update || npm install -g @anthropic-ai/claude-code
+
+  verify "claude available":
+    first [install Claude Code], [update Claude Code]
+    run $ command -v claude && claude --version

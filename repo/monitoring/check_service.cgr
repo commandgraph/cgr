@@ -1,0 +1,24 @@
+# monitoring/check_service — Verify a systemd service is active and healthy
+#
+# Parameters:
+#   service    (required) — systemd service name, e.g. "nginx"
+#   restart    (optional) — "yes" to attempt restart on failure, default "no"
+
+template check_service(service, restart = "no"):
+  version 1.0.0
+  description "Check ${service} is healthy"
+
+  [verify active] timeout 15s:
+    run $ systemctl is-active "${service}" && echo "${service} is running"
+    collect "service_status"
+
+  [attempt restart] as root, timeout 30s:
+    first [verify active]
+    when "${restart} == 'yes'"
+    run $ systemctl restart "${service}" && echo "Restarted ${service}"
+    if fails warn
+
+  first [verify active]
+  run $ systemctl status "${service}" --no-pager -l
+  timeout 15s
+  collect "service_detail"

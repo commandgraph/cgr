@@ -1,0 +1,24 @@
+# apt/add_repo — Add an APT repository and its signing key
+#
+# Parameters:
+#   repo_name  (required) — short slug, e.g. "nodesource"
+#   repo_line  (required) — full deb line
+#   key_url    (required) — URL of the GPG key
+
+template add_repo(repo_name, repo_line, key_url):
+  version 1.0.0
+  description "Add APT repository: ${repo_name}"
+
+  [fetch key] as root, timeout 1m:
+    skip if $ test -f /etc/apt/keyrings/${repo_name}.gpg
+    run    $ curl -fsSL ${key_url} | gpg --dearmor -o /etc/apt/keyrings/${repo_name}.gpg
+
+  [write source] as root:
+    first [fetch key]
+    skip if $ test -f /etc/apt/sources.list.d/${repo_name}.list
+    run    $ echo '${repo_line}' > /etc/apt/sources.list.d/${repo_name}.list
+
+  first [write source]
+  skip if $ apt-cache policy | grep -q '${repo_name}'
+  run    $ apt-get update -y
+  as root, timeout 2m

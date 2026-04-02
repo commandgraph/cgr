@@ -1,0 +1,54 @@
+--- API Integration Example ---
+
+# Demonstrates first-class HTTP operations in CommandGraph.
+#
+# Run with: cgr apply api_integration.cgr --set 'api_host=https://httpbin.org'
+# Dry-run:  cgr plan api_integration.cgr -v
+
+set api_host = "https://httpbin.org"
+set api_token = env("API_TOKEN", "demo-token-123")
+
+target "local" local:
+
+  # ── Simple GET request ──────────────────────────────────
+
+  [health check]:
+    get "${api_host}/get"
+    expect 200
+    timeout 10s
+    retry 3x every 2s
+
+  # ── POST with JSON body and auth ────────────────────────
+
+  [register host]:
+    first [health check]
+    post "${api_host}/post"
+    auth bearer "${api_token}"
+    header "X-Request-Id" = "cgr-001"
+    body json '{"hostname": "web-1", "status": "provisioned"}'
+    expect 200
+    collect "registration"
+
+  # ── PUT to update ────────────────────────────────────────
+
+  [update status]:
+    first [register host]
+    put "${api_host}/put"
+    auth bearer "${api_token}"
+    body json '{"hostname": "web-1", "status": "active"}'
+    expect 200
+
+  # ── DELETE cleanup ───────────────────────────────────────
+
+  [deregister host]:
+    first [update status]
+    delete "${api_host}/delete"
+    auth bearer "${api_token}"
+    expect 200
+
+  # ── Mix HTTP and shell commands ──────────────────────────
+
+  [write report]:
+    first [register host]
+    run $ echo "Registration complete at $(date)"
+    collect "report"

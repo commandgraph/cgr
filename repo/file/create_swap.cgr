@@ -1,0 +1,23 @@
+# file/create_swap — Create and enable a swap file
+#
+# Parameters:
+#   size       (optional) — swap size, default "2G"
+#   path       (optional) — swap file path, default "/swapfile"
+
+template create_swap(size = "2G", path = "/swapfile"):
+  version 1.0.0
+  description "Create ${size} swap at ${path}"
+
+  [create file] as root, timeout 2m:
+    skip if $ test -f "${path}"
+    run    $ fallocate -l ${size} "${path}" && chmod 600 "${path}" && mkswap "${path}"
+
+  [enable swap] as root, timeout 15s:
+    first [create file]
+    skip if $ swapon --show | grep -q "${path}"
+    run    $ swapon "${path}"
+
+  first [enable swap]
+  skip if $ grep -q "${path}" /etc/fstab
+  run    $ echo "${path} none swap sw 0 0" >> /etc/fstab
+  as root, timeout 15s

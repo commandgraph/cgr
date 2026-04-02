@@ -1,0 +1,32 @@
+# backup/restic_backup — Run a restic backup
+#
+# Backs up one or more paths to a restic repository. Supports tags,
+# exclude patterns, and optional pre/post hooks.
+#
+# Parameters:
+#   repo          (required) — restic repository location
+#   password_file (required) — path to repository password file
+#   paths         (required) — space-separated paths to back up
+#   exclude       (optional) — exclude pattern, default "" (none)
+#   tags          (optional) — comma-separated tags, default ""
+#   aws_key       (optional) — AWS access key for S3 backend, default ""
+#   aws_secret    (optional) — AWS secret key for S3 backend, default ""
+
+template restic_backup(repo, password_file, paths, exclude = "", tags = "", aws_key = "", aws_secret = ""):
+  version 1.0.0
+  description "Restic backup: ${paths}"
+
+  [run backup] timeout 30m, retry 1x wait 30s:
+    run $ restic backup ${paths} --verbose
+    env RESTIC_REPOSITORY = "${repo}"
+    env RESTIC_PASSWORD_FILE = "${password_file}"
+    env AWS_ACCESS_KEY_ID = "${aws_key}" when "${aws_key} != ''"
+    env AWS_SECRET_ACCESS_KEY = "${aws_secret}" when "${aws_secret} != ''"
+    flag "--tag ${tags}" when "${tags} != ''"
+    flag "--exclude ${exclude}" when "${exclude} != ''"
+    collect "backup_result"
+
+  first [run backup]
+  run $ RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" restic snapshots --latest 1 --compact
+  timeout 1m
+  collect "latest_snapshot"

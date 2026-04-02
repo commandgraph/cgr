@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 310" font-family="system-ui, -apple-system, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#6b7280"/>
+    </marker>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="720" height="310" rx="12" fill="#fafaf9"/>
+
+  <!-- Wave labels -->
+  <text x="28" y="28" font-size="11" fill="#a3a3a3" font-weight="600">WAVE 1</text>
+  <text x="228" y="28" font-size="11" fill="#a3a3a3" font-weight="600">WAVE 2</text>
+  <text x="448" y="28" font-size="11" fill="#a3a3a3" font-weight="600">WAVE 3</text>
+  <text x="618" y="28" font-size="11" fill="#a3a3a3" font-weight="600">WAVE 4</text>
+
+  <!-- Wave dividers -->
+  <line x1="190" y1="15" x2="190" y2="295" stroke="#e5e5e5" stroke-dasharray="4"/>
+  <line x1="410" y1="15" x2="410" y2="295" stroke="#e5e5e5" stroke-dasharray="4"/>
+  <line x1="590" y1="15" x2="590" y2="295" stroke="#e5e5e5" stroke-dasharray="4"/>
+
+  <!-- Wave 1 nodes -->
+  <rect x="20" y="55" width="160" height="54" rx="8" fill="#ffffff" stroke="#d4d4d4" filter="url(#shadow)"/>
+  <text x="100" y="76" text-anchor="middle" font-size="12" font-weight="600" fill="#1a1a1a">install nginx</text>
+  <text x="100" y="96" text-anchor="middle" font-size="10" fill="#6b7280">check → apt-get install</text>
+
+  <rect x="20" y="135" width="160" height="54" rx="8" fill="#ffffff" stroke="#d4d4d4" filter="url(#shadow)"/>
+  <text x="100" y="156" text-anchor="middle" font-size="12" font-weight="600" fill="#1a1a1a">create site dir</text>
+  <text x="100" y="176" text-anchor="middle" font-size="10" fill="#6b7280">check → mkdir -p</text>
+
+  <!-- Wave 2 nodes -->
+  <rect x="220" y="55" width="160" height="54" rx="8" fill="#ffffff" stroke="#d4d4d4" filter="url(#shadow)"/>
+  <text x="300" y="76" text-anchor="middle" font-size="12" font-weight="600" fill="#1a1a1a">write config</text>
+  <text x="300" y="96" text-anchor="middle" font-size="10" fill="#6b7280">check → printf → file</text>
+
+  <rect x="220" y="135" width="160" height="54" rx="8" fill="#ffffff" stroke="#d4d4d4" filter="url(#shadow)"/>
+  <text x="300" y="156" text-anchor="middle" font-size="12" font-weight="600" fill="#1a1a1a">deploy code</text>
+  <text x="300" y="176" text-anchor="middle" font-size="10" fill="#6b7280">check → echo → html</text>
+
+  <!-- Wave 3 node -->
+  <rect x="430" y="95" width="140" height="54" rx="8" fill="#ffffff" stroke="#d4d4d4" filter="url(#shadow)"/>
+  <text x="500" y="116" text-anchor="middle" font-size="12" font-weight="600" fill="#1a1a1a">enable site</text>
+  <text x="500" y="136" text-anchor="middle" font-size="10" fill="#6b7280">check → ln -sf</text>
+
+  <!-- Wave 4 node (verify) -->
+  <rect x="608" y="95" width="100" height="54" rx="8" fill="#fef3c7" stroke="#f59e0b" filter="url(#shadow)"/>
+  <text x="658" y="116" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">verify</text>
+  <text x="658" y="136" text-anchor="middle" font-size="10" fill="#92400e">curl localhost</text>
+
+  <!-- Arrows -->
+  <line x1="180" y1="82" x2="218" y2="82" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="180" y1="162" x2="218" y2="162" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="380" y1="82" x2="428" y2="112" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="380" y1="162" x2="428" y2="132" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="570" y1="122" x2="606" y2="122" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Parallel indicator -->
+  <rect x="20" y="220" width="370" height="72" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="36" y="244" font-size="11" font-weight="600" fill="#1e40af">↕ Steps with no dependency between them run in parallel</text>
+  <text x="36" y="262" font-size="11" fill="#3b82f6">install nginx and create site dir start at the same time.</text>
+  <text x="36" y="278" font-size="11" fill="#3b82f6">write config and deploy code also run simultaneously.</text>
+
+</svg>

@@ -1,0 +1,111 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# CommandGraph DSL v3 — Full-stack Nginx + TLS deployment
+# ═══════════════════════════════════════════════════════════════════════════
+# This graph demonstrates:
+#   1. Importing reusable templates from the repository
+#   2. Nested resource dependencies (deep trees)
+#   3. Automatic deduplication (apt update_cache shared across installs)
+#   4. Template instantiation with parameters
+#   5. Inline nested resources alongside imported ones
+#
+# Usage:
+#   cgr plan   webserver.cg --repo ./repo
+#   cgr apply  webserver.cg --repo ./repo --dry-run
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ─── Imports from the repository ────────────────────────────────────────
+# Each `use` loads a template.  The engine reads it from the repo,
+# copies it into this graph, and tracks provenance.
+
+use "apt/install_package"
+use "firewall/allow_port"
+use "systemd/enable_service"
+use "tls/certbot"
+use "nginx/vhost"
+
+# ─── Variables ──────────────────────────────────────────────────────────
+
+var domain   = "app.example.com"
+var ssh_user = "deploy"
+var ssh_host = "10.0.1.5"
+
+# ─── The web server ────────────────────────────────────────────────────
+
+node "web-1" {
+  via ssh host="${ssh_host}" user="${ssh_user}" port=22
+
+  # ── Layer 1: Base packages ──────────────────────────────────────────
+  # Both of these instantiate apt/install_package.
+  # They SHARE the nested update_cache resource (deduped automatically).
+
+  install_package { name = "nginx" }
+  install_package { name = "curl" }
+
+  # ── Layer 2: Firewall ───────────────────────────────────────────────
+
+  allow_port { port = "80" }
+  allow_port { port = "443" }
+
+  # ── Layer 3: TLS certificate ────────────────────────────────────────
+  # certbot template has a nested tree:
+  #   certbot → install_certbot → ensure_apt (deduped with update_cache)
+  # The engine recognises ensure_apt's check/run are identical to
+  # update_cache from apt/install_package and merges them.
+
+  certbot { domain = "${domain}" email = "ops@example.com" }
+
+  # ── Layer 4: Nginx virtual host ─────────────────────────────────────
+  # This template nests: create_docroot → write_vhost → enable_site → validate
+  # It depends on install_package{nginx} being done first.
+
+  vhost {
+    domain   = "${domain}"
+    port     = "443"
+    doc_root = "/var/www/${domain}"
+  }
+
+  # ── Layer 5: Wire it all together ───────────────────────────────────
+  # Inline resources that reference both imported and local resources.
+  # This creates the top-level dependency edges.
+
+  resource deploy_app {
+    description "Deploy application files"
+    needs install_package_nginx, vhost_app_example_com
+    check `test -f /var/www/${domain}/index.html`
+    run   `echo '<h1>${domain} is live</h1>' > /var/www/${domain}/index.html`
+    as root
+  }
+
+  resource start_nginx {
+    description "Start Nginx with TLS"
+    needs deploy_app, certbot_app_example_com, allow_port_443, allow_port_80
+
+    resource configure_ssl_snippet {
+      description "Write shared SSL parameters"
+      check `test -f /etc/nginx/snippets/ssl-params.conf`
+      run   `cat > /etc/nginx/snippets/ssl-params.conf << 'EOF'
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers on;
+ssl_ciphers HIGH:!aNULL:!MD5;
+EOF`
+      as root
+    }
+
+    needs configure_ssl_snippet
+    check `systemctl is-active nginx | grep -q active`
+    run   `systemctl reload-or-restart nginx`
+    as root
+    on_fail stop
+  }
+
+  enable_service { service = "nginx" }
+
+  # ── Verification ────────────────────────────────────────────────────
+
+  verify "HTTPS 200 on ${domain}" {
+    needs start_nginx, enable_service_nginx, install_package_curl
+    run   `curl -sfk -o /dev/null -w '%{http_code}' https://${domain}/ | grep -q 200`
+    retry 3 delay 2
+    on_fail warn
+  }
+}

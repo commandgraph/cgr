@@ -1,0 +1,23 @@
+# backup/restic_restore — Restore files from a restic snapshot
+#
+# Parameters:
+#   repo          (required) — restic repository location
+#   password_file (required) — path to repository password file
+#   target        (required) — directory to restore into
+#   snapshot      (optional) — snapshot ID or "latest", default "latest"
+#   include       (optional) — path pattern to include, default "" (everything)
+#   aws_key       (optional) — AWS access key for S3 backend, default ""
+#   aws_secret    (optional) — AWS secret key for S3 backend, default ""
+
+template restic_restore(repo, password_file, target, snapshot = "latest", include = "", aws_key = "", aws_secret = ""):
+  version 1.0.0
+  description "Restore from restic to ${target}"
+
+  [prepare target] timeout 15s:
+    skip if $ test -d "${target}"
+    run    $ mkdir -p "${target}"
+
+  first [prepare target]
+  run $ export RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}"; INCL_FLAG=""; if [ -n "${include}" ]; then INCL_FLAG="--include ${include}"; fi; restic restore ${snapshot} --target "${target}" $INCL_FLAG --verbose
+  timeout 1h
+  collect "restore_result"

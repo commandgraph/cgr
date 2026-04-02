@@ -1,0 +1,22 @@
+# user/create_group — Create a system group
+#
+# Parameters:
+#   group   (required) — group name
+#   gid     (optional) — numeric GID, default "" (auto-assign)
+
+template create_group(group, gid = ""):
+  version 1.0.0
+  description "Create group ${group}"
+
+  [create with gid] as root, timeout 15s:
+    when "${gid} != ''"
+    skip if $ getent group "${group}" >/dev/null 2>&1
+    run    $ groupadd --gid "${gid}" "${group}"
+
+  [create without gid] as root, timeout 15s:
+    when "${gid} == ''"
+    skip if $ getent group "${group}" >/dev/null 2>&1
+    run    $ groupadd "${group}"
+
+  run $ getent group "${group}"
+  collect "group_info"

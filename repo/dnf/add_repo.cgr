@@ -1,0 +1,15 @@
+# dnf/add_repo — Add a DNF/YUM repository (RHEL 8+/Fedora)
+#
+# Parameters:
+#   repo_id    (required) — repository ID slug, e.g. "docker-ce"
+#   repo_name  (required) — human-readable name
+#   baseurl    (required) — repository base URL
+#   gpgkey     (optional) — GPG key URL, default "" (gpgcheck disabled)
+
+template add_repo(repo_id, repo_name, baseurl, gpgkey = ""):
+  version 1.0.0
+  description "Add DNF repo: ${repo_id}"
+
+  skip if $ test -f /etc/yum.repos.d/${repo_id}.repo
+  run    $ printf '[%s]\nname=%s\nbaseurl=%s\nenabled=1\ngpgcheck=%s\n' "${repo_id}" "${repo_name}" "${baseurl}" "$([ -n '${gpgkey}' ] && echo '1' || echo '0')" > /etc/yum.repos.d/${repo_id}.repo && if [ -n "${gpgkey}" ]; then printf 'gpgkey=%s\n' "${gpgkey}" >> /etc/yum.repos.d/${repo_id}.repo; fi
+  as root, timeout 30s

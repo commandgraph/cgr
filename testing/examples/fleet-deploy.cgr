@@ -1,0 +1,59 @@
+--- Fleet deploy demo ---
+
+set servers = "alpha,bravo,charlie,delta,echo,foxtrot"
+set version = "3.1.0"
+set work_dir = "/workspace/fleet"
+
+target "deploy-host" local:
+
+  [build release]:
+    skip if $ test -f ${work_dir}/release-${version}.tar.gz
+    run    $ mkdir -p ${work_dir} && echo "release ${version}" > ${work_dir}/release-${version}.tar.gz
+
+  [run test suite]:
+    first [build release]
+
+    parallel:
+      [unit tests]:
+        run $ echo "37 unit tests passed" > ${work_dir}/unit.log
+
+      [integration tests]:
+        run $ echo "12 integration tests passed" > ${work_dir}/integration.log
+
+      [lint check]:
+        run $ echo "0 lint warnings" > ${work_dir}/lint.log
+
+  [distribute to fleet]:
+    first [build release], [run test suite]
+
+    each server in ${servers}, 3 at a time:
+      [upload to ${server}]:
+        skip if $ test -f ${work_dir}/${server}.uploaded
+        run    $ echo "uploaded ${version} to ${server}" > ${work_dir}/${server}.uploaded
+
+  [rolling deploy]:
+    first [distribute to fleet]
+
+    stage "production rollout":
+      phase "canary" 1 from ${servers}:
+        [activate on ${server}]:
+          run $ echo "activated ${version}" > ${work_dir}/${server}.live
+
+        verify "canary healthy":
+          run $ test -f ${work_dir}/alpha.live && echo "canary OK"
+          retry 3x wait 1s
+
+      phase "50 percent" 50% from ${servers}:
+        each server, 2 at a time:
+          [activate on ${server}]:
+            run $ echo "activated ${version}" > ${work_dir}/${server}.live
+
+      phase "remaining" rest from ${servers}:
+        each server, 3 at a time:
+          [activate on ${server}]:
+            run $ echo "activated ${version}" > ${work_dir}/${server}.live
+
+  verify "all servers live on ${version}":
+    first [rolling deploy]
+    run $ ls ${work_dir}/*.live | wc -l | grep -q 6
+    retry 2x wait 1s

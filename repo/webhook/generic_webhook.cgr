@@ -1,0 +1,30 @@
+# webhook/generic_webhook — POST JSON to any webhook URL
+#
+# Uses the HTTP feature — no curl required.
+#
+# Parameters:
+#   url        (required) — webhook endpoint URL
+#   payload    (required) — JSON body string
+#   auth_token (optional) — Bearer token, default "" (none)
+
+template generic_webhook(url, payload, auth_token = ""):
+  version 1.0.0
+  description "Webhook POST to ${url}"
+
+  [authenticate]:
+    when "${auth_token} != ''"
+    post "${url}"
+    auth bearer "${auth_token}"
+    body json '${payload}'
+    expect 200..299
+    timeout 15s, retry 2x wait 5s
+
+  [unauthenticated]:
+    when "${auth_token} == ''"
+    post "${url}"
+    body json '${payload}'
+    expect 200..299
+    timeout 15s, retry 2x wait 5s
+
+  first [authenticate]
+  run $ echo "Webhook delivered"

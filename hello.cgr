@@ -1,0 +1,6 @@
+--- Hello CommandGraph ---
+
+target "local" local:
+
+  [say hello]:
+    run $ echo "Hello from CommandGraph!"

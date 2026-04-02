@@ -1,0 +1,15 @@
+# cron/add_cron_job — Add a cron entry for a user
+#
+# Parameters:
+#   user       (optional) — cron user, default "root"
+#   schedule   (required) — cron schedule, e.g. "0 2 * * *"
+#   command    (required) — command to run
+#   job_id     (optional) — comment marker for idempotency, default "cgr"
+
+template add_cron_job(schedule, command, user = "root", job_id = "cgr"):
+  version 1.0.0
+  description "Add cron job for ${user}: ${job_id}"
+
+  skip if $ crontab -u ${user} -l 2>/dev/null | grep -qF "# ${job_id}"
+  run    $ (crontab -u ${user} -l 2>/dev/null; echo "${schedule} ${command} # ${job_id}") | crontab -u ${user} -
+  as root, timeout 15s

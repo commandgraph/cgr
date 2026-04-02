@@ -1,0 +1,43 @@
+--- System Audit — Multi-Node Fleet Scan ---
+
+# Two ways to specify hosts:
+#
+#   1. Inline list (uncomment below, comment out inventory):
+#  set fleet = "pi:pi@192.168.1.8,nas:pi@192.168.1.9,desktop:coder@192.168.1.10"
+#
+#   2. Inventory file (default):
+#        inventory "fleet.ini"
+#
+#   3. CLI override (works with either):
+#        cgr apply system_audit.cgr -i production.ini
+#        cgr apply system_audit.cgr --set 'fleet=pi:pi@192.168.1.8'
+
+using audit/system_audit
+
+# inventory "fleet.ini"
+set fleet = "pi:pi@192.168.1.8"
+set dns_test = "google.com"
+set http_test = "https://google.com"
+set report_dir = "/tmp/cgr_audit"
+
+# ── Prepare ──────────────────────────────────────────────────
+
+target "collector" local:
+
+  [prepare report dir]:
+    run $ mkdir -p ${report_dir}
+
+# ── Audited hosts ────────────────────────────────────────────
+
+each name, addr in ${fleet}:
+  target "${name}" ssh ${addr}, after "collector":
+    [audit ${name}] from audit/system_audit:
+      dns_test = "${dns_test}"
+      http_test = "${http_test}"
+
+# ── Report ───────────────────────────────────────────────────
+
+target "report" local, after each:
+
+  [write report]:
+    run $ printf "=== Fleet Audit Report ===\nDate: %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${report_dir}/summary.txt && cat ${report_dir}/summary.txt

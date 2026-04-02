@@ -1,0 +1,24 @@
+--- Assertions Demo ---
+set work_dir = "/tmp/cgr-assert-demo"
+set environment = "staging"
+
+target "local" local:
+
+  [setup workspace]:
+    skip if $ test -d ${work_dir}
+    run $ mkdir -p ${work_dir} && echo "v2.1.0" > ${work_dir}/version.txt
+
+  [deploy application]:
+    first [setup workspace]
+    assert $ test -f ${work_dir}/version.txt, "version.txt must exist before deploy"
+    assert $ test -d ${work_dir}, "work directory must exist"
+    run $ echo "Deploying $(cat ${work_dir}/version.txt) to ${environment}"
+
+  [post deploy check]:
+    first [deploy application]
+    assert $ test -d ${work_dir}, "work directory must still exist after deploy"
+    run $ echo "Post-deploy validation passed"
+
+  verify "deployment valid":
+    first [post deploy check]
+    run $ test -d ${work_dir} && echo "OK"

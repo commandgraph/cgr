@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 260" font-family="system-ui, -apple-system, sans-serif">
+  <rect width="720" height="260" rx="12" fill="#fafaf9"/>
+
+  <!-- parallel -->
+  <rect x="12" y="12" width="168" height="236" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+  <text x="96" y="36" text-anchor="middle" font-size="12" font-weight="700" fill="#5b21b6">║ parallel</text>
+  <text x="96" y="52" text-anchor="middle" font-size="9" fill="#7c3aed">fork / join</text>
+  <rect x="26" y="66" width="60" height="28" rx="4" fill="#fff" stroke="#c4b5fd"/>
+  <text x="56" y="84" text-anchor="middle" font-size="9" fill="#5b21b6">branch a</text>
+  <rect x="106" y="66" width="60" height="28" rx="4" fill="#fff" stroke="#c4b5fd"/>
+  <text x="136" y="84" text-anchor="middle" font-size="9" fill="#5b21b6">branch b</text>
+  <rect x="26" y="100" width="60" height="28" rx="4" fill="#fff" stroke="#c4b5fd"/>
+  <text x="56" y="118" text-anchor="middle" font-size="9" fill="#5b21b6">branch c</text>
+  <rect x="106" y="100" width="60" height="28" rx="4" fill="#fff" stroke="#c4b5fd"/>
+  <text x="136" y="118" text-anchor="middle" font-size="9" fill="#5b21b6">branch d</text>
+  <text x="96" y="148" text-anchor="middle" font-size="9" fill="#7c3aed" font-style="italic">all finish → continue</text>
+  <rect x="22" y="160" width="148" height="34" rx="4" fill="#ede9fe" stroke="#c4b5fd"/>
+  <text x="96" y="174" text-anchor="middle" font-size="9" font-weight="600" fill="#5b21b6">2 at a time</text>
+  <text x="96" y="188" text-anchor="middle" font-size="8" fill="#7c3aed">sliding window concurrency</text>
+  <text x="96" y="220" text-anchor="middle" font-size="8" fill="#6b7280" font-style="italic">if one fails stop all</text>
+  <text x="96" y="234" text-anchor="middle" font-size="8" fill="#6b7280" font-style="italic">if one fails wait for rest</text>
+
+  <!-- race -->
+  <rect x="192" y="12" width="168" height="236" rx="8" fill="#fef3c7" stroke="#fcd34d"/>
+  <text x="276" y="36" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">⚡ race</text>
+  <text x="276" y="52" text-anchor="middle" font-size="9" fill="#b45309">first wins, rest cancelled</text>
+  <rect x="206" y="66" width="60" height="28" rx="4" fill="#fff" stroke="#fcd34d"/>
+  <text x="236" y="84" text-anchor="middle" font-size="9" fill="#92400e">mirror A</text>
+  <rect x="286" y="66" width="60" height="28" rx="4" fill="#fff" stroke="#fcd34d"/>
+  <text x="316" y="84" text-anchor="middle" font-size="9" fill="#92400e">mirror B</text>
+  <rect x="246" y="100" width="60" height="28" rx="4" fill="#fff" stroke="#fcd34d"/>
+  <text x="276" y="118" text-anchor="middle" font-size="9" fill="#92400e">mirror C</text>
+  <text x="276" y="150" text-anchor="middle" font-size="26" fill="#f59e0b">🏆</text>
+  <text x="276" y="178" text-anchor="middle" font-size="9" fill="#b45309" font-style="italic">first success wins</text>
+  <text x="276" y="194" text-anchor="middle" font-size="9" fill="#b45309" font-style="italic">others cancelled</text>
+  <text x="276" y="222" text-anchor="middle" font-size="9" fill="#6b7280">Great for mirrors,</text>
+  <text x="276" y="236" text-anchor="middle" font-size="9" fill="#6b7280">fallback strategies</text>
+
+  <!-- each -->
+  <rect x="372" y="12" width="168" height="236" rx="8" fill="#ecfdf5" stroke="#6ee7b7"/>
+  <text x="456" y="36" text-anchor="middle" font-size="12" font-weight="700" fill="#065f46">↔ each</text>
+  <text x="456" y="52" text-anchor="middle" font-size="9" fill="#059669">parallel iteration</text>
+  <rect x="386" y="66" width="50" height="28" rx="4" fill="#fff" stroke="#6ee7b7"/>
+  <text x="411" y="84" text-anchor="middle" font-size="8" fill="#065f46">web-1</text>
+  <rect x="442" y="66" width="50" height="28" rx="4" fill="#fff" stroke="#6ee7b7"/>
+  <text x="467" y="84" text-anchor="middle" font-size="8" fill="#065f46">web-2</text>
+  <rect x="498" y="66" width="30" height="28" rx="4" fill="#d1fae5" stroke="#6ee7b7"/>
+  <text x="513" y="84" text-anchor="middle" font-size="8" fill="#059669">...</text>
+  <rect x="386" y="100" width="50" height="28" rx="4" fill="#fff" stroke="#6ee7b7"/>
+  <text x="411" y="118" text-anchor="middle" font-size="8" fill="#065f46">web-3</text>
+  <rect x="442" y="100" width="50" height="28" rx="4" fill="#fff" stroke="#6ee7b7"/>
+  <text x="467" y="118" text-anchor="middle" font-size="8" fill="#065f46">web-4</text>
+  <rect x="386" y="148" width="142" height="34" rx="4" fill="#d1fae5" stroke="#6ee7b7"/>
+  <text x="457" y="162" text-anchor="middle" font-size="9" font-weight="600" fill="#065f46">3 at a time</text>
+  <text x="457" y="176" text-anchor="middle" font-size="8" fill="#059669">${server} substituted</text>
+  <text x="456" y="208" text-anchor="middle" font-size="9" fill="#6b7280">Crash at web-3?</text>
+  <text x="456" y="222" text-anchor="middle" font-size="9" fill="#6b7280">Resume skips web-1,2</text>
+  <text x="456" y="236" text-anchor="middle" font-size="9" fill="#6b7280">continues from web-3</text>
+
+  <!-- stage/phase -->
+  <rect x="552" y="12" width="158" height="236" rx="8" fill="#fff1f2" stroke="#fda4af"/>
+  <text x="631" y="36" text-anchor="middle" font-size="12" font-weight="700" fill="#9f1239">◆ stage</text>
+  <text x="631" y="52" text-anchor="middle" font-size="9" fill="#e11d48">rolling deploy</text>
+  <rect x="566" y="66" width="130" height="36" rx="4" fill="#fff" stroke="#fda4af"/>
+  <text x="631" y="80" text-anchor="middle" font-size="9" font-weight="600" fill="#9f1239">phase "canary" 1</text>
+  <text x="631" y="94" text-anchor="middle" font-size="8" fill="#e11d48">deploy → verify → gate</text>
+  <rect x="566" y="112" width="130" height="30" rx="4" fill="#fff" stroke="#fda4af"/>
+  <text x="631" y="131" text-anchor="middle" font-size="9" font-weight="600" fill="#9f1239">phase "50%" half</text>
+  <rect x="566" y="152" width="130" height="30" rx="4" fill="#fff" stroke="#fda4af"/>
+  <text x="631" y="171" text-anchor="middle" font-size="9" font-weight="600" fill="#9f1239">phase "rest" remaining</text>
+  <text x="631" y="206" text-anchor="middle" font-size="9" fill="#6b7280">Canary verify fails?</text>
+  <text x="631" y="220" text-anchor="middle" font-size="9" fill="#6b7280">Rollout stops.</text>
+  <text x="631" y="236" text-anchor="middle" font-size="9" fill="#6b7280">No blast radius.</text>
+</svg>

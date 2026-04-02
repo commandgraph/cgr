@@ -1,0 +1,25 @@
+# db/mysql_backup — Backup a MySQL database with rotation
+#
+# Parameters:
+#   db_name    (required) — database name
+#   db_user    (optional) — MySQL user, default "root"
+#   db_pass    (optional) — MySQL password, default "" (uses .my.cnf)
+#   backup_dir (optional) — backup directory, default "/var/backups/mysqldump"
+#   keep       (optional) — number of backups to retain, default "7"
+
+template mysql_backup(db_name, db_user = "root", db_pass = "", backup_dir = "/var/backups/mysqldump", keep = "7"):
+  version 1.0.0
+  description "Backup MySQL database ${db_name}"
+
+  [ensure dir] as root, timeout 10s:
+    skip if $ test -d "${backup_dir}"
+    run    $ mkdir -p "${backup_dir}"
+
+  [dump database] timeout 10m:
+    first [ensure dir]
+    run $ mysqldump -u "${db_user}" --single-transaction "${db_name}" | gzip > "${backup_dir}/${db_name}_$(date +%Y%m%d_%H%M%S).sql.gz" && echo "Backup complete"
+    collect "backup_result"
+
+  first [dump database]
+  run $ ls -t "${backup_dir}/${db_name}_"*.sql.gz 2>/dev/null | tail -n +$((${keep} + 1)) | xargs -r rm -f && echo "Rotated, keeping last ${keep} backups"
+  timeout 30s

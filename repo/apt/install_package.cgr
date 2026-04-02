@@ -1,0 +1,19 @@
+# apt/install_package — Install a package via APT
+#
+# Parameters:
+#   name     (required) — package name or whitespace-separated package names,
+#                        e.g. "nginx" or "npm bubblewrap"
+#   version  (optional) — pin to version, default "latest"
+
+template install_package(name, version = "latest"):
+  version 1.0.0
+  description "Install ${name} via APT"
+
+  [update cache] as root, timeout 2m, retry 2x wait 10s:
+    skip if $ find /var/lib/apt/lists -maxdepth 1 -mmin -60 | grep -q .
+    run    $ apt-get update -y
+
+  first [update cache]
+  skip if $ for pkg in ${name}; do dpkg -l "$pkg" 2>/dev/null | grep -q '^ii' || exit 1; done
+  run    $ pkgs=""; for pkg in ${name}; do if [ "${version}" = "latest" ]; then pkgs="$pkgs $pkg"; else pkgs="$pkgs $pkg=${version}"; fi; done; apt-get install -y $pkgs
+  as root, timeout 3m, retry 1x wait 5s

@@ -1,0 +1,18 @@
+# webhook/slack_notify — Post a message to a Slack channel via webhook
+#
+# Uses the HTTP feature — no curl required.
+#
+# Parameters:
+#   webhook_url  (required) — Slack incoming webhook URL
+#   message      (required) — message text (supports Slack mrkdwn)
+#   channel      (optional) — override channel, default "" (uses webhook default)
+#   username     (optional) — bot display name, default "CommandGraph"
+
+template slack_notify(webhook_url, message, channel = "", username = "CommandGraph"):
+  version 1.0.0
+  description "Slack notification: ${message}"
+
+  post "${webhook_url}"
+  body json '{"text": "${message}", "username": "${username}"}'
+  expect 200
+  timeout 10s, retry 2x wait 3s

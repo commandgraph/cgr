@@ -1,0 +1,26 @@
+# backup/restic_prune — Forget and prune old restic snapshots
+#
+# Applies a retention policy and removes unreferenced data.
+#
+# Parameters:
+#   repo          (required) — restic repository location
+#   password_file (required) — path to repository password file
+#   keep_daily    (optional) — daily snapshots to keep, default "7"
+#   keep_weekly   (optional) — weekly snapshots to keep, default "4"
+#   keep_monthly  (optional) — monthly snapshots to keep, default "6"
+#   keep_yearly   (optional) — yearly snapshots to keep, default "2"
+#   aws_key       (optional) — AWS access key for S3 backend, default ""
+#   aws_secret    (optional) — AWS secret key for S3 backend, default ""
+
+template restic_prune(repo, password_file, keep_daily = "7", keep_weekly = "4", keep_monthly = "6", keep_yearly = "2", aws_key = "", aws_secret = ""):
+  version 1.0.0
+  description "Prune restic repo ${repo}"
+
+  [forget snapshots] timeout 15m:
+    run $ RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" restic forget --keep-daily ${keep_daily} --keep-weekly ${keep_weekly} --keep-monthly ${keep_monthly} --keep-yearly ${keep_yearly} --prune --verbose
+    collect "prune_result"
+
+  first [forget snapshots]
+  run $ RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" restic stats --mode raw-data
+  timeout 5m
+  collect "repo_stats"

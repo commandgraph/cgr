@@ -1,0 +1,18 @@
+# firewall/firewalld_allow_service — Allow a named service in firewalld (RHEL/Fedora)
+#
+# Parameters:
+#   service  (required) — firewalld service name, e.g. "http", "https", "ssh"
+#   zone     (optional) — firewalld zone, default "public"
+
+template firewalld_allow_service(service, zone = "public"):
+  version 1.0.0
+  description "Allow ${service} in firewalld (${zone})"
+
+  [ensure running] as root, timeout 15s:
+    skip if $ systemctl is-active firewalld >/dev/null 2>&1
+    run    $ systemctl start firewalld
+
+  first [ensure running]
+  skip if $ firewall-cmd --zone=${zone} --list-services | grep -qw "${service}"
+  run    $ firewall-cmd --zone=${zone} --add-service=${service} --permanent && firewall-cmd --reload
+  as root, timeout 15s

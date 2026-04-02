@@ -1,0 +1,32 @@
+# k8s/apply_manifest — Apply a Kubernetes manifest file
+#
+# Parameters:
+#   manifest    (required) — local path to the manifest file (.yaml or .json)
+#   namespace   (optional) — Kubernetes namespace, default "default"
+#   kubeconfig  (optional) — path to kubeconfig file, default "" (uses $KUBECONFIG env)
+#   extra_flags (optional) — additional kubectl flags (e.g. "--context staging"), default ""
+
+template apply_manifest(manifest, namespace = "default", kubeconfig = "", extra_flags = ""):
+  version 1.0.0
+  description "Apply manifest ${manifest}"
+
+  [assert kubectl]:
+    assert $ which kubectl, "kubectl must be installed"
+
+  [stage manifest]:
+    first [assert kubectl]
+    put "${manifest}" > "/tmp/cgr_manifest.yaml"
+
+  [apply with kubeconfig] timeout 2m:
+    first [stage manifest]
+    when "${kubeconfig} != ''"
+    run $ kubectl apply -f /tmp/cgr_manifest.yaml --namespace "${namespace}" --kubeconfig "${kubeconfig}" ${extra_flags}
+
+  [apply default] timeout 2m:
+    first [stage manifest]
+    when "${kubeconfig} == ''"
+    run $ kubectl apply -f /tmp/cgr_manifest.yaml --namespace "${namespace}" ${extra_flags}
+
+  [cleanup]:
+    first [apply with kubeconfig], [apply default]
+    run $ rm -f /tmp/cgr_manifest.yaml

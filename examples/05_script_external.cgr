@@ -1,0 +1,24 @@
+--- External Script Demo ---
+# Demonstrates the script keyword for running external scripts.
+# Note: the script file must exist at validate time, so we ship
+# a helper script alongside this example.
+set work_dir = "/tmp/cgr-script-demo"
+
+target "local" local:
+
+  [prepare workspace]:
+    skip if $ test -d ${work_dir}
+    run $ mkdir -p ${work_dir}
+
+  [run setup]:
+    first [prepare workspace]
+    script "05_setup.sh"
+    timeout 30s
+
+  [verify setup]:
+    first [run setup]
+    run $ test -d ${work_dir}/data && echo "OK: data directory created"
+
+  [cleanup]:
+    first [verify setup]
+    run $ rm -rf ${work_dir} && echo "Cleaned up"

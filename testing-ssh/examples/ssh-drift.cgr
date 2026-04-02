@@ -1,0 +1,33 @@
+--- SSH drift detection ---
+
+set deploy_user = "deploy"
+set target_host = "target"
+
+target "webserver" ssh ${deploy_user}@${target_host}:
+
+  [create config dir] as root:
+    skip if $ test -d /etc/myservice
+    run    $ mkdir -p /etc/myservice
+
+  [write main config] as root:
+    first [create config dir]
+    skip if $ test -f /etc/myservice/main.conf
+    run    $ printf 'listen=0.0.0.0:8080\nworkers=4\n' > /etc/myservice/main.conf
+
+  [write tls config] as root:
+    first [create config dir]
+    skip if $ test -f /etc/myservice/tls.conf
+    run    $ printf 'cert=/etc/ssl/cert.pem\nkey=/etc/ssl/key.pem\n' > /etc/myservice/tls.conf
+
+  [write log config] as root:
+    first [create config dir]
+    skip if $ test -f /etc/myservice/logging.conf
+    run    $ printf 'level=info\nfile=/var/log/myservice.log\n' > /etc/myservice/logging.conf
+
+  [create data dir] as root:
+    skip if $ test -d /var/lib/myservice
+    run    $ mkdir -p /var/lib/myservice && chown deploy:deploy /var/lib/myservice
+
+  verify "configuration complete":
+    first [write main config], [write tls config], [write log config], [create data dir]
+    run $ test -f /etc/myservice/main.conf && test -f /etc/myservice/tls.conf && test -d /var/lib/myservice

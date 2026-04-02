@@ -1,0 +1,14 @@
+# security/selinux_port — Allow a service to bind to a non-standard port in SELinux
+#
+# Parameters:
+#   type    (required) — SELinux port type, e.g. "http_port_t"
+#   proto   (optional) — protocol, default "tcp"
+#   port    (required) — port number, e.g. "8080"
+
+template selinux_port(type, port, proto = "tcp"):
+  version 1.0.0
+  description "SELinux allow ${type} on ${proto}/${port}"
+
+  skip if $ semanage port -l 2>/dev/null | grep "${type}" | grep -q "${port}"
+  run    $ semanage port -a -t "${type}" -p "${proto}" "${port}"
+  as root, timeout 30s

@@ -1,0 +1,19 @@
+# docker/pull_image — Pull a Docker image with optional registry authentication
+#
+# Parameters:
+#   image      (required) — full image reference, e.g. "nginx:latest"
+#   registry   (optional) — registry URL for login, default "" (Docker Hub)
+#   reg_user   (optional) — registry username, default ""
+#   reg_pass   (optional) — registry password, default ""
+
+template pull_image(image, registry = "", reg_user = "", reg_pass = ""):
+  version 1.0.0
+  description "Pull Docker image ${image}"
+
+  [registry login] timeout 30s:
+    when "${reg_user} != ''"
+    run $ echo "${reg_pass}" | docker login "${registry}" -u "${reg_user}" --password-stdin
+
+  first [registry login]
+  run    $ docker pull "${image}"
+  timeout 5m, retry 2x wait 10s

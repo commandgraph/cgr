@@ -1,0 +1,137 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# CommandGraph DSL — Example: Full Nginx setup on a Debian host
+# ═══════════════════════════════════════════════════════════════════════════
+# File extension: .cg
+#
+# Usage:
+#   cgr plan   nginx_setup.cg          # show what would happen
+#   cgr apply  nginx_setup.cg          # execute it
+#   cgr apply  nginx_setup.cg --dry-run
+#   cgr dot    nginx_setup.cg          # emit Graphviz DOT
+#
+# The mental model: start with a node, describe what you need on it.
+# Dependencies are explicit — if B needs A, say so.  The engine figures
+# out the execution order.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ─── Variables ──────────────────────────────────────────────────────────
+# Referenced in commands and strings as ${var_name}
+
+var app_user     = "deploy"
+var nginx_port   = "80"
+var doc_root     = "/var/www/html"
+var worker_conns = "1024"
+var site_name    = "default"
+
+# ─── The target machine ────────────────────────────────────────────────
+# Everything inside this block runs on web-1 via SSH.
+
+node "web-1" {
+  via ssh host="10.0.1.5" user="${app_user}" port=22
+
+  # ── Package management ──────────────────────────────────────────────
+  # A group shares properties across its children (here: as root).
+
+  group packages as root on_fail stop {
+
+    resource update_apt_cache {
+      description "Refresh the APT package index"
+      check   `find /var/lib/apt/lists -maxdepth 1 -mmin -60 | grep -q .`
+      run     `apt-get update -y`
+      timeout 120
+      retry 2 delay 10
+    }
+
+    resource install_nginx {
+      description "Install the Nginx package"
+      needs update_apt_cache
+      check `dpkg -l nginx 2>/dev/null | grep -q '^ii'`
+      run   `apt-get install -y nginx`
+      timeout 180
+      retry 1 delay 5
+    }
+
+    resource install_curl {
+      description "Install curl for smoke-testing"
+      needs update_apt_cache
+      check `command -v curl >/dev/null 2>&1`
+      run   `apt-get install -y curl`
+      timeout 60
+      on_fail warn
+    }
+  }
+
+  # ── Firewall ────────────────────────────────────────────────────────
+
+  resource open_firewall {
+    description "Allow HTTP on port ${nginx_port}"
+    check `ufw status | grep -q '${nginx_port}/tcp.*ALLOW'`
+    run   `ufw allow ${nginx_port}/tcp`
+    as root
+    on_fail warn
+  }
+
+  # ── Configuration ───────────────────────────────────────────────────
+
+  resource create_docroot {
+    description "Ensure document root exists"
+    needs install_nginx
+    check `test -d ${doc_root}`
+    run   `mkdir -p ${doc_root}`
+    as root
+  }
+
+  resource deploy_index {
+    description "Drop a basic index.html"
+    needs create_docroot
+    check `test -f ${doc_root}/index.html`
+    run   `echo '<h1>CommandGraph says hello</h1>' > ${doc_root}/index.html`
+    as root
+  }
+
+  resource configure_workers {
+    description "Set worker_connections to ${worker_conns}"
+    needs install_nginx
+    check `grep -q 'worker_connections ${worker_conns}' /etc/nginx/nginx.conf`
+    run   `sed -i 's/worker_connections .*/worker_connections ${worker_conns};/' /etc/nginx/nginx.conf`
+    as root
+  }
+
+  resource validate_config {
+    description "Run nginx -t"
+    needs configure_workers, deploy_index
+    check `false`
+    run   `nginx -t`
+    as root
+    on_fail stop
+  }
+
+  # ── Service ─────────────────────────────────────────────────────────
+
+  resource enable_nginx {
+    description "Enable Nginx on boot"
+    needs install_nginx
+    check `systemctl is-enabled nginx 2>/dev/null | grep -q enabled`
+    run   `systemctl enable nginx`
+    as root
+  }
+
+  resource start_nginx {
+    description "Start or reload Nginx"
+    needs validate_config, enable_nginx, open_firewall
+    check `systemctl is-active nginx 2>/dev/null | grep -q active`
+    run   `systemctl reload-or-restart nginx`
+    as root
+    on_fail stop
+  }
+
+  # ── Verification ────────────────────────────────────────────────────
+  # verify is a special resource: always runs (no check), terminal node.
+
+  verify "HTTP 200 on localhost:${nginx_port}" {
+    needs start_nginx, install_curl
+    run   `curl -sf -o /dev/null -w '%{http_code}' http://localhost:${nginx_port}/ | grep -q 200`
+    retry 3 delay 2
+    on_fail warn
+  }
+}

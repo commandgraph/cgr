@@ -1,0 +1,24 @@
+# tls/certbot — Install Certbot and obtain a TLS certificate
+#
+# Parameters:
+#   domain  (required) — domain name, e.g. "example.com"
+#   email   (optional) — admin email for Let's Encrypt
+
+template certbot(domain, email = "admin@${domain}"):
+  version 1.0.0
+  description "Obtain TLS certificate for ${domain}"
+
+  [install certbot] as root, timeout 2m:
+
+    [ensure apt] as root, timeout 2m:
+      skip if $ find /var/lib/apt/lists -mmin -60 | grep -q .
+      run    $ apt-get update -y
+
+    first [ensure apt]
+    skip if $ command -v certbot >/dev/null 2>&1
+    run    $ apt-get install -y certbot python3-certbot-nginx
+
+  first [install certbot]
+  skip if $ test -f /etc/letsencrypt/live/${domain}/fullchain.pem
+  run    $ certbot certonly --nginx -d ${domain} --non-interactive --agree-tos -m ${email}
+  as root, timeout 2m, retry 1x wait 10s

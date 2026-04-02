@@ -1,0 +1,19 @@
+# firewall/firewalld_allow_port — Open a port in firewalld (RHEL/Fedora)
+#
+# Parameters:
+#   port    (required) — port number, e.g. "80"
+#   proto   (optional) — protocol, default "tcp"
+#   zone    (optional) — firewalld zone, default "public"
+
+template firewalld_allow_port(port, proto = "tcp", zone = "public"):
+  version 1.0.0
+  description "Allow ${proto}/${port} in firewalld (${zone})"
+
+  [ensure running] as root, timeout 15s:
+    skip if $ systemctl is-active firewalld >/dev/null 2>&1
+    run    $ systemctl start firewalld
+
+  first [ensure running]
+  skip if $ firewall-cmd --zone=${zone} --list-ports | grep -q "${port}/${proto}"
+  run    $ firewall-cmd --zone=${zone} --add-port=${port}/${proto} --permanent && firewall-cmd --reload
+  as root, timeout 15s

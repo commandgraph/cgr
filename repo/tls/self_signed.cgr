@@ -1,0 +1,32 @@
+# tls/self_signed — Generate a self-signed TLS certificate
+#
+# Parameters:
+#   domain    (required) — CN / subject alt name (e.g. "myapp.internal")
+#   cert_dir  (optional) — directory to write cert+key, default "/etc/ssl/private"
+#   days      (optional) — validity period in days, default "3650" (10 years)
+#   key_bits  (optional) — RSA key size, default "4096"
+
+template self_signed(domain, cert_dir = "/etc/ssl/private", days = "3650", key_bits = "4096"):
+  version 1.0.0
+  description "Generate self-signed cert for ${domain}"
+
+  [ensure dir] as root, timeout 10s:
+    skip if $ test -d "${cert_dir}"
+    run $ mkdir -p "${cert_dir}" && chmod 700 "${cert_dir}"
+
+  [generate cert] as root, timeout 1m:
+    first [ensure dir]
+    skip if $ test -f "${cert_dir}/${domain}.crt"
+    run $ openssl req -x509 -nodes -newkey rsa:${key_bits} \
+        -keyout "${cert_dir}/${domain}.key" \
+        -out "${cert_dir}/${domain}.crt" \
+        -days ${days} \
+        -subj "/CN=${domain}" \
+        -addext "subjectAltName=DNS:${domain}"
+
+  [set permissions] as root, timeout 10s:
+    first [generate cert]
+    run $ chmod 600 "${cert_dir}/${domain}.key" && chmod 644 "${cert_dir}/${domain}.crt"
+
+  run $ openssl x509 -in "${cert_dir}/${domain}.crt" -noout -subject -dates
+  collect "cert_info"

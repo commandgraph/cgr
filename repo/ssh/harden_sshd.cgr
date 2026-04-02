@@ -1,0 +1,34 @@
+# ssh/harden_sshd — Harden SSH daemon configuration
+#
+# Disables root login, password authentication, and empty passwords.
+# Restarts sshd to apply changes.
+#
+# Parameters:
+#   port            (optional) — SSH listen port, default "22"
+#   allow_users     (optional) — AllowUsers directive value, default "" (unrestricted)
+
+template harden_sshd(port = "22", allow_users = ""):
+  version 1.0.0
+  description "Harden sshd configuration"
+
+  [backup config] as root, timeout 15s:
+    skip if $ test -f /etc/ssh/sshd_config.bak.cgr
+    run    $ cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.cgr
+
+  [apply hardening] as root, timeout 30s:
+    first [backup config]
+    line "PermitRootLogin no" in /etc/ssh/sshd_config, replacing "^#?PermitRootLogin"
+    line "PasswordAuthentication no" in /etc/ssh/sshd_config, replacing "^#?PasswordAuthentication"
+    line "PermitEmptyPasswords no" in /etc/ssh/sshd_config, replacing "^#?PermitEmptyPasswords"
+    line "Port ${port}" in /etc/ssh/sshd_config, replacing "^#?Port"
+    validate $ sshd -t
+
+  [set allow users] as root, timeout 15s:
+    first [apply hardening]
+    when "${allow_users} != ''"
+    line "AllowUsers ${allow_users}" in /etc/ssh/sshd_config, replacing "^AllowUsers"
+    validate $ sshd -t
+
+  first [apply hardening]
+  run    $ sshd -t && systemctl reload sshd
+  as root, timeout 30s, if fails stop

@@ -1,0 +1,41 @@
+--- Combined Features Demo ---
+# A CI-like pipeline combining: assert, flag when, env when,
+# on success/failure set, retry backoff, collect, and reduce.
+
+set work_dir = "/tmp/cgr-combined-demo"
+set enable_debug = ""
+set coverage = ""
+set test_runner = "unittest"
+
+target "local" local:
+
+  [validate environment]:
+    assert $ command -v bash, "bash is required"
+    assert $ test -d /tmp, "/tmp must exist"
+    run $ echo "Environment validated"
+
+  [build]:
+    first [validate environment]
+    run $ mkdir -p ${work_dir} && echo "built" > ${work_dir}/app.bin
+    flag "--debug" when "${enable_debug} != ''"
+    env DEBUG_MODE = "1" when "${enable_debug} != ''"
+
+  [detect test runner]:
+    first [build]
+    run $ command -v pytest
+    on success: set test_runner = "pytest"
+    on failure: set test_runner = "unittest"
+    if fails ignore
+
+  [run tests]:
+    first [detect test runner]
+    run $ echo "Tests passed (using ${test_runner})" && echo "PASS"
+    until "PASS"
+    retry 3x backoff 1s..4s
+    collect "test_result"
+
+  [generate report]:
+    first [run tests]
+    reduce "test_result"
+    run $ echo "Pipeline complete"
+    collect "final_report"

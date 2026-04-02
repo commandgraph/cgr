@@ -1,0 +1,18 @@
+# dnf/install_package — Install a package via DNF (RHEL 8+/Fedora)
+#
+# Parameters:
+#   name     (required) — package name, e.g. "nginx"
+#   version  (optional) — pin to version, default "" (latest)
+
+template install_package(name, version = ""):
+  version 1.0.0
+  description "Install ${name} via DNF"
+
+  [refresh metadata] as root, timeout 2m, retry 2x wait 10s:
+    skip if $ find /var/cache/dnf -maxdepth 1 -name "expired_repos.json" -mmin -60 2>/dev/null | grep -q . || test "$(find /var/cache/dnf -maxdepth 2 -name "repomd.xml" -mmin -60 2>/dev/null | wc -l)" -gt 0
+    run    $ dnf makecache
+
+  first [refresh metadata]
+  skip if $ rpm -q "${name}" >/dev/null 2>&1
+  run    $ dnf install -y "${name}"
+  as root, timeout 3m, retry 1x wait 5s

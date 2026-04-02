@@ -1,0 +1,33 @@
+# service/create_unit — Write and enable a systemd service unit
+#
+# Parameters:
+#   name        (required) — service name (without .service suffix)
+#   unit_file   (required) — local path to the .service unit file
+#   enable      (optional) — "yes" to enable at boot, default "yes"
+#   start       (optional) — "yes" to start immediately, default "yes"
+
+template create_unit(name, unit_file, enable = "yes", start = "yes"):
+  version 1.0.0
+  description "Install systemd unit ${name}"
+
+  [write unit] as root, timeout 30s:
+    put "${unit_file}" > "/etc/systemd/system/${name}.service", mode 0644
+
+  [reload daemon] as root, timeout 15s:
+    first [write unit]
+    run $ systemctl daemon-reload
+
+  [enable unit] as root, timeout 15s:
+    first [reload daemon]
+    when "${enable} == 'yes'"
+    skip if $ systemctl is-enabled "${name}" >/dev/null 2>&1
+    run $ systemctl enable "${name}"
+
+  [start unit] as root, timeout 30s:
+    first [reload daemon]
+    when "${start} == 'yes'"
+    skip if $ systemctl is-active "${name}" >/dev/null 2>&1
+    run $ systemctl start "${name}"
+
+  run $ systemctl status "${name}" --no-pager
+  collect "unit_status"

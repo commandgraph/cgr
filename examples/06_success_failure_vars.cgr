@@ -1,0 +1,32 @@
+--- Success and Failure Variable Binding Demo ---
+set work_dir = "/tmp/cgr-onsuccess-demo"
+set has_pigz = ""
+set has_python = ""
+
+target "local" local:
+
+  [detect compression]:
+    run $ command -v pigz
+    on success: set has_pigz = "yes"
+    on failure: set has_pigz = "no"
+    if fails ignore
+
+  [compress with pigz]:
+    first [detect compression]
+    when has_pigz == "yes"
+    run $ echo "Using pigz for parallel compression"
+
+  [compress with gzip]:
+    first [detect compression]
+    when has_pigz == "no"
+    run $ echo "Using gzip (pigz not available)"
+
+  [detect python]:
+    run $ command -v python3
+    on success: set has_python = "yes"
+    on failure: set has_python = "no"
+    if fails ignore
+
+  [report]:
+    first [compress with pigz], [compress with gzip], [detect python]
+    run $ echo "pigz=${has_pigz} python3=${has_python}"

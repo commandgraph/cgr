@@ -1,0 +1,23 @@
+# file/write_config — Write a config file from a local source file (with variable interpolation)
+#
+# Parameters:
+#   src     (required) — source file path (relative to .cgr file or absolute)
+#   dest    (required) — destination path on the target
+#   mode    (optional) — file permissions, default "0644"
+#   owner   (optional) — file owner (user:group), default "" (leave as-is)
+
+template write_config(src, dest, mode = "0644", owner = ""):
+  version 1.0.0
+  description "Write config to ${dest}"
+
+  [write file] as root, timeout 1m:
+    content from ${src} > ${dest}
+    run $ chmod ${mode} "${dest}"
+
+  [set owner] as root, timeout 15s:
+    first [write file]
+    when "${owner} != ''"
+    run $ chown "${owner}" "${dest}"
+
+  first [write file]
+  run $ test -f "${dest}"

@@ -1,0 +1,25 @@
+# backup/restic_init — Initialize a restic backup repository
+#
+# Supports local, S3, SFTP, and REST server backends.
+# The repository password is read from a password file for security.
+#
+# Parameters:
+#   repo          (required) — repository path, e.g. "/backups/myrepo", "s3:s3.amazonaws.com/bucket"
+#   password_file (required) — path to file containing the repository password
+#   aws_key       (optional) — AWS access key for S3 backend, default ""
+#   aws_secret    (optional) — AWS secret key for S3 backend, default ""
+
+template restic_init(repo, password_file, aws_key = "", aws_secret = ""):
+  version 1.0.0
+  description "Initialize restic repo at ${repo}"
+
+  [ensure password file] timeout 10s:
+    skip if $ test -f "${password_file}"
+    run    $ echo "ERROR: Password file ${password_file} does not exist" && exit 1
+    if fails stop
+
+  first [ensure password file]
+  skip if $ RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" restic cat config >/dev/null 2>&1
+  run    $ RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" restic init
+  timeout 2m
+  collect "init_result"

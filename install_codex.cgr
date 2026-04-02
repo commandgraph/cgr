@@ -1,0 +1,21 @@
+--- Install Codex ---
+
+using apt/install_package
+
+target "local" local:
+  [install Codex prerequisites] from apt/install_package:
+    name = "npm bubblewrap"
+
+  [install Codex] as root, timeout 5m, retry 1x wait 10s:
+    first [install Codex prerequisites]
+    skip if $ command -v codex >/dev/null 2>&1
+    run $ npm install -g @openai/codex
+
+  [update Codex] as root, timeout 5m, retry 1x wait 10s:
+    first [install Codex prerequisites]
+    skip if $ ! command -v codex >/dev/null 2>&1
+    run $ npm install -g @openai/codex
+
+  verify "codex available":
+    first [install Codex], [update Codex]
+    run $ command -v codex && codex --version

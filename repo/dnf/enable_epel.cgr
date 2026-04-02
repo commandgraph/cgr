@@ -1,0 +1,12 @@
+# dnf/enable_epel — Enable EPEL repository (RHEL/CentOS/Rocky/Alma)
+#
+# Installs the epel-release package to enable the Extra Packages for
+# Enterprise Linux repository.
+
+template enable_epel():
+  version 1.0.0
+  description "Enable EPEL repository"
+
+  skip if $ rpm -q epel-release >/dev/null 2>&1
+  run    $ dnf install -y epel-release
+  as root, timeout 2m, retry 1x wait 5s

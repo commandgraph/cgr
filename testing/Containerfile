@@ -1,0 +1,30 @@
+FROM python:3.12-slim
+
+LABEL description="CommandGraph DSL test environment"
+
+# No external dependencies needed — just Python 3.9+
+RUN apt-get update -qq && apt-get install -y -qq curl procps && rm -rf /var/lib/apt/lists/*
+
+# Install the engine
+COPY cgr.py /opt/cgr/cgr.py
+RUN chmod +x /opt/cgr/cgr.py \
+    && ln -s /opt/cgr/cgr.py /usr/local/bin/cgr
+
+# Install the template repo
+COPY repo/ /opt/cgr/repo/
+RUN cgr repo index --repo /opt/cgr/repo
+
+# Install example files
+COPY examples/ /opt/cgr/examples/
+
+# Install demo scripts
+COPY demos/ /opt/cgr/demos/
+RUN chmod +x /opt/cgr/demos/*.sh
+
+# Working directory for test runs
+WORKDIR /workspace
+
+ENV CGR_REPO=/opt/cgr/repo
+ENV TERM=xterm-256color
+
+ENTRYPOINT ["/bin/bash"]

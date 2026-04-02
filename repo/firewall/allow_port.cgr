@@ -1,0 +1,12 @@
+# firewall/allow_port — Open a port in UFW
+#
+# Parameters:
+#   port   (required) — port number, e.g. "80"
+#   proto  (optional) — protocol, default "tcp"
+
+template allow_port(port, proto = "tcp"):
+  version 1.0.0
+  description "Allow ${proto}/${port} through firewall"
+  skip if $ ufw status | grep -q '${port}/${proto}.*ALLOW'
+  run    $ ufw allow ${port}/${proto}
+  as root, timeout 15s, if fails warn

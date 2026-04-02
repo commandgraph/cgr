@@ -1,0 +1,37 @@
+# service/timer_unit — Write and enable a systemd timer + service pair
+#
+# Parameters:
+#   name          (required) — timer/service base name (without suffix)
+#   service_file  (required) — local path to the .service unit file
+#   timer_file    (required) — local path to the .timer unit file
+#   enable        (optional) — "yes" to enable timer at boot, default "yes"
+#   start         (optional) — "yes" to start timer immediately, default "yes"
+
+template timer_unit(name, service_file, timer_file, enable = "yes", start = "yes"):
+  version 1.0.0
+  description "Install systemd timer ${name}"
+
+  [write service unit] as root, timeout 30s:
+    put "${service_file}" > "/etc/systemd/system/${name}.service", mode 0644
+
+  [write timer unit] as root, timeout 30s:
+    put "${timer_file}" > "/etc/systemd/system/${name}.timer", mode 0644
+
+  [reload daemon] as root, timeout 15s:
+    first [write service unit], [write timer unit]
+    run $ systemctl daemon-reload
+
+  [enable timer] as root, timeout 15s:
+    first [reload daemon]
+    when "${enable} == 'yes'"
+    skip if $ systemctl is-enabled "${name}.timer" >/dev/null 2>&1
+    run $ systemctl enable "${name}.timer"
+
+  [start timer] as root, timeout 30s:
+    first [reload daemon]
+    when "${start} == 'yes'"
+    skip if $ systemctl is-active "${name}.timer" >/dev/null 2>&1
+    run $ systemctl start "${name}.timer"
+
+  run $ systemctl status "${name}.timer" --no-pager
+  collect "timer_status"

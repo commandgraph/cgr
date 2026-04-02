@@ -1,0 +1,16 @@
+# user/add_to_group — Add a user to a supplementary group
+#
+# Parameters:
+#   username  (required) — login name of the user
+#   group     (required) — group to add the user to
+
+template add_to_group(username, group):
+  version 1.0.0
+  description "Add ${username} to group ${group}"
+
+  [add to group] as root, timeout 15s:
+    skip if $ id -nG "${username}" | grep -qw "${group}"
+    run    $ usermod -aG "${group}" "${username}"
+
+  run $ id "${username}"
+  collect "user_groups"

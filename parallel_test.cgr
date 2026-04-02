@@ -1,0 +1,61 @@
+set servers = "web-1,web-2,web-3,web-4"
+set version = "2.4.1"
+
+target "deploy" local:
+  [build release]:
+    skip if $ test -f /tmp/cg_par_test/release.tar.gz
+    run $ mkdir -p /tmp/cg_par_test && echo "built" > /tmp/cg_par_test/release.tar.gz
+
+  [configure everything]:
+    first [build release]
+    run $ echo "all configs written"
+    parallel 2 at a time:
+      [write config a]:
+        run $ echo "config_a" > /tmp/cg_par_test/a.conf
+
+      [write config b]:
+        run $ echo "config_b" > /tmp/cg_par_test/b.conf
+
+      [write config c]:
+        run $ echo "config_c" > /tmp/cg_par_test/c.conf
+
+
+  [fetch package]:
+    first [build release]
+    race:
+      [try local cache]:
+        run $ test -f /tmp/cg_par_test/release.tar.gz && echo "cache hit"
+
+      [try remote mirror]:
+        run $ echo "downloaded from mirror"
+
+
+  [distribute to fleet]:
+    first [build release]
+    each server in ${servers}, 2 at a time:
+      [upload to ${server}]:
+        run $ echo "uploading to ${server}" > /tmp/cg_par_test/${server}.uploaded
+
+
+  [rolling deploy]:
+    first [distribute to fleet]
+    first [configure everything]
+    first [fetch package]
+    stage "rollout":
+      phase "canary" 1 from ${servers}:
+        [deploy to ${server}]:
+          run $ echo "deployed ${version} to ${server}" > /tmp/cg_par_test/${server}.deployed
+
+        verify "canary healthy":
+          run $ test -f /tmp/cg_par_test/web-1.deployed
+
+      phase "remaining" rest from ${servers}:
+        each server, 2 at a time:
+          [deploy to ${server}]:
+            run $ echo "deployed ${version} to ${server}" > /tmp/cg_par_test/${server}.deployed
+
+
+  verify "all servers deployed":
+    first [rolling deploy]
+    run $ ls /tmp/cg_par_test/*.deployed | wc -l | grep -q 4
+

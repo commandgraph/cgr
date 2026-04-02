@@ -1,0 +1,43 @@
+--- Basic pipeline demo ---
+
+set app_name  = "myapp"
+set build_dir = "/workspace/build"
+
+target "local" local:
+
+  [create build dir]:
+    skip if $ test -d ${build_dir}
+    run    $ mkdir -p ${build_dir}
+
+  [download source]:
+    first [create build dir]
+    skip if $ test -f ${build_dir}/source.tar.gz
+    run    $ echo "downloaded" > ${build_dir}/source.tar.gz
+
+  [compile binary]:
+    first [download source]
+    skip if $ test -f ${build_dir}/${app_name}
+    run    $ echo "compiled" > ${build_dir}/${app_name} && chmod +x ${build_dir}/${app_name}
+
+  [write config]:
+    first [create build dir]
+    skip if $ test -f ${build_dir}/${app_name}.conf
+    run    $ printf 'port=8080\nworkers=4\nlog_level=info\n' > ${build_dir}/${app_name}.conf
+
+  [install binary] as root:
+    first [compile binary]
+    skip if $ test -f /usr/local/bin/${app_name}
+    run    $ cp ${build_dir}/${app_name} /usr/local/bin/${app_name}
+
+  [install config] as root:
+    first [write config]
+    skip if $ test -f /etc/${app_name}.conf
+    run    $ cp ${build_dir}/${app_name}.conf /etc/${app_name}.conf
+
+  [create log dir] as root:
+    skip if $ test -d /var/log/${app_name}
+    run    $ mkdir -p /var/log/${app_name}
+
+  verify "installation complete":
+    first [install binary], [install config], [create log dir]
+    run $ test -f /usr/local/bin/${app_name} && test -f /etc/${app_name}.conf && test -d /var/log/${app_name}

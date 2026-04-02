@@ -1,0 +1,17 @@
+# apt/upgrade_all_packages — Update all packages via APT
+#
+# Refreshes the apt cache (skipped if updated within the last hour),
+# then runs a full apt-get upgrade.
+
+template upgrade_all_packages():
+  version 1.1.0
+  description "Update all packages using apt"
+
+  [update cache] as root, timeout 2m, retry 2x wait 10s:
+    skip if $ find /var/lib/apt/lists -maxdepth 1 -mmin -60 | grep -q .
+    run    $ apt-get update -y
+
+  first [update cache]
+  run    $ apt-get upgrade -y
+  as root, timeout 5m, retry 1x wait 5s
+  collect "upgrade_result"

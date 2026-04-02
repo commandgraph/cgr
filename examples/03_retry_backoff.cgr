@@ -1,0 +1,22 @@
+--- Retry and Backoff Demo ---
+set work_dir = "/tmp/cgr-retry-demo"
+
+target "local" local:
+
+  [simulate slow service]:
+    run $ mkdir -p ${work_dir} && echo "starting" > ${work_dir}/status.txt && (sleep 3 && echo "ready" > ${work_dir}/status.txt) &
+
+  [wait for ready]:
+    first [simulate slow service]
+    run $ cat ${work_dir}/status.txt
+    until "ready"
+    retry 10x backoff 1s..8s jitter 20%
+    timeout 30s
+
+  [use service]:
+    first [wait for ready]
+    run $ echo "Service is ready, proceeding with work"
+
+  [cleanup]:
+    first [use service]
+    run $ rm -rf ${work_dir} && echo "Cleaned up"

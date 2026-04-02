@@ -1,0 +1,18 @@
+# file/set_sysctl — Set a kernel parameter persistently
+#
+# Parameters:
+#   key    (required) — sysctl key, e.g. "net.core.somaxconn"
+#   value  (required) — desired value, e.g. "65535"
+
+template set_sysctl(key, value):
+  version 1.0.0
+  description "Set sysctl ${key} = ${value}"
+
+  [persist config] as root, timeout 15s:
+    skip if $ grep -q "^${key}\s*=" /etc/sysctl.d/99-cgr.conf 2>/dev/null && grep -q "^${key}\s*=\s*${value}$" /etc/sysctl.d/99-cgr.conf
+    run    $ grep -v "^${key}" /etc/sysctl.d/99-cgr.conf > /tmp/cgr-sysctl.tmp 2>/dev/null; echo "${key} = ${value}" >> /tmp/cgr-sysctl.tmp && mv /tmp/cgr-sysctl.tmp /etc/sysctl.d/99-cgr.conf
+
+  first [persist config]
+  skip if $ test "$(sysctl -n ${key} 2>/dev/null)" = "${value}"
+  run    $ sysctl -w "${key}=${value}"
+  as root, timeout 15s

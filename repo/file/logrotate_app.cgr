@@ -1,0 +1,24 @@
+# file/logrotate_app — Add logrotate configuration for a custom application
+#
+# Parameters:
+#   app_name   (required) — application name (used as config filename)
+#   log_path   (required) — log file glob, e.g. "/var/log/myapp/*.log"
+#   retention  (optional) — number of rotated files to keep, default "14"
+#   frequency  (optional) — rotation frequency, default "daily"
+
+template logrotate_app(app_name, log_path, retention = "14", frequency = "daily"):
+  version 1.0.0
+  description "Configure logrotate for ${app_name}"
+
+  skip if $ test -f /etc/logrotate.d/${app_name}
+  content > /etc/logrotate.d/${app_name}:
+    ${log_path} {
+      ${frequency}
+      rotate ${retention}
+      missingok
+      notifempty
+      compress
+      delaycompress
+      copytruncate
+    }
+  as root, timeout 15s

@@ -1,0 +1,20 @@
+# file/ensure_line — Ensure a line is present in a config file
+#
+# Parameters:
+#   text    (required) — the exact line to ensure
+#   file    (required) — target file path
+#   reload  (optional) — shell command to run after adding the line (e.g. sysctl -p), default ""
+
+template ensure_line(text, file, reload = ""):
+  version 1.0.0
+  description "Ensure '${text}' in ${file}"
+
+  [add line] as root, timeout 30s:
+    line "${text}" in ${file}
+
+  [reload after change] as root, timeout 1m:
+    first [add line]
+    when "${reload} != ''"
+    run $ ${reload}
+
+  run $ grep -qxF "${text}" "${file}"

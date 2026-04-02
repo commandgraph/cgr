@@ -1,0 +1,54 @@
+set app_user = "deploy"
+set nginx_port = "80"
+set doc_root = "/var/www/html"
+set worker_conns = "1024"
+
+target "web-1" ssh ${app_user}@10.0.1.5:
+  [update apt cache] as root, timeout 2m, retry 2x:
+    skip if $ find /var/lib/apt/lists -maxdepth 1 -mmin -60 | grep -q .
+    run $ apt-get update -y
+
+  [install packages] as root, timeout 3m, retry 1x:
+    first [update apt cache]
+    skip if $ for pkg in nginx curl; do dpkg -l "$pkg" 2>/dev/null | grep -q '^ii' || exit 1; done
+    run $ apt-get install -y nginx curl
+
+  [open firewall] as root, if fails warn:
+    skip if $ ufw status | grep -q '${nginx_port}/tcp.*ALLOW'
+    run $ ufw allow ${nginx_port}/tcp
+
+  [create docroot] as root:
+    first [install packages]
+    skip if $ test -d ${doc_root}
+    run $ mkdir -p ${doc_root}
+
+  [deploy index page] as root:
+    first [create docroot]
+    skip if $ test -f ${doc_root}/index.html
+    run $ echo '<h1>CommandGraph says hello</h1>' > ${doc_root}/index.html
+
+  [configure workers] as root:
+    first [install packages]
+    skip if $ grep -q 'worker_connections ${worker_conns}' /etc/nginx/nginx.conf
+    run $ sed -i 's/worker_connections .*/worker_connections ${worker_conns};/' /etc/nginx/nginx.conf
+
+  [validate config] as root:
+    first [configure workers]
+    first [deploy index page]
+    always run $ nginx -t
+
+  [enable nginx] as root:
+    first [install packages]
+    skip if $ systemctl is-enabled nginx 2>/dev/null | grep -q enabled
+    run $ systemctl enable nginx
+
+  [start nginx] as root:
+    first [validate config]
+    first [enable nginx]
+    first [open firewall]
+    skip if $ systemctl is-active nginx 2>/dev/null | grep -q active
+    run $ systemctl reload-or-restart nginx
+
+  verify "HTTP 200 on localhost:${nginx_port}":
+    first [start nginx], [install packages]
+    run $ curl -sf -o /dev/null -w '%{http_code}' http://localhost:${nginx_port}/ | grep -q 200

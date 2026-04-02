@@ -1,0 +1,54 @@
+--- revoke local SSH key from remote hosts ---
+#
+# Removes your local public key from each host's ~/.ssh/authorized_keys.
+# Each host is modeled as its own SSH target so the DAG stays visible and resumable.
+#
+# Usage:
+#   cgr apply revoke_ssh_key.cgr --set hosts="192.168.1.10,192.168.1.11"
+#   cgr apply revoke_ssh_key.cgr --set hosts="web01,web02,db01" --set ssh_user=admin
+#   cgr apply revoke_ssh_key.cgr --set hosts="host1" --set ssh_port=2222
+#
+# Variables:
+#   hosts     — comma-separated list of hostnames or IPs (required)
+#   ssh_user  — remote user (default: $USER from environment)
+#   ssh_port  — SSH port (default: 22)
+
+set hosts           = "192.168.1.10,192.168.1.11,192.168.1.12"
+set ssh_user        = env("USER", "ubuntu")
+set ssh_port        = "22"
+set staged_key_file = "/tmp/cgr_revoke_key.pub"
+
+target "local" local:
+
+  [stage local key]:
+    run    $ key="$HOME/.ssh/id_ed25519.pub"; \
+             test -f "$key" || key="$HOME/.ssh/id_rsa.pub"; \
+             test -f "$key" || { echo "No public key found in ~/.ssh/. Nothing to revoke."; exit 1; }; \
+             awk '{print $1" "$2}' "$key" > ${staged_key_file}; \
+             echo "Key staged at ${staged_key_file}"
+    timeout 5s
+
+each host in ${hosts}:
+  target "${host}" ssh ${ssh_user}@${host}:${ssh_port}, after "local":
+
+    [copy staged key]:
+      put ${staged_key_file} > /tmp/cgr_revoke_key.pub
+      timeout 15s
+
+    [revoke key]:
+      first [copy staged key]
+      skip if $ ! test -f ~/.ssh/authorized_keys || ! grep -qF "$(cat /tmp/cgr_revoke_key.pub)" ~/.ssh/authorized_keys
+      run    $ grep -vF "$(cat /tmp/cgr_revoke_key.pub)" ~/.ssh/authorized_keys > /tmp/.ak_tmp && mv /tmp/.ak_tmp ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && echo "Key removed from ${host}"
+      timeout 30s
+
+    [verify key revoked]:
+      first [revoke key]
+      run    $ ! grep -qF "$(cat /tmp/cgr_revoke_key.pub)" ~/.ssh/authorized_keys && echo "REVOKED: ${host}"
+      collect "host_result"
+      timeout 15s
+
+target "summary" local, after each:
+
+  [show summary]:
+    reduce "host_result"
+    collect "revoke_summary"

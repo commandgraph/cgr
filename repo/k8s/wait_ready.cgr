@@ -1,0 +1,26 @@
+# k8s/wait_ready — Wait for a Kubernetes resource to reach ready state
+#
+# Parameters:
+#   resource    (required) — resource type and name (e.g. "deployment/myapp")
+#   namespace   (optional) — Kubernetes namespace, default "default"
+#   timeout     (optional) — wait timeout (e.g. "120s"), default "120s"
+#   kubeconfig  (optional) — path to kubeconfig file, default ""
+
+template wait_ready(resource, namespace = "default", timeout = "120s", kubeconfig = ""):
+  version 1.0.0
+  description "Wait for ${resource} to be ready"
+
+  [assert kubectl]:
+    assert $ which kubectl, "kubectl must be installed"
+
+  [wait with kubeconfig]:
+    first [assert kubectl]
+    when "${kubeconfig} != ''"
+    run $ kubectl rollout status "${resource}" --namespace "${namespace}" --timeout "${timeout}" --kubeconfig "${kubeconfig}"
+    collect "rollout_status"
+
+  [wait default]:
+    first [assert kubectl]
+    when "${kubeconfig} == ''"
+    run $ kubectl rollout status "${resource}" --namespace "${namespace}" --timeout "${timeout}"
+    collect "rollout_status"

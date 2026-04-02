@@ -1,0 +1,21 @@
+# pkg/pin_version — Pin an APT package to a specific version (prevents unintended upgrades)
+#
+# Parameters:
+#   name      (required) — package name
+#   version   (required) — version string to pin (e.g. "2.4.54-2")
+#   priority  (optional) — APT pin priority, default "1001" (higher than any repo)
+
+template pin_version(name, version, priority = "1001"):
+  version 1.0.0
+  description "Pin ${name} to version ${version}"
+
+  [write pin] as root:
+    content > "/etc/apt/preferences.d/${name}-pin":
+      Package: ${name}
+      Pin: version ${version}
+      Pin-Priority: ${priority}
+
+  [verify pin] as root, timeout 10s:
+    first [write pin]
+    run $ apt-cache policy "${name}"
+    collect "pin_policy"

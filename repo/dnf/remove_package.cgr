@@ -1,0 +1,12 @@
+# dnf/remove_package — Remove a package via DNF (RHEL 8+/Fedora)
+#
+# Parameters:
+#   name   (required) — package name to remove
+
+template remove_package(name):
+  version 1.0.0
+  description "Remove ${name} via DNF"
+
+  skip if $ ! rpm -q "${name}" >/dev/null 2>&1
+  run    $ dnf remove -y "${name}"
+  as root, timeout 2m

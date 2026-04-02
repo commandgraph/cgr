@@ -1,0 +1,30 @@
+--- HTTP and reporting demo ---
+
+set api = "http://127.0.0.1:18080"
+set api_token = "demo-token"
+
+target "api-client" local:
+
+  [health check]:
+    get "${api}/health"
+    expect 200
+    collect "health"
+
+  [create record]:
+    first [health check]
+    post "${api}/records"
+    auth bearer "${api_token}"
+    header "X-Demo" = "commandgraph"
+    body json '{"name": "demo-app", "status": "active"}'
+    expect 201
+    collect "record"
+
+  [fetch events]:
+    first [create record]
+    get "${api}/events"
+    expect 200
+    collect "events"
+
+  verify "api recorded the call":
+    first [fetch events]
+    run $ test -f /workspace/http-api-data/events.log

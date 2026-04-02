@@ -1,0 +1,41 @@
+# nginx/vhost — Configure an Nginx virtual host with optional TLS
+#
+# Parameters:
+#   domain    (required) — server_name
+#   port      (optional) — listen port, default "80"
+#   doc_root  (optional) — document root
+#   ssl       (optional) — "yes" or "no", default "no"
+
+template vhost(domain, port = "80", doc_root = "/var/www/${domain}", ssl = "no"):
+  version 1.0.0
+  description "Configure Nginx vhost for ${domain}"
+
+  [create docroot] as root:
+    skip if $ test -d ${doc_root}
+    run    $ mkdir -p ${doc_root} && chown www-data:www-data ${doc_root}
+
+  [write vhost config] as root:
+    first [create docroot]
+    skip if $ test -f /etc/nginx/sites-available/${domain}
+    content > /etc/nginx/sites-available/${domain}:
+      server {
+          listen ${port};
+          server_name ${domain};
+          root ${doc_root};
+          index index.html;
+          location / { try_files $uri $uri/ =404; }
+      }
+    validate $ nginx -t
+
+  [enable site] as root:
+    first [write vhost config]
+    skip if $ test -L /etc/nginx/sites-enabled/${domain}
+    run    $ ln -sf /etc/nginx/sites-available/${domain} /etc/nginx/sites-enabled/${domain}
+
+  [validate] as root, if fails stop:
+    first [enable site]
+    always run $ nginx -t
+
+  first [validate]
+  always run $ systemctl reload nginx
+  as root

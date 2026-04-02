@@ -1,0 +1,29 @@
+# backup/restic_check — Verify restic repository integrity
+#
+# Checks the repository structure and optionally reads all data blobs.
+#
+# Parameters:
+#   repo          (required) — restic repository location
+#   password_file (required) — path to repository password file
+#   read_data     (optional) — "yes" to verify all pack data (slow), default "no"
+#   aws_key       (optional) — AWS access key for S3 backend, default ""
+#   aws_secret    (optional) — AWS secret key for S3 backend, default ""
+
+template restic_check(repo, password_file, read_data = "no", aws_key = "", aws_secret = ""):
+  version 1.0.0
+  description "Check restic repo ${repo}"
+
+  [check structure] timeout 30m:
+    when "${read_data} != 'yes'"
+    run $ RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" restic check
+    collect "check_result"
+
+  [check with data] timeout 2h:
+    when "${read_data} == 'yes'"
+    run $ RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" restic check --read-data
+    collect "check_result"
+
+  first [check structure]
+  run $ RESTIC_REPOSITORY="${repo}" RESTIC_PASSWORD_FILE="${password_file}" AWS_ACCESS_KEY_ID="${aws_key}" AWS_SECRET_ACCESS_KEY="${aws_secret}" restic snapshots --compact
+  timeout 5m
+  collect "snapshot_list"

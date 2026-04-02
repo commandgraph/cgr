@@ -1,0 +1,915 @@
+[
+  {
+    "path": "apt/add_repo",
+    "name": "add_repo",
+    "params": [
+      [
+        "repo_name",
+        null
+      ],
+      [
+        "repo_line",
+        null
+      ],
+      [
+        "key_url",
+        null
+      ]
+    ],
+    "description": "Add APT repository: ${repo_name}",
+    "file": "apt/add_repo.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "apt/install_package",
+    "name": "install_package",
+    "params": [
+      [
+        "name",
+        null
+      ],
+      [
+        "version",
+        "latest"
+      ]
+    ],
+    "description": "Install ${name} via APT",
+    "file": "apt/install_package.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "apt/upgrade_all_packages",
+    "name": "upgrade_all_packages",
+    "params": [],
+    "description": "Update all packages using apt",
+    "file": "apt/upgrade_all_packages.cgr",
+    "version": "1.1.0"
+  },
+  {
+    "path": "audit/system_audit",
+    "name": "system_audit",
+    "params": [
+      [
+        "dns_test",
+        "google.com"
+      ],
+      [
+        "http_test",
+        "https://google.com"
+      ]
+    ],
+    "description": "Full system audit",
+    "file": "audit/system_audit.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "backup/backrest_add_repo",
+    "name": "backrest_add_repo",
+    "params": [
+      [
+        "repo_id",
+        null
+      ],
+      [
+        "repo_uri",
+        null
+      ],
+      [
+        "password",
+        null
+      ],
+      [
+        "backrest_url",
+        "http://localhost:9898"
+      ],
+      [
+        "prune_policy",
+        ""
+      ]
+    ],
+    "description": "Add repo ${repo_id} to Backrest",
+    "file": "backup/backrest_add_repo.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "backup/install_backrest",
+    "name": "install_backrest",
+    "params": [
+      [
+        "version",
+        "1.7.3"
+      ],
+      [
+        "bind",
+        "0.0.0.0:9898"
+      ],
+      [
+        "config_dir",
+        "/etc/backrest"
+      ],
+      [
+        "data_dir",
+        "/var/lib/backrest"
+      ],
+      [
+        "user",
+        "backrest"
+      ]
+    ],
+    "description": "Install Backrest v${version} web UI for restic",
+    "file": "backup/install_backrest.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "backup/install_restic",
+    "name": "install_restic",
+    "params": [
+      [
+        "method",
+        "apt"
+      ],
+      [
+        "version",
+        "0.17.3"
+      ]
+    ],
+    "description": "Install restic (${method})",
+    "file": "backup/install_restic.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "backup/restic_backup",
+    "name": "restic_backup",
+    "params": [
+      [
+        "repo",
+        null
+      ],
+      [
+        "password_file",
+        null
+      ],
+      [
+        "paths",
+        null
+      ],
+      [
+        "exclude",
+        ""
+      ],
+      [
+        "tags",
+        ""
+      ],
+      [
+        "aws_key",
+        ""
+      ],
+      [
+        "aws_secret",
+        ""
+      ]
+    ],
+    "description": "Restic backup: ${paths}",
+    "file": "backup/restic_backup.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "backup/restic_check",
+    "name": "restic_check",
+    "params": [
+      [
+        "repo",
+        null
+      ],
+      [
+        "password_file",
+        null
+      ],
+      [
+        "read_data",
+        "no"
+      ],
+      [
+        "aws_key",
+        ""
+      ],
+      [
+        "aws_secret",
+        ""
+      ]
+    ],
+    "description": "Check restic repo ${repo}",
+    "file": "backup/restic_check.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "backup/restic_init",
+    "name": "restic_init",
+    "params": [
+      [
+        "repo",
+        null
+      ],
+      [
+        "password_file",
+        null
+      ],
+      [
+        "aws_key",
+        ""
+      ],
+      [
+        "aws_secret",
+        ""
+      ]
+    ],
+    "description": "Initialize restic repo at ${repo}",
+    "file": "backup/restic_init.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "backup/restic_prune",
+    "name": "restic_prune",
+    "params": [
+      [
+        "repo",
+        null
+      ],
+      [
+        "password_file",
+        null
+      ],
+      [
+        "keep_daily",
+        "7"
+      ],
+      [
+        "keep_weekly",
+        "4"
+      ],
+      [
+        "keep_monthly",
+        "6"
+      ],
+      [
+        "keep_yearly",
+        "2"
+      ],
+      [
+        "aws_key",
+        ""
+      ],
+      [
+        "aws_secret",
+        ""
+      ]
+    ],
+    "description": "Prune restic repo ${repo}",
+    "file": "backup/restic_prune.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "backup/restic_restore",
+    "name": "restic_restore",
+    "params": [
+      [
+        "repo",
+        null
+      ],
+      [
+        "password_file",
+        null
+      ],
+      [
+        "target",
+        null
+      ],
+      [
+        "snapshot",
+        "latest"
+      ],
+      [
+        "include",
+        ""
+      ],
+      [
+        "aws_key",
+        ""
+      ],
+      [
+        "aws_secret",
+        ""
+      ]
+    ],
+    "description": "Restore from restic to ${target}",
+    "file": "backup/restic_restore.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "cron/add_cron_job",
+    "name": "add_cron_job",
+    "params": [
+      [
+        "schedule",
+        null
+      ],
+      [
+        "command",
+        null
+      ],
+      [
+        "user",
+        "root"
+      ],
+      [
+        "job_id",
+        "cgr"
+      ]
+    ],
+    "description": "Add cron job for ${user}: ${job_id}",
+    "file": "cron/add_cron_job.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "db/mysql_backup",
+    "name": "mysql_backup",
+    "params": [
+      [
+        "db_name",
+        null
+      ],
+      [
+        "db_user",
+        "root"
+      ],
+      [
+        "db_pass",
+        ""
+      ],
+      [
+        "backup_dir",
+        "/var/backups/mysqldump"
+      ],
+      [
+        "keep",
+        "7"
+      ]
+    ],
+    "description": "Backup MySQL database ${db_name}",
+    "file": "db/mysql_backup.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "db/pg_backup",
+    "name": "pg_backup",
+    "params": [
+      [
+        "db_name",
+        null
+      ],
+      [
+        "db_user",
+        "postgres"
+      ],
+      [
+        "backup_dir",
+        "/var/backups/pgdump"
+      ],
+      [
+        "keep",
+        "7"
+      ]
+    ],
+    "description": "Backup PostgreSQL database ${db_name}",
+    "file": "db/pg_backup.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "dnf/add_repo",
+    "name": "add_repo",
+    "params": [
+      [
+        "repo_id",
+        null
+      ],
+      [
+        "repo_name",
+        null
+      ],
+      [
+        "baseurl",
+        null
+      ],
+      [
+        "gpgkey",
+        ""
+      ]
+    ],
+    "description": "Add DNF repo: ${repo_id}",
+    "file": "dnf/add_repo.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "dnf/enable_epel",
+    "name": "enable_epel",
+    "params": [],
+    "description": "Enable EPEL repository",
+    "file": "dnf/enable_epel.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "dnf/install_package",
+    "name": "install_package",
+    "params": [
+      [
+        "name",
+        null
+      ],
+      [
+        "version",
+        ""
+      ]
+    ],
+    "description": "Install ${name} via DNF",
+    "file": "dnf/install_package.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "dnf/remove_package",
+    "name": "remove_package",
+    "params": [
+      [
+        "name",
+        null
+      ]
+    ],
+    "description": "Remove ${name} via DNF",
+    "file": "dnf/remove_package.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "dnf/upgrade_all_packages",
+    "name": "upgrade_all_packages",
+    "params": [],
+    "description": "Update all packages using DNF",
+    "file": "dnf/upgrade_all_packages.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "docker/compose_up",
+    "name": "compose_up",
+    "params": [
+      [
+        "project_dir",
+        null
+      ],
+      [
+        "compose_file",
+        "docker-compose.yml"
+      ]
+    ],
+    "description": "Start Docker Compose stack in ${project_dir}",
+    "file": "docker/compose_up.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "docker/prune_system",
+    "name": "prune_system",
+    "params": [
+      [
+        "volumes",
+        "no"
+      ]
+    ],
+    "description": "Docker system prune",
+    "file": "docker/prune_system.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "docker/pull_image",
+    "name": "pull_image",
+    "params": [
+      [
+        "image",
+        null
+      ],
+      [
+        "registry",
+        ""
+      ],
+      [
+        "reg_user",
+        ""
+      ],
+      [
+        "reg_pass",
+        ""
+      ]
+    ],
+    "description": "Pull Docker image ${image}",
+    "file": "docker/pull_image.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "file/create_swap",
+    "name": "create_swap",
+    "params": [
+      [
+        "size",
+        "2G"
+      ],
+      [
+        "path",
+        "/swapfile"
+      ]
+    ],
+    "description": "Create ${size} swap at ${path}",
+    "file": "file/create_swap.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "file/logrotate_app",
+    "name": "logrotate_app",
+    "params": [
+      [
+        "app_name",
+        null
+      ],
+      [
+        "log_path",
+        null
+      ],
+      [
+        "retention",
+        "14"
+      ],
+      [
+        "frequency",
+        "daily"
+      ]
+    ],
+    "description": "Configure logrotate for ${app_name}",
+    "file": "file/logrotate_app.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "file/set_sysctl",
+    "name": "set_sysctl",
+    "params": [
+      [
+        "key",
+        null
+      ],
+      [
+        "value",
+        null
+      ]
+    ],
+    "description": "Set sysctl ${key} = ${value}",
+    "file": "file/set_sysctl.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "firewall/allow_port",
+    "name": "allow_port",
+    "params": [
+      [
+        "port",
+        null
+      ],
+      [
+        "proto",
+        "tcp"
+      ]
+    ],
+    "description": "Allow ${proto}/${port} through firewall",
+    "file": "firewall/allow_port.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "firewall/firewalld_allow_port",
+    "name": "firewalld_allow_port",
+    "params": [
+      [
+        "port",
+        null
+      ],
+      [
+        "proto",
+        "tcp"
+      ],
+      [
+        "zone",
+        "public"
+      ]
+    ],
+    "description": "Allow ${proto}/${port} in firewalld (${zone})",
+    "file": "firewall/firewalld_allow_port.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "firewall/firewalld_allow_service",
+    "name": "firewalld_allow_service",
+    "params": [
+      [
+        "service",
+        null
+      ],
+      [
+        "zone",
+        "public"
+      ]
+    ],
+    "description": "Allow ${service} in firewalld (${zone})",
+    "file": "firewall/firewalld_allow_service.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "monitoring/check_disk",
+    "name": "check_disk",
+    "params": [
+      [
+        "mount",
+        "/"
+      ],
+      [
+        "threshold",
+        "85"
+      ]
+    ],
+    "description": "Check disk usage on ${mount} (warn > ${threshold}%)",
+    "file": "monitoring/check_disk.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "monitoring/check_service",
+    "name": "check_service",
+    "params": [
+      [
+        "service",
+        null
+      ],
+      [
+        "restart",
+        "no"
+      ]
+    ],
+    "description": "Check ${service} is healthy",
+    "file": "monitoring/check_service.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "nginx/vhost",
+    "name": "vhost",
+    "params": [
+      [
+        "domain",
+        null
+      ],
+      [
+        "port",
+        "80"
+      ],
+      [
+        "doc_root",
+        "/var/www/${domain}"
+      ],
+      [
+        "ssl",
+        "no"
+      ]
+    ],
+    "description": "Configure Nginx vhost for ${domain}",
+    "file": "nginx/vhost.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "security/selinux_boolean",
+    "name": "selinux_boolean",
+    "params": [
+      [
+        "name",
+        null
+      ],
+      [
+        "value",
+        "on"
+      ]
+    ],
+    "description": "Set SELinux boolean ${name}=${value}",
+    "file": "security/selinux_boolean.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "security/selinux_mode",
+    "name": "selinux_mode",
+    "params": [
+      [
+        "mode",
+        null
+      ]
+    ],
+    "description": "Set SELinux to ${mode}",
+    "file": "security/selinux_mode.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "security/selinux_port",
+    "name": "selinux_port",
+    "params": [
+      [
+        "type",
+        null
+      ],
+      [
+        "port",
+        null
+      ],
+      [
+        "proto",
+        "tcp"
+      ]
+    ],
+    "description": "SELinux allow ${type} on ${proto}/${port}",
+    "file": "security/selinux_port.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "security/setup_fail2ban",
+    "name": "setup_fail2ban",
+    "params": [
+      [
+        "max_retry",
+        "5"
+      ],
+      [
+        "ban_time",
+        "3600"
+      ],
+      [
+        "find_time",
+        "600"
+      ]
+    ],
+    "description": "Setup fail2ban for SSH",
+    "file": "security/setup_fail2ban.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "ssh/authorize_key",
+    "name": "authorize_key",
+    "params": [
+      [
+        "username",
+        null
+      ],
+      [
+        "public_key",
+        null
+      ]
+    ],
+    "description": "Authorize SSH key for ${username}",
+    "file": "ssh/authorize_key.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "ssh/harden_sshd",
+    "name": "harden_sshd",
+    "params": [
+      [
+        "port",
+        "22"
+      ],
+      [
+        "allow_users",
+        ""
+      ]
+    ],
+    "description": "Harden sshd configuration",
+    "file": "ssh/harden_sshd.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "systemd/enable_service",
+    "name": "enable_service",
+    "params": [
+      [
+        "service",
+        null
+      ]
+    ],
+    "description": "Enable and start ${service}",
+    "file": "systemd/enable_service.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "tls/certbot",
+    "name": "certbot",
+    "params": [
+      [
+        "domain",
+        null
+      ],
+      [
+        "email",
+        "admin@${domain}"
+      ]
+    ],
+    "description": "Obtain TLS certificate for ${domain}",
+    "file": "tls/certbot.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "user/create_user",
+    "name": "create_user",
+    "params": [
+      [
+        "username",
+        null
+      ],
+      [
+        "ssh_key",
+        ""
+      ],
+      [
+        "shell",
+        "/bin/bash"
+      ],
+      [
+        "sudo",
+        "no"
+      ]
+    ],
+    "description": "Create user ${username}",
+    "file": "user/create_user.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "webhook/discord_notify",
+    "name": "discord_notify",
+    "params": [
+      [
+        "webhook_url",
+        null
+      ],
+      [
+        "message",
+        null
+      ],
+      [
+        "username",
+        "CommandGraph"
+      ]
+    ],
+    "description": "Discord notification: ${message}",
+    "file": "webhook/discord_notify.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "webhook/generic_webhook",
+    "name": "generic_webhook",
+    "params": [
+      [
+        "url",
+        null
+      ],
+      [
+        "payload",
+        null
+      ],
+      [
+        "auth_token",
+        ""
+      ]
+    ],
+    "description": "Webhook POST to ${url}",
+    "file": "webhook/generic_webhook.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "webhook/slack_notify",
+    "name": "slack_notify",
+    "params": [
+      [
+        "webhook_url",
+        null
+      ],
+      [
+        "message",
+        null
+      ],
+      [
+        "channel",
+        ""
+      ],
+      [
+        "username",
+        "CommandGraph"
+      ]
+    ],
+    "description": "Slack notification: ${message}",
+    "file": "webhook/slack_notify.cgr",
+    "version": "1.0.0"
+  }
+]

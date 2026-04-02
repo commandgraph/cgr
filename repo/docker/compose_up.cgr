@@ -1,0 +1,18 @@
+# docker/compose_up — Start a Docker Compose stack
+#
+# Parameters:
+#   project_dir   (required) — path to the compose project
+#   compose_file  (optional) — compose filename, default "docker-compose.yml"
+
+template compose_up(project_dir, compose_file = "docker-compose.yml"):
+  version 1.0.0
+  description "Start Docker Compose stack in ${project_dir}"
+
+  [ensure docker] as root, timeout 30s:
+    skip if $ docker info >/dev/null 2>&1
+    run    $ systemctl start docker
+
+  first [ensure docker]
+  skip if $ cd ${project_dir} && docker compose -f ${compose_file} ps --status running | grep -q .
+  run    $ cd ${project_dir} && docker compose -f ${compose_file} up -d
+  timeout 2m, retry 1x wait 5s

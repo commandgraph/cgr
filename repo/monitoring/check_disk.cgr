@@ -1,0 +1,13 @@
+# monitoring/check_disk — Check disk usage and warn if above threshold
+#
+# Parameters:
+#   mount      (optional) — mount point to check, default "/"
+#   threshold  (optional) — percent usage warning threshold, default "85"
+
+template check_disk(mount = "/", threshold = "85"):
+  version 1.0.0
+  description "Check disk usage on ${mount} (warn > ${threshold}%)"
+
+  run $ _u=$(df --output=pcent "${mount}" | tail -1 | tr -d ' %'); echo "Disk usage on ${mount}: $_u%"; test "$_u" -le "${threshold}"
+  timeout 15s
+  collect "disk_usage"

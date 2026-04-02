@@ -1,0 +1,19 @@
+--- Template repository demo ---
+
+using apt/install_package
+
+set work_dir = "/workspace/tpl_test"
+
+target "local" local:
+
+  [install demo packages] from apt/install_package:
+    name = "curl procps"
+
+  [write landing page] as root:
+    first [install demo packages]
+    skip if $ test -f ${work_dir}/index.html
+    run    $ mkdir -p ${work_dir} && echo "<h1>Hello from templates</h1>" > ${work_dir}/index.html
+
+  verify "everything configured":
+    first [write landing page]
+    run $ test -f ${work_dir}/index.html && command -v curl && command -v ps

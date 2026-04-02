@@ -1,0 +1,33 @@
+FROM python:3.12-slim
+
+LABEL description="CommandGraph SSH target node"
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq openssh-server sudo curl procps && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create the deploy user with sudo access
+RUN useradd -m -s /bin/bash deploy && \
+    echo "deploy ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/deploy && \
+    chmod 0440 /etc/sudoers.d/deploy && \
+    mkdir -p /home/deploy/.ssh && \
+    chmod 700 /home/deploy/.ssh && \
+    chown -R deploy:deploy /home/deploy/.ssh
+
+# Configure sshd for key-based auth only
+RUN mkdir -p /run/sshd && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    echo "PermitRootLogin no" >> /etc/ssh/sshd_config
+
+# Pre-generate SSH host keys (needed for sshd to start immediately)
+RUN ssh-keygen -A
+
+# Entrypoint script handles authorized_keys injection + sshd start
+COPY entrypoint-target.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+
+ENTRYPOINT ["/entrypoint.sh"]

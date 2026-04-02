@@ -1,0 +1,21 @@
+# file/patch_ini — Apply key=value patches to an INI file
+#
+# Parameters:
+#   dest      (required) — path to the INI file on the target
+#   section   (required) — INI section name (e.g. "DEFAULT" or "mysqld")
+#   key       (required) — key within the section
+#   value     (required) — value to assign
+#   reload    (optional) — command to run after patching (e.g. "systemctl reload foo"), default ""
+
+template patch_ini(dest, section, key, value, reload = ""):
+  version 1.0.0
+  description "Patch INI ${dest}: [${section}] ${key} = ${value}"
+
+  [patch file]:
+    ini "${dest}":
+      set [${section}] ${key} = "${value}"
+
+  [reload service] as root, timeout 30s:
+    first [patch file]
+    when "${reload} != ''"
+    run $ ${reload}

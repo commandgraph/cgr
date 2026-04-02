@@ -1,0 +1,67 @@
+--- revoke local SSH key from remote hosts ---
+#
+# Removes your local public key from each host's ~/.ssh/authorized_keys,
+# then verifies that key-based login no longer works (BatchMode=yes refused).
+# Each host gets its own step with independent skip-if and state tracking.
+#
+# Usage:
+#   cgr apply revoke_ssh_key.cgr --set hosts="192.168.1.10,192.168.1.11"
+#   cgr apply revoke_ssh_key.cgr --set hosts="web01,web02,db01" --set ssh_user=admin
+#   cgr apply revoke_ssh_key.cgr --set hosts="host1" --set ssh_port=2222
+#
+# Variables:
+#   hosts     — comma-separated list of hostnames or IPs (required)
+#   ssh_user  — remote user (default: $USER from environment)
+#   ssh_port  — SSH port (default: 22)
+
+
+set hosts    = "192.168.1.10,192.168.1.11,192.168.1.12"
+set ssh_user = env("USER", "ubuntu")
+set ssh_port = "22"
+
+target "local" local:
+
+  [check prerequisites]:
+    run    $ key="$HOME/.ssh/id_ed25519.pub"; \
+             test -f "$key" || key="$HOME/.ssh/id_rsa.pub"; \
+             test -f "$key" || { echo "No public key found in ~/.ssh/. Nothing to revoke."; exit 1; }; \
+             echo "Key: $(awk '{print $1, substr($2,1,16)"...", $3}' "$key")"
+    timeout 5s
+
+  [revoke hosts]:
+    first  [check prerequisites]
+    # 1 at a time so output stays readable
+    each host in ${hosts}, 1 at a time:
+
+      [${host}]:
+        # Skip if key-based auth already fails — key is already gone
+        skip if $ ! ssh -o BatchMode=yes \
+                        -o ConnectTimeout=5 \
+                        -o StrictHostKeyChecking=no \
+                        -p ${ssh_port} \
+                        "${ssh_user}@${host}" true 2>/dev/null
+        run    $ key="$HOME/.ssh/id_ed25519.pub"; \
+                 test -f "$key" || key="$HOME/.ssh/id_rsa.pub"; \
+                 keydata=$(awk '{print $1" "$2}' "$key"); \
+                 ssh -o BatchMode=yes \
+                     -o StrictHostKeyChecking=no \
+                     -p ${ssh_port} \
+                     "${ssh_user}@${host}" \
+                     "grep -vF \"$keydata\" ~/.ssh/authorized_keys > /tmp/.ak_tmp \
+                      && mv /tmp/.ak_tmp ~/.ssh/authorized_keys \
+                      && chmod 600 ~/.ssh/authorized_keys \
+                      && echo \"Key removed from ${host}\""
+        timeout 30s
+
+  [verify all hosts]:
+    first  [revoke hosts]
+    # Confirm in parallel that key-based auth is now rejected on every host
+    each host in ${hosts}:
+
+      [${host}]:
+        run    $ ! ssh -o BatchMode=yes \
+                       -o ConnectTimeout=10 \
+                       -p ${ssh_port} \
+                       "${ssh_user}@${host}" \
+                       true 2>/dev/null && echo "REVOKED: ${host}"
+        timeout 15s

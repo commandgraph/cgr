@@ -1,0 +1,99 @@
+# Multi-node orchestration test — .cg brace-delimited format
+# Equivalent to multinode_test.cgr
+
+var app_version = "3.0.1"
+var db_host = "10.0.2.3"
+var web_host = "10.0.1.5"
+
+# ── Database target ──────────────────────────────────────────
+
+node "db" {
+  via ssh user = "deploy" host = "${db_host}"
+
+  resource install_postgres {
+    description "install postgres"
+    check `dpkg -l | grep -q postgresql`
+    run   `apt-get install -y postgresql`
+  }
+
+  resource setup_schema {
+    description "setup schema"
+    needs install_postgres
+    check `psql -U app -d myapp -c "SELECT 1 FROM schema_versions LIMIT 1" 2>/dev/null`
+    run   `psql -U postgres -c "CREATE DATABASE myapp" && psql -U postgres -d myapp -f /opt/schema.sql`
+  }
+
+  resource seed_data {
+    description "seed data"
+    needs setup_schema
+    check `psql -U app -d myapp -c "SELECT count(*) FROM config" | grep -q "[1-9]"`
+    run   `psql -U app -d myapp -f /opt/seed.sql`
+  }
+}
+
+# ── Cache target ─────────────────────────────────────────────
+
+node "cache" {
+  via local
+
+  resource start_redis {
+    description "start redis"
+    check `redis-cli ping | grep -q PONG`
+    run   `systemctl start redis`
+  }
+}
+
+# ── Web target (depends on db and cache) ─────────────────────
+
+node "web" {
+  via ssh user = "deploy" host = "${web_host}"
+  after "db", "cache"
+
+  resource deploy_app {
+    description "deploy app"
+    run `tar xzf /tmp/app-${app_version}.tar.gz -C /opt/app`
+  }
+
+  resource configure_app {
+    description "configure app"
+    needs deploy_app
+    run `printf "DB_HOST=${db_host}\nCACHE_HOST=localhost\nAPP_VERSION=${app_version}\n" > /opt/app/config.env`
+  }
+
+  resource start_app {
+    description "start app"
+    needs configure_app
+    check `systemctl is-active --quiet myapp`
+    run   `systemctl start myapp`
+  }
+
+  verify "app is healthy" {
+    needs start_app
+    run `curl -sf http://localhost:8080/health`
+    retry 3 delay 5
+  }
+}
+
+# ── Monitor target (cross-node step refs, no node-level after) ──
+
+node "monitor" {
+  via local
+
+  resource register_db_check {
+    description "register db check"
+    needs db.setup_schema
+    run `echo "monitor db at ${db_host}" >> /etc/monitors.conf`
+  }
+
+  resource register_web_check {
+    description "register web check"
+    needs web.start_app
+    run `echo "monitor web at ${web_host}" >> /etc/monitors.conf`
+  }
+
+  resource reload_monitors {
+    description "reload monitors"
+    needs register_db_check, register_web_check
+    run `systemctl reload monitoring`
+  }
+}

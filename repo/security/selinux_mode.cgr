@@ -1,0 +1,18 @@
+# security/selinux_mode — Set SELinux enforcement mode (RHEL/Fedora)
+#
+# Parameters:
+#   mode  (required) — "enforcing", "permissive", or "disabled"
+
+template selinux_mode(mode):
+  version 1.0.0
+  description "Set SELinux to ${mode}"
+
+  [set runtime] as root, timeout 15s:
+    when "${mode} != 'disabled'"
+    skip if $ getenforce 2>/dev/null | grep -qi "${mode}"
+    run    $ setenforce "$(echo ${mode} | head -c 1 | tr 'ep' '10')"
+
+  first [set runtime]
+  skip if $ grep -q "^SELINUX=${mode}" /etc/selinux/config 2>/dev/null
+  run    $ sed -i "s/^SELINUX=.*/SELINUX=${mode}/" /etc/selinux/config
+  as root, timeout 15s

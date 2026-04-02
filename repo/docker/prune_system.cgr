@@ -1,0 +1,25 @@
+# docker/prune_system — Clean up unused Docker resources
+#
+# Removes dangling images, stopped containers, unused networks, and
+# optionally unused volumes.
+#
+# Parameters:
+#   volumes    (optional) — "yes" to also prune volumes, default "no"
+
+template prune_system(volumes = "no"):
+  version 1.0.0
+  description "Docker system prune"
+
+  [prune base] timeout 2m:
+    run $ docker system prune -f --filter "until=24h"
+    collect "prune_result"
+
+  [prune volumes] timeout 2m:
+    first [prune base]
+    when "${volumes} == 'yes'"
+    run $ docker volume prune -f
+    collect "volume_prune_result"
+
+  first [prune base]
+  run $ docker system df
+  collect "disk_usage"

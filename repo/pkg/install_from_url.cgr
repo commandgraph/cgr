@@ -1,0 +1,26 @@
+# pkg/install_from_url — Download and install a .deb or .rpm package from a URL
+#
+# Parameters:
+#   url       (required) — direct download URL to the .deb or .rpm file
+#   name      (required) — package name (used for skip-if check)
+#   type      (optional) — "deb" or "rpm", default "deb"
+
+template install_from_url(url, name, type = "deb"):
+  version 1.0.0
+  description "Install ${name} from URL"
+
+  [download] timeout 2m:
+    skip if $ command -v "${name}" >/dev/null 2>&1 || dpkg -l "${name}" >/dev/null 2>&1 || rpm -q "${name}" >/dev/null 2>&1
+    run $ curl -fsSL -o "/tmp/${name}.pkg" "${url}"
+
+  [install deb] as root, timeout 1m:
+    first [download]
+    when "${type} == 'deb'"
+    skip if $ dpkg -l "${name}" >/dev/null 2>&1
+    run $ dpkg -i "/tmp/${name}.pkg" && rm -f "/tmp/${name}.pkg"
+
+  [install rpm] as root, timeout 1m:
+    first [download]
+    when "${type} == 'rpm'"
+    skip if $ rpm -q "${name}" >/dev/null 2>&1
+    run $ rpm -ivh "/tmp/${name}.pkg" && rm -f "/tmp/${name}.pkg"

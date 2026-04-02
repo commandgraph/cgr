@@ -1,0 +1,34 @@
+--- Cross-Node Dependencies Demo ---
+# Demonstrates cross-target step references and target ordering.
+# All targets use local: here for demo purposes; in production
+# these would be separate SSH hosts.
+
+set work_dir = "/tmp/cgr-crossnode-demo"
+
+target "database" local:
+
+  [create schema]:
+    skip if $ test -f ${work_dir}/schema.done
+    run $ mkdir -p ${work_dir} && echo "CREATE TABLE users (id INT)" > ${work_dir}/schema.sql && touch ${work_dir}/schema.done
+
+  [seed data]:
+    first [create schema]
+    skip if $ test -f ${work_dir}/seed.done
+    run $ echo "INSERT INTO users VALUES (1)" > ${work_dir}/seed.sql && touch ${work_dir}/seed.done
+
+target "application" local, after "database":
+
+  [deploy app]:
+    first [database/seed data]
+    run $ echo "Deploying app (database is ready)" > ${work_dir}/app.log
+
+  [start service]:
+    first [deploy app]
+    run $ echo "Service started" >> ${work_dir}/app.log
+
+target "monitor" local:
+
+  [register checks]:
+    first [database/create schema]
+    first [application/start service]
+    run $ echo "Monitoring: db=ok app=ok" > ${work_dir}/monitors.conf

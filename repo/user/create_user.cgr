@@ -1,0 +1,35 @@
+# user/create_user — Create a system user with SSH key and optional sudo
+#
+# Parameters:
+#   username   (required) — login name
+#   ssh_key    (optional) — public SSH key to authorize, default "" (none)
+#   shell      (optional) — login shell, default "/bin/bash"
+#   sudo       (optional) — "yes" to grant passwordless sudo, default "no"
+
+template create_user(username, ssh_key = "", shell = "/bin/bash", sudo = "no"):
+  version 1.0.0
+  description "Create user ${username}"
+
+  [create account] as root, timeout 30s:
+    skip if $ id "${username}" >/dev/null 2>&1
+    run    $ useradd -m -s "${shell}" "${username}"
+
+  [authorize key] as root, timeout 15s:
+    first [create account]
+    when "${ssh_key} != ''"
+    skip if $ grep -qF "${ssh_key}" /home/${username}/.ssh/authorized_keys 2>/dev/null
+    run    $ install -d -m 700 -o ${username} -g ${username} /home/${username}/.ssh && touch /home/${username}/.ssh/authorized_keys && chown ${username}:${username} /home/${username}/.ssh/authorized_keys && chmod 600 /home/${username}/.ssh/authorized_keys
+    line "${ssh_key}" in /home/${username}/.ssh/authorized_keys
+
+  [grant sudo] as root, timeout 15s:
+    first [create account]
+    when "${sudo} == 'yes'"
+    skip if $ test -f /etc/sudoers.d/${username}
+    content > /etc/sudoers.d/${username}:
+      ${username} ALL=(ALL) NOPASSWD:ALL
+    run $ chmod 440 /etc/sudoers.d/${username}
+    validate $ visudo -cf /etc/sudoers.d/${username}
+
+  first [create account]
+  run $ id "${username}"
+  collect "user_info"

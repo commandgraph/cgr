@@ -1,0 +1,21 @@
+--- CLI tooling demo ---
+
+set work_dir = "/workspace/cli-tooling"
+
+target "local" local:
+
+  [prepare workspace]:
+    run $ mkdir -p ${work_dir}
+
+  [render config]:
+    first [prepare workspace]
+    skip if $ test -f ${work_dir}/app.conf
+    run $ printf 'mode=demo\nworkers=2\n' > ${work_dir}/app.conf
+
+  [start service]:
+    first [render config]
+    run $ printf 'started\n' > ${work_dir}/service.log
+
+  verify "service log exists":
+    first [start service]
+    run $ test -f ${work_dir}/service.log

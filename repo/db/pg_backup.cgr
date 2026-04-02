@@ -1,0 +1,24 @@
+# db/pg_backup — Backup a PostgreSQL database with rotation
+#
+# Parameters:
+#   db_name    (required) — database name
+#   db_user    (optional) — PostgreSQL user, default "postgres"
+#   backup_dir (optional) — backup directory, default "/var/backups/pgdump"
+#   keep       (optional) — number of backups to retain, default "7"
+
+template pg_backup(db_name, db_user = "postgres", backup_dir = "/var/backups/pgdump", keep = "7"):
+  version 1.0.0
+  description "Backup PostgreSQL database ${db_name}"
+
+  [ensure dir] as root, timeout 10s:
+    skip if $ test -d "${backup_dir}"
+    run    $ mkdir -p "${backup_dir}" && chown ${db_user}:${db_user} "${backup_dir}"
+
+  [dump database] timeout 10m:
+    first [ensure dir]
+    run $ pg_dump -U "${db_user}" -Fc "${db_name}" > "${backup_dir}/${db_name}_$(date +%Y%m%d_%H%M%S).dump" && echo "Backup complete"
+    collect "backup_result"
+
+  first [dump database]
+  run $ ls -t "${backup_dir}/${db_name}_"*.dump 2>/dev/null | tail -n +$((${keep} + 1)) | xargs -r rm -f && echo "Rotated, keeping last ${keep} backups"
+  timeout 30s

@@ -1,0 +1,19 @@
+--- State isolation demo ---
+
+set release = "blue"
+set work_dir = "/workspace/state-isolation"
+
+target "local" local:
+
+  [prepare workspace]:
+    skip if $ test -d ${work_dir}
+    run    $ mkdir -p ${work_dir}
+
+  [write release marker]:
+    first [prepare workspace]
+    skip if $ test -f ${work_dir}/${release}.done
+    run    $ printf 'release=%s\n' "${release}" > ${work_dir}/${release}.done
+
+  verify "marker exists":
+    first [write release marker]
+    run $ test -f ${work_dir}/${release}.done

@@ -1,0 +1,13 @@
+# security/selinux_boolean — Set an SELinux boolean persistently (RHEL/Fedora)
+#
+# Parameters:
+#   name   (required) — boolean name, e.g. "httpd_can_network_connect"
+#   value  (optional) — "on" or "off", default "on"
+
+template selinux_boolean(name, value = "on"):
+  version 1.0.0
+  description "Set SELinux boolean ${name}=${value}"
+
+  skip if $ getsebool "${name}" 2>/dev/null | grep -q "${name} --> ${value}"
+  run    $ setsebool -P "${name}" "${value}"
+  as root, timeout 30s

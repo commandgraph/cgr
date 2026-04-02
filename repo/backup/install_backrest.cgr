@@ -1,0 +1,55 @@
+# backup/install_backrest — Install and configure Backrest (web UI for restic)
+#
+# Installs the Backrest binary from GitHub releases, creates a systemd
+# service, and starts it. Backrest provides a web UI for managing restic
+# repositories, scheduling backups, and monitoring status.
+#
+# Parameters:
+#   version    (optional) — Backrest release version, default "1.7.3"
+#   bind       (optional) — listen address, default "0.0.0.0:9898"
+#   config_dir (optional) — config directory, default "/etc/backrest"
+#   data_dir   (optional) — data directory, default "/var/lib/backrest"
+#   user       (optional) — system user to run as, default "backrest"
+
+template install_backrest(version = "1.7.3", bind = "0.0.0.0:9898", config_dir = "/etc/backrest", data_dir = "/var/lib/backrest", user = "backrest"):
+  version 1.0.0
+  description "Install Backrest v${version} web UI for restic"
+
+  [create user] as root, timeout 15s:
+    skip if $ id "${user}" >/dev/null 2>&1
+    run    $ useradd -r -s /usr/sbin/nologin -d "${data_dir}" -m "${user}"
+
+  [create dirs] as root, timeout 10s:
+    first [create user]
+    skip if $ test -d "${config_dir}" && test -d "${data_dir}"
+    run    $ mkdir -p "${config_dir}" "${data_dir}" && chown ${user}:${user} "${config_dir}" "${data_dir}"
+
+  [download binary] as root, timeout 3m, retry 2x wait 10s:
+    first [create dirs]
+    skip if $ backrest --version 2>/dev/null | grep -q "v${version}"
+    run    $ curl -fSL "https://github.com/garethgeorge/backrest/releases/download/v${version}/backrest_Linux_x86_64.tar.gz" -o /tmp/backrest.tar.gz && tar -xzf /tmp/backrest.tar.gz -C /tmp && mv /tmp/backrest /usr/local/bin/backrest && chmod 755 /usr/local/bin/backrest && rm -f /tmp/backrest.tar.gz
+
+  [install restic] as root, timeout 3m, retry 1x wait 5s:
+
+    [update cache] as root, timeout 2m, retry 2x wait 10s:
+      skip if $ find /var/lib/apt/lists -maxdepth 1 -mmin -60 | grep -q .
+      run    $ apt-get update -y
+
+    first [update cache]
+    skip if $ restic version >/dev/null 2>&1
+    run    $ apt-get install -y restic
+
+  [create systemd unit] as root, timeout 15s:
+    first [download binary]
+    first [install restic]
+    skip if $ test -f /etc/systemd/system/backrest.service
+    run    $ printf '[Unit]\nDescription=Backrest restic UI\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=%s\nGroup=%s\nEnvironment=BACKREST_PORT=%s\nEnvironment=BACKREST_CONFIG=%s/config.json\nEnvironment=BACKREST_DATA=%s\nEnvironment=XDG_CACHE_HOME=%s/cache\nExecStart=/usr/local/bin/backrest\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\n' "${user}" "${user}" "${bind}" "${config_dir}" "${data_dir}" "${data_dir}" > /etc/systemd/system/backrest.service
+
+  [enable service] as root, timeout 30s:
+    first [create systemd unit]
+    run $ systemctl daemon-reload && systemctl enable backrest && systemctl start backrest
+
+  first [enable service]
+  run $ systemctl is-active backrest && echo "Backrest running on ${bind}"
+  timeout 15s
+  collect "backrest_status"

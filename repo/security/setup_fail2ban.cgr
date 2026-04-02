@@ -1,0 +1,36 @@
+# security/setup_fail2ban — Install and configure fail2ban for SSH protection
+#
+# Parameters:
+#   max_retry  (optional) — login attempts before ban, default "5"
+#   ban_time   (optional) — ban duration in seconds, default "3600"
+#   find_time  (optional) — window for counting failures in seconds, default "600"
+
+template setup_fail2ban(max_retry = "5", ban_time = "3600", find_time = "600"):
+  version 1.0.0
+  description "Setup fail2ban for SSH"
+
+  [install] as root, timeout 3m, retry 1x wait 5s:
+
+    [update cache] as root, timeout 2m, retry 2x wait 10s:
+      skip if $ find /var/lib/apt/lists -maxdepth 1 -mmin -60 | grep -q .
+      run    $ apt-get update -y
+
+    first [update cache]
+    skip if $ dpkg -l fail2ban 2>/dev/null | grep -q '^ii'
+    run    $ apt-get install -y fail2ban
+
+  [configure jail] as root, timeout 15s:
+    first [install]
+    content > /etc/fail2ban/jail.d/cgr-sshd.conf:
+      [sshd]
+      enabled = true
+      port = ssh
+      filter = sshd
+      maxretry = ${max_retry}
+      bantime = ${ban_time}
+      findtime = ${find_time}
+
+  first [configure jail]
+  run    $ systemctl enable fail2ban && systemctl restart fail2ban && fail2ban-client status sshd
+  as root, timeout 30s
+  collect "fail2ban_status"

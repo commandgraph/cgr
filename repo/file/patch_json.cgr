@@ -1,0 +1,26 @@
+# file/patch_json — Apply key=value patches to a JSON file
+#
+# Parameters:
+#   dest    (required) — path to the JSON file on the target
+#   key     (required) — dot-path key to set (e.g. "logging.driver" or "hosts[]")
+#   value   (required) — value to assign (string, number, or bare true/false/null)
+#   assert_key  (optional) — key to assert exists after patching, default ""
+#   reload  (optional) — command to run after patching (e.g. "systemctl reload foo"), default ""
+
+template patch_json(dest, key, value, assert_key = "", reload = ""):
+  version 1.0.0
+  description "Patch JSON ${dest}: ${key} = ${value}"
+
+  [patch file]:
+    json "${dest}":
+      set "${key}" = "${value}"
+
+  [assert key present]:
+    first [patch file]
+    when "${assert_key} != ''"
+    assert $ python3 -c "import json,sys; d=json.load(open('${dest}')); assert '${assert_key}' in str(d)", "${assert_key} must be present in ${dest}"
+
+  [reload service] as root, timeout 30s:
+    first [patch file]
+    when "${reload} != ''"
+    run $ ${reload}

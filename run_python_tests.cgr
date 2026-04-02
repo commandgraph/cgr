@@ -1,0 +1,13 @@
+--- Run Python Tests ---
+
+set repo_dir = "/home/coder/commandgraph"
+
+using apt/install_package
+
+target "local" local:
+  [install Python test prerequisites] from apt/install_package:
+    name = "python3 python3-pytest"
+
+  [run pytest] timeout 10m:
+    first [install Python test prerequisites]
+    always run $ cd ${repo_dir} && python3 -m pytest test_commandgraph.py

@@ -1,0 +1,33 @@
+# backup/install_restic — Install restic backup tool
+#
+# Installs restic via apt or downloads the latest binary if apt
+# version is too old. Ensures the binary has proper permissions.
+#
+# Parameters:
+#   method   (optional) — "apt" or "binary", default "apt"
+#   version  (optional) — binary version to download if method=binary, default "0.17.3"
+
+template install_restic(method = "apt", version = "0.17.3"):
+  version 1.0.0
+  description "Install restic (${method})"
+
+  [install via apt] as root, timeout 3m, retry 1x wait 5s:
+    when "${method} == 'apt'"
+
+    [update cache] as root, timeout 2m, retry 2x wait 10s:
+      when "${method} == 'apt'"
+      skip if $ find /var/lib/apt/lists -maxdepth 1 -mmin -60 | grep -q .
+      run    $ apt-get update -y
+
+    first [update cache]
+    skip if $ restic version >/dev/null 2>&1
+    run    $ apt-get install -y restic
+
+  [install via binary] as root, timeout 2m, retry 1x wait 10s:
+    when "${method} == 'binary'"
+    skip if $ restic version 2>/dev/null | grep -q "${version}"
+    run    $ curl -fSL "https://github.com/restic/restic/releases/download/v${version}/restic_${version}_linux_amd64.bz2" -o /tmp/restic.bz2 && bunzip2 -f /tmp/restic.bz2 && mv /tmp/restic /usr/local/bin/restic && chmod 755 /usr/local/bin/restic
+
+  first [install via apt]
+  run $ restic version
+  collect "restic_version"

@@ -1,0 +1,153 @@
+# audit/system_audit — Full read-only system audit
+#
+# Parameters:
+#   dns_test   (optional) — domain to test DNS/connectivity
+#   http_test  (optional) — URL to test HTTP reachability
+
+template system_audit(dns_test = "google.com", http_test = "https://google.com"):
+  version 1.0.0
+  description "Full system audit"
+
+  # ── Identity ───────────────────────────────────────────────
+  [gather identity]:
+    parallel:
+      [hostname]:
+        run $ hostname -f 2>/dev/null || hostname
+        collect "hostname"
+
+      [os release]:
+        run $ cat /etc/os-release 2>/dev/null | grep -E "^(PRETTY_NAME|ID|VERSION_ID)=" || echo "unknown"
+        collect "os_release"
+
+      [kernel version]:
+        run $ uname -srm
+        collect "kernel"
+
+      [machine id]:
+        run $ cat /etc/machine-id 2>/dev/null || echo "none"
+
+      [timezone]:
+        run $ timedatectl 2>/dev/null | grep "Time zone" || cat /etc/timezone 2>/dev/null || date +%Z
+
+  # ── Resource usage ─────────────────────────────────────────
+  [gather resources]:
+    parallel:
+      [uptime and load]:
+        run $ uptime
+        collect "uptime"
+
+      [memory usage]:
+        run $ free -h
+        collect "memory"
+
+      [disk usage]:
+        run $ df -h --total 2>/dev/null || df -h
+        collect "disk"
+
+      [inode usage]:
+        run $ df -i --total 2>/dev/null || df -i
+
+      [cpu info]:
+        run $ nproc && grep "model name" /proc/cpuinfo 2>/dev/null | head -1 || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "unknown cpu"
+        collect "cpu"
+
+      [swap usage]:
+        run $ swapon --show 2>/dev/null || echo "no swap"
+
+      [top processes by cpu]:
+        run $ ps aux --sort=-%cpu 2>/dev/null | head -11 || ps aux | head -11
+
+      [top processes by memory]:
+        run $ ps aux --sort=-%mem 2>/dev/null | head -11 || ps aux | head -11
+
+  # ── Network ────────────────────────────────────────────────
+  [check connectivity]:
+    run $ ping -c 1 -W 3 ${dns_test} >/dev/null 2>&1 && echo "internet: reachable" || echo "internet: unreachable"
+    collect "connectivity"
+
+  [gather network]:
+    first [check connectivity]
+    parallel:
+      [ip addresses]:
+        run $ ip -brief addr 2>/dev/null || ifconfig 2>/dev/null || echo "no ip tool found"
+        collect "ip_addresses"
+
+      [default route]:
+        run $ ip route show default 2>/dev/null || netstat -rn 2>/dev/null | grep "^0.0.0.0" || echo "no route tool found"
+
+      [dns resolution]:
+        run $ host ${dns_test} 2>/dev/null || nslookup ${dns_test} 2>/dev/null || dig ${dns_test} +short 2>/dev/null || echo "no dns tool found"
+
+      [http reachability]:
+        run $ curl -sI -o /dev/null -w "http: %{http_code} in %{time_total}s" ${http_test} 2>/dev/null || wget --spider -q ${http_test} 2>&1 && echo "http: ok" || echo "http: no curl/wget"
+
+      [listening ports]:
+        run $ ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || echo "no socket tool found"
+        collect "listening_ports"
+
+      [dns servers]:
+        run $ cat /etc/resolv.conf 2>/dev/null | grep nameserver || echo "no resolv.conf"
+
+  # ── Packages ───────────────────────────────────────────────
+  [check package updates]:
+    parallel:
+      [pending updates]:
+        run $ apt list --upgradable 2>/dev/null || yum check-update 2>/dev/null || dnf check-update 2>/dev/null || apk list -u 2>/dev/null || echo "unknown package manager"
+        timeout 1m
+        collect "pending_updates"
+
+      [security updates]:
+        run $ apt list --upgradable 2>/dev/null | grep -i secur || unattended-upgrades --dry-run 2>/dev/null | head -5 || echo "no security update info"
+        timeout 1m
+
+      [reboot required]:
+        run $ test -f /var/run/reboot-required && cat /var/run/reboot-required || echo "no reboot required"
+        collect "reboot_required"
+
+      [last package change]:
+        run $ stat -c '%y' /var/lib/dpkg/lock-frontend 2>/dev/null || stat -c '%y' /var/lib/rpm/.rpm.lock 2>/dev/null || echo "unknown"
+
+  # ── Services and security ──────────────────────────────────
+  [gather services]:
+    parallel:
+      [running services]:
+        run $ systemctl list-units --type=service --state=running --no-pager 2>/dev/null | head -30 || service --status-all 2>/dev/null | grep "+" || echo "no service manager found"
+
+      [failed services]:
+        run $ systemctl list-units --type=service --state=failed --no-pager 2>/dev/null || echo "no systemd"
+        collect "failed_services"
+
+      [logged in users]:
+        run $ who 2>/dev/null || w 2>/dev/null || echo "no who/w"
+
+      [last logins]:
+        run $ last -n 10 2>/dev/null || echo "no last command"
+
+      [ntp sync]:
+        run $ timedatectl show -p NTPSynchronized --value 2>/dev/null || chronyc tracking 2>/dev/null | head -3 || ntpstat 2>/dev/null || echo "unknown ntp status"
+
+      [firewall status]:
+        run $ ufw status 2>/dev/null || iptables -L -n --line-numbers 2>/dev/null | head -20 || firewall-cmd --state 2>/dev/null || echo "no firewall tool found"
+
+      [selinux or apparmor]:
+        run $ getenforce 2>/dev/null || aa-status 2>/dev/null | head -5 || echo "neither selinux nor apparmor"
+
+  # ── Storage health ─────────────────────────────────────────
+  [gather storage]:
+    parallel:
+      [mount points]:
+        run $ mount | grep "^/" || echo "no mounts"
+
+      [lvm volumes]:
+        run $ lvs 2>/dev/null || echo "no lvm"
+
+      [largest directories]:
+        run $ du -sh /var/log /tmp /home /opt /usr 2>/dev/null | sort -rh | head -10
+
+      [old kernels]:
+        run $ dpkg -l 'linux-image-*' 2>/dev/null | grep ^ii | awk '{print $2}' || rpm -qa kernel 2>/dev/null || echo "n/a"
+
+  # ── Summary ────────────────────────────────────────────────
+  first [gather identity], [gather resources], [gather network], [check package updates], [gather services], [gather storage]
+  run $ echo "=== Audit complete ===" && echo "Host: $(hostname -f 2>/dev/null || hostname)" && echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)" && echo "Kernel: $(uname -r)" && echo "Uptime: $(uptime -p 2>/dev/null || uptime)" && echo "Load: $(cat /proc/loadavg 2>/dev/null | cut -d' ' -f1-3)"
+  collect "summary"

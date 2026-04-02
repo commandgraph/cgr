@@ -1,0 +1,15 @@
+# dnf/upgrade_all_packages — Update all packages via DNF (RHEL 8+/Fedora)
+#
+# Refreshes DNF metadata cache then runs a full system upgrade.
+
+template upgrade_all_packages():
+  version 1.0.0
+  description "Update all packages using DNF"
+
+  [refresh metadata] as root, timeout 2m, retry 2x wait 10s:
+    run $ dnf makecache
+
+  first [refresh metadata]
+  run    $ dnf upgrade -y
+  as root, timeout 10m, retry 1x wait 5s
+  collect "upgrade_result"
