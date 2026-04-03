@@ -2949,6 +2949,16 @@ class TestIDEServerAPI:
         assert headers.get("Access-Control-Allow-Origin") == f"http://localhost:{self._port}"
         assert "version" in body
 
+    def test_info_cors_origin_is_canonicalized(self):
+        status, headers, body = self._raw_api(
+            "GET",
+            "/api/info",
+            headers={"Origin": f"http://LOCALHOST:{self._port}"},
+        )
+        assert status == 200
+        assert headers.get("Access-Control-Allow-Origin") == f"http://localhost:{self._port}"
+        assert "version" in body
+
     def test_info_rejects_disallowed_host_header(self):
         status, headers, body = self._raw_api(
             "GET",
@@ -5197,6 +5207,29 @@ class TestSecretBackends:
         assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "error:" in out
+        assert "top-secret" not in out
+
+    def test_cmd_secrets_view_masks_values(self, tmp_path, capsys):
+        secrets_path = tmp_path / "vault.enc"
+        _write_encrypted_secrets(secrets_path, "correct", {"api_key": "top-secret"})
+        args = argparse.Namespace(vault_pass="correct", vault_pass_ask=False, vault_pass_file=None,
+                                  show_values=False)
+        cg.cmd_secrets("view", str(secrets_path), vault_args=args)
+        out = capsys.readouterr().out
+        assert "api_key" in out
+        assert "<hidden:10 chars>" in out
+        assert "top-secret" not in out
+
+    def test_cmd_secrets_view_show_values_still_masks_output(self, tmp_path, capsys):
+        secrets_path = tmp_path / "vault.enc"
+        _write_encrypted_secrets(secrets_path, "correct", {"api_key": "top-secret"})
+        args = argparse.Namespace(vault_pass="correct", vault_pass_ask=False, vault_pass_file=None,
+                                  show_values=True)
+        cg.cmd_secrets("view", str(secrets_path), vault_args=args)
+        out = capsys.readouterr().out
+        assert "api_key" in out
+        assert "<hidden:10 chars>" in out
+        assert "plaintext secret display is disabled" in out
         assert "top-secret" not in out
 
     def test_cmd_secrets_rm_missing_key_leaves_file_intact(self, tmp_path, capsys):

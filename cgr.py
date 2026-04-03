@@ -8169,6 +8169,13 @@ def _secure_delete_text_file(path_str: str):
             pass
 
 
+def _masked_secret_display(value: str) -> str:
+    """Return a non-reversible display string for secret values."""
+    if not value:
+        return "<hidden>"
+    return f"<hidden:{len(value)} chars>"
+
+
 def _add_vault_pass_args(ap):
     """Add standard vault-pass CLI flags to a parser."""
     ap.add_argument("--vault-pass", default=None, metavar="PASS",
@@ -8219,10 +8226,14 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
         if not path.exists():
             print(red(f"error: {filepath} not found")); sys.exit(1)
         passphrase = _get_vault_pass(vault_args)
+        show_values = bool(getattr(vault_args, "show_values", False))
         try:
             secrets = _load_secrets(filepath, passphrase)
+            if show_values:
+                print(yellow("  warning: plaintext secret display is disabled; showing masked values instead."))
             for k, v in secrets.items():
-                print(f"  {cyan(k)} = {dim(repr(v))}")
+                display_value = _masked_secret_display(v)
+                print(f"  {cyan(k)} = {dim(display_value)}")
             if not secrets:
                 print(dim("  (empty)"))
         except (ValueError, RuntimeError) as e:
@@ -9417,10 +9428,12 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
         host = parsed.hostname
         if host is None:
             return None
-        # Reflect a canonical origin string instead of the raw request header.
-        if ":" in host and not host.startswith("["):
-            host = f"[{host}]"
-        return f"http://{host}:{parsed.port}"
+        canonical_origin_by_host = {
+            "localhost": f"http://localhost:{port}",
+            "127.0.0.1": f"http://127.0.0.1:{port}",
+            "::1": f"http://[::1]:{port}",
+        }
+        return canonical_origin_by_host.get(host)
 
     auto_allowed_hosts = _auto_allowed_serve_hosts()
     extra_allowed_hosts = list(dict.fromkeys([*(allow_hosts or []), *auto_allowed_hosts]))
@@ -9446,15 +9459,18 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             extra_allowed_hosts=extra_allowed_hosts,
         )
 
-    def _atomic_write_text(path: Path, content: str):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    def _atomic_write_text(path: Path, content: str, *, allowed_ext: set[str], require_exists: bool = True):
+        safe_path = _resolve_safe_ide_path(path, allowed_ext=allowed_ext, require_exists=require_exists)
+        if safe_path is None:
+            raise ValueError("Invalid file path")
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{safe_path.name}.", suffix=".tmp", dir=str(safe_path.parent))
         try:
             with os.fdopen(fd, "w") as f:
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_name, path)
+            os.replace(tmp_name, safe_path)
         finally:
             if os.path.exists(tmp_name):
                 try:
@@ -9677,22 +9693,16 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             })
         graph_dir = str(Path(current_file).parent) if current_file else None
         for inv in ast.inventories:
-            inv_path = Path(inv.path)
-            if not inv_path.is_absolute() and graph_dir:
-                inv_path = Path(graph_dir) / inv_path
+            inv_info = _safe_external_file_ref(inv.path, graph_dir)
             ext_files.append({
                 "type": "inventory", "path": inv.path, "line": inv.line,
-                "resolved": str(inv_path.resolve()),
-                "exists": inv_path.exists(),
+                **inv_info,
             })
         for sec in ast.secrets:
-            sec_path = Path(sec.path)
-            if not sec_path.is_absolute() and graph_dir:
-                sec_path = Path(graph_dir) / sec_path
+            sec_info = _safe_external_file_ref(sec.path, graph_dir)
             ext_files.append({
                 "type": "secrets", "path": sec.path, "line": sec.line,
-                "resolved": str(sec_path.resolve()),
-                "exists": sec_path.exists(),
+                **sec_info,
             })
 
         return {
@@ -9723,6 +9733,61 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
         if fpath.is_relative_to(work_dir.resolve()):
             return True
         return False
+
+    def _resolve_safe_ide_path(path_like, *, allowed_ext: set[str] | None = None,
+                               require_exists: bool = True, allow_dirs: bool = False):
+        """Resolve an IDE file path only if it remains inside allowed roots."""
+        try:
+            raw_path = Path(path_like)
+        except TypeError:
+            return None
+        if any(ch in str(raw_path) for ch in "\x00\r\n"):
+            return None
+        if raw_path.exists() and raw_path.is_symlink():
+            return None
+        try:
+            resolved = raw_path.resolve(strict=require_exists)
+        except Exception:
+            return None
+        if require_exists and not resolved.exists():
+            return None
+        if not allow_dirs and resolved.exists() and resolved.is_dir():
+            return None
+        if allowed_ext is not None and resolved.suffix.lower() not in allowed_ext:
+            return None
+        if not _is_safe_file_path(str(resolved)):
+            return None
+        return resolved
+
+    def _safe_current_graph_file():
+        if not current_file:
+            return None
+        return _resolve_safe_ide_path(current_file, allowed_ext={".cgr", ".cg"}, require_exists=True)
+
+    def _safe_output_path_for_graph(graph_path: Path):
+        candidate = graph_path.with_name(graph_path.name + ".output")
+        return _resolve_safe_ide_path(candidate, allowed_ext={".output"}, require_exists=False)
+
+    def _safe_external_file_ref(path_str: str, graph_dir: str | None):
+        candidate = Path(path_str)
+        if not candidate.is_absolute() and graph_dir:
+            candidate = Path(graph_dir) / candidate
+        try:
+            resolved = candidate.resolve(strict=False)
+        except Exception:
+            return {"resolved": None, "exists": False}
+        if not _is_safe_file_path(str(resolved)):
+            return {"resolved": None, "exists": False}
+        return {"resolved": str(resolved), "exists": resolved.exists()}
+
+    def _resolve_allowed_side_editor_path(path_str: str, allowed_ext: set[str], require_exists: bool = True):
+        """Resolve a side-editor file path only if it canonicalizes into an allowed location."""
+        if not isinstance(path_str, str):
+            return None
+        raw = path_str.strip()
+        if not raw:
+            return None
+        return _resolve_safe_ide_path(raw, allowed_ext=allowed_ext, require_exists=require_exists)
 
     def _list_graph_files():
         files = sorted(str(f.relative_to(work_dir)) for f in work_dir.rglob("*.cgr"))
@@ -10075,7 +10140,7 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                     self._json({"error": "Invalid file path"}, 403)
                     return
                 try:
-                    _atomic_write_text(fpath, content)
+                    _atomic_write_text(fpath, content, allowed_ext={".cgr", ".cg"}, require_exists=True)
                     current_file = fpath
                     self._json({"ok": True})
                 except Exception as e:
@@ -10148,7 +10213,10 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                 except ResolveError as e:
                     self._json(_vault_error_response(str(e))); return
                 if current_file:
-                    _atomic_write_text(current_file, source)
+                    safe_current = _safe_current_graph_file()
+                    if not safe_current:
+                        self._json({"error": "No file loaded"}, 400); return
+                    _atomic_write_text(safe_current, source, allowed_ext={".cgr", ".cg"}, require_exists=True)
                 apply_running = True
                 apply_stop_count = 0
                 apply_thread = threading.Thread(target=_run_apply_bg,
@@ -10190,12 +10258,13 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             elif self.path == "/api/state/reset":
                 if not self._require_csrf(body):
                     return
-                if current_file:
+                safe_current = _safe_current_graph_file()
+                if safe_current:
                     try:
-                        cmd_state_reset(str(current_file))
-                        op = _output_path(str(current_file))
-                        if Path(op).exists():
-                            Path(op).unlink()
+                        cmd_state_reset(str(safe_current))
+                        output_path = _safe_output_path_for_graph(safe_current)
+                        if output_path and output_path.exists():
+                            output_path.unlink()
                         self._json({"ok": True})
                     except Exception as e:
                         self._json({"error": str(e)}, 500)
@@ -10207,10 +10276,11 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                     return
                 step = body.get("step", "")
                 action = body.get("action", "redo")
-                if current_file:
+                safe_current = _safe_current_graph_file()
+                if safe_current:
                     try:
-                        graph = _load(str(current_file), repo_dir=current_repo)
-                        cmd_state_set(str(current_file), step, action, graph)
+                        graph = _load(str(safe_current), repo_dir=current_repo)
+                        cmd_state_set(str(safe_current), step, action, graph)
                         self._json({"ok": True})
                     except Exception as e:
                         self._json({"error": str(e)}, 500)
@@ -10225,21 +10295,16 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                 content = body.get("content", "")
                 if not fpath_raw:
                     self._json({"error": "Missing 'path' parameter"}, 400); return
-                raw_path = Path(fpath_raw)
-                if raw_path.exists() and os.path.islink(raw_path):
-                    self._json({"error": "Refusing to write through symlink"}, 403); return
-                fpath = raw_path.resolve()
-                # Security: extension whitelist
+                if isinstance(fpath_raw, str):
+                    raw_candidate = Path(fpath_raw.strip())
+                    if raw_candidate.exists() and raw_candidate.is_symlink():
+                        self._json({"error": "Refusing to write through symlink"}, 403); return
                 allowed_ext = {".cgr", ".cg", ".ini", ".conf", ".cfg", ".txt", ".yaml", ".yml", ".json"}
-                if fpath.suffix.lower() not in allowed_ext:
-                    self._json({"error": f"File type not allowed: {fpath.suffix}"}, 403); return
-                # Security: path must be in allowed directories
-                if not _is_safe_file_path(str(fpath)):
-                    self._json({"error": "Access denied: file outside allowed directories"}, 403); return
-                if not fpath.exists():
-                    self._json({"error": f"File not found: {fpath_raw}"}, 404); return
+                fpath = _resolve_allowed_side_editor_path(fpath_raw, allowed_ext, require_exists=True)
+                if not fpath:
+                    self._json({"error": f"File not found or not allowed: {fpath_raw}"}, 403); return
                 try:
-                    _atomic_write_text(fpath, content)
+                    _atomic_write_text(fpath, content, allowed_ext=allowed_ext, require_exists=True)
                     self._json({"ok": True, "path": str(fpath)})
                 except Exception as e:
                     self._json({"error": f"Write failed: {e}"}, 500); return
@@ -10831,6 +10896,8 @@ def main():
     ssc.add_argument("value",nargs="?",default=None,help="Value (for add)")
     _add_vault_pass_args(ssc)
     ssc.add_argument("--max-age",default=None,metavar="DAYS",help="Max secret age in days for audit (default: 90)")
+    ssc.add_argument("--show-values", action="store_true",
+                     help="Deprecated compatibility flag; `view` output is always masked")
 
     sdf=sub.add_parser("diff",help="Compare two graph files structurally")
     sdf.add_argument("file",help="First graph file (.cg or .cgr)")
