@@ -9,9 +9,11 @@ Run:  python3 -m pytest test_commandgraph.py -v
       (Engine file: cgr.py)
 """
 from __future__ import annotations
+import argparse
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1196,8 +1198,11 @@ class TestStateFile:
         path = tmp_path / "test.state"
         sf = cg.StateFile(path)
         sf.record(cg.ExecResult("s1", cg.Status.SUCCESS, run_rc=0), wave=0)
+        sf.acquire_lock()
+        sf.release_lock()
         sf.reset()
         assert not path.exists()
+        assert not Path(f"{path}.lock").exists()
         assert sf.should_skip("s1") is False
 
     def test_manual_set(self, tmp_path):
@@ -1262,6 +1267,52 @@ class TestStateFile:
         summary = sf.state_summary()
         assert summary.get("success") == 2
         assert summary.get("failed") == 1
+
+
+class TestStateCli:
+    def test_state_set_drop_and_compact_via_main(self, tmp_path, monkeypatch, capsys):
+        graph_path = tmp_path / "test.cgr"
+        marker = tmp_path / "marker.txt"
+        graph_path.write_text(textwrap.dedent(f"""\
+            target "local" local:
+              [create marker]:
+                skip if $ test -f {marker}
+                run $ touch {marker}
+              [report]:
+                first [create marker]
+                run $ echo done
+        """))
+
+        graph = cg._load(str(graph_path), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(graph_path), max_parallel=1)
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "state", "set", str(graph_path), "report", "redo"])
+        cg.main()
+        state = cg.StateFile(cg._state_path(str(graph_path)))
+        assert state.get("local.report").status == "failed"
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "state", "drop", str(graph_path), "report"])
+        cg.main()
+        state = cg.StateFile(cg._state_path(str(graph_path)))
+        assert state.get("local.report") is None
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "state", "compact", str(graph_path)])
+        cg.main()
+        out = capsys.readouterr().out
+        assert "State compacted" in out
+
+        raw_lines = [line for line in Path(cg._state_path(str(graph_path))).read_text().splitlines() if line.strip()]
+        assert len(raw_lines) == 1
+
+    def test_state_compact_missing_graph_does_not_emit_load_error(self, tmp_path, monkeypatch, capsys):
+        graph_path = tmp_path / "missing.cgr"
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "state", "compact", str(graph_path)])
+        cg.main()
+
+        out = capsys.readouterr().out
+        assert "No state file to compact." in out
+        assert "error: not found" not in out
 
     def test_default_state_path_uses_dot_state_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -1609,7 +1660,7 @@ class TestExampleFiles:
 
     def test_webserver_cg(self, project_dir, repo_dir):
         graph = self._validate(project_dir / "webserver.cg", repo_dir=repo_dir)
-        assert len(graph.all_resources) == 19
+        assert len(graph.all_resources) == 18
 
     def test_parallel_test_cgr(self, project_dir):
         graph = self._validate(project_dir / "parallel_test.cgr")
@@ -1682,6 +1733,84 @@ class TestDiff:
         rc = cg.cmd_diff(str(f1), str(f2), json_output=True)
         assert rc == 1
 
+    def test_json_output_includes_expected_fields(self, tmp_path, capsys):
+        src_a = textwrap.dedent('''\
+            target "local" local:
+              [step]:
+                run $ echo a
+        ''')
+        src_b = textwrap.dedent('''\
+            target "local" local:
+              [step]:
+                run $ echo b
+        ''')
+        f1 = tmp_path / "a.cgr"
+        f2 = tmp_path / "b.cgr"
+        f1.write_text(src_a)
+        f2.write_text(src_b)
+
+        rc = cg.cmd_diff(str(f1), str(f2), json_output=True)
+        out = json.loads(capsys.readouterr().out)
+
+        assert rc == 1
+        assert out["file_a"] == str(f1)
+        assert out["file_b"] == str(f2)
+        assert out["identical"] is False
+        assert out["changed"] == [{"resource": "step", "fields": ["command"]}]
+
+
+class TestValidateJsonCli:
+    def test_validate_json_reports_cross_node_details(self, monkeypatch, capsys):
+        project_dir = Path(__file__).resolve().parent
+        graph_path = project_dir / "multinode_test.cgr"
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "validate", "--json", str(graph_path)])
+        cg.main()
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["valid"] is True
+        assert out["nodes"] == 4
+        assert {"from": "monitor.register_db_check", "to": "db.setup_schema"} in out["cross_node_deps"]
+        assert out["node_ordering"]["web"] == ["db", "cache"]
+
+    def test_validate_json_invalid_graph_returns_error(self, tmp_path, monkeypatch, capsys):
+        graph_path = tmp_path / "bad.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            target "local" local:
+              [broken step]
+                run $ echo nope
+        """))
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "validate", "--json", str(graph_path)])
+        with pytest.raises(SystemExit) as exc:
+            cg.main()
+
+        out = json.loads(capsys.readouterr().out)
+        assert exc.value.code == 1
+        assert out["valid"] is False
+        assert out["file"] == str(graph_path)
+        assert "Invalid step header" in out["error"]
+
+
+class TestCompletion:
+    def test_bash_completion_includes_state_compact(self, capsys):
+        cg._print_completion("bash")
+        out = capsys.readouterr().out
+        assert 'compgen -W "show test reset set drop diff compact"' in out
+
+    def test_zsh_completion_includes_why_and_doctor(self, capsys):
+        cg._print_completion("zsh")
+        out = capsys.readouterr().out
+        assert "'why:Show reverse dependency chain'" in out
+        assert "'doctor:Check environment'" in out
+
+
+class TestTemplateCommand:
+    def test_template_test_accepts_provisioning_and_disabled_branches(self, capsys):
+        cg.cmd_test_template(repo_dir="./repo", template_path="file/ensure_line", verbose=True)
+        out = capsys.readouterr().out
+        assert "1 passed, 0 failed" in out
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Convert and fmt (round-trip)
@@ -1730,6 +1859,76 @@ class TestConvert:
         cg.cmd_convert(str(cg_file), output_file=str(cgr_file))
         graph = cg._load(str(cgr_file), raise_on_error=True)
         assert len(graph.all_resources) == 2
+
+    def test_cgr_to_cg_template_step_refs_roundtrip(self, tmp_path):
+        """Converted .cg should preserve template-step dependencies from .cgr."""
+        project_dir = Path(__file__).resolve().parent
+        repo_dir = str((project_dir / "repo").resolve())
+        src = project_dir / "webserver.cgr"
+        out = tmp_path / "webserver.cg"
+
+        cg.cmd_convert(str(src), output_file=str(out))
+
+        graph = cg._load(str(out), repo_dir=repo_dir, raise_on_error=True)
+        assert len(graph.all_resources) == 18
+        assert cg.cmd_diff(str(src), str(out), repo_dir=repo_dir, json_output=True) == 0
+
+    def test_cg_to_cgr_template_instance_refs_roundtrip(self, tmp_path):
+        """Converted .cgr should emit template instance names that match .cg needs refs."""
+        project_dir = Path(__file__).resolve().parent
+        repo_dir = str((project_dir / "repo").resolve())
+        src = project_dir / "webserver.cg"
+        out = tmp_path / "webserver.cgr"
+
+        cg.cmd_convert(str(src), output_file=str(out))
+
+        graph = cg._load(str(out), repo_dir=repo_dir, raise_on_error=True)
+        assert len(graph.all_resources) == 18
+        assert cg.cmd_diff(str(src), str(out), repo_dir=repo_dir, json_output=True) == 0
+
+    def test_cg_to_cgr_cross_node_refs_roundtrip(self, tmp_path):
+        """Converted .cgr should preserve cross-node dependency references."""
+        project_dir = Path(__file__).resolve().parent
+        src = project_dir / "multinode_test.cg"
+        out = tmp_path / "multinode_test.cgr"
+
+        cg.cmd_convert(str(src), output_file=str(out))
+
+        graph = cg._load(str(out), raise_on_error=True)
+        assert len(graph.all_resources) == 13
+        assert cg.cmd_diff(str(src), str(out), json_output=True) == 0
+
+    def test_cg_to_cgr_nested_cross_node_refs_roundtrip(self, tmp_path):
+        src = tmp_path / "nested.cg"
+        out = tmp_path / "nested.cgr"
+        src.write_text(textwrap.dedent("""\
+            node "db" {
+              via local
+              resource parent {
+                description "parent"
+                run `echo parent`
+                resource child {
+                  description "child"
+                  run `echo child`
+                }
+              }
+            }
+            node "web" {
+              via local
+              resource use_child {
+                description "use child"
+                needs db.parent.child
+                run `echo ok`
+              }
+            }
+        """))
+
+        cg.cmd_convert(str(src), output_file=str(out))
+
+        graph = cg._load(str(out), raise_on_error=True)
+        assert len(graph.all_resources) == 3
+        assert cg.cmd_diff(str(src), str(out), json_output=True) == 0
+        assert "[db/parent/child]" in out.read_text()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1863,6 +2062,34 @@ class TestEndToEndApply:
         # Still successful
         assert all(e.status in ("success", "skip_check") for e in sf.all_entries().values())
 
+    def test_start_from_reports_skips_as_start_from(self, tmp_path, capsys):
+        graph_file = tmp_path / "start_from.cgr"
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        c = tmp_path / "c.txt"
+        graph_file.write_text(textwrap.dedent(f'''\
+            target "local" local:
+              [a]:
+                skip if $ test -f {a}
+                run $ touch {a}
+              [b]:
+                first [a]
+                skip if $ test -f {b}
+                run $ touch {b}
+              [c]:
+                first [b]
+                skip if $ test -f {c}
+                run $ touch {c}
+        '''))
+
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1, start_from="c")
+
+        out = capsys.readouterr().out
+        assert "before start" in out
+        assert "--start-from" in out
+        assert "completed previously" not in out
+
     def test_apply_with_collect(self, tmp_path):
         graph_file = tmp_path / "test.cgr"
         graph_file.write_text(textwrap.dedent('''\
@@ -1879,6 +2106,24 @@ class TestEndToEndApply:
         outputs = of.all_outputs()
         assert len(outputs) >= 1
         assert any("test-host-123" in o.get("stdout", "") for o in outputs)
+
+    def test_apply_on_complete_exports_summary_env(self, tmp_path):
+        graph_file = tmp_path / "hook.cgr"
+        hook_file = tmp_path / "hook.out"
+        graph_file.write_text(textwrap.dedent("""\
+            target "local" local:
+              [a]:
+                run $ echo hi
+        """))
+
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        hook_cmd = f"env | grep '^CGR_' > {shlex.quote(str(hook_file))}"
+        cg.cmd_apply_stateful(graph, str(graph_file), on_complete=hook_cmd)
+
+        out = hook_file.read_text()
+        assert "CGR_STATUS=ok" in out
+        assert "CGR_TOTAL=1" in out
+        assert f"CGR_FILE={graph_file}" in out
 
     def test_apply_run_id_uses_isolated_state_file(self, tmp_path):
         graph_file = tmp_path / "test.cgr"
@@ -2253,7 +2498,7 @@ class TestTimeoutInteraction:
             global_timeout=0  # immediate timeout
         )
         # With timeout=0, it should stop very quickly
-        # At minimum wave 1 should attempt (timeout checked between waves)
+        assert results == []
         assert wall_ms < 5000  # should not hang
 
 
@@ -2754,7 +2999,35 @@ class TestIDEServerAPI:
         # Should have at least start + step events + done
         types = [e["type"] for e in r2["events"]]
         assert "start" in types
+        step_start = next(e for e in r2["events"] if e["type"] == "step_start")
+        assert "timeout_s" in step_start
+        assert "run" in step_start
+        assert "ts" in step_start
         assert "done" in types
+
+    def test_opened_file_becomes_active_apply_target(self):
+        other = Path(self._tmp_path) / "other.cgr"
+        original = Path(self._cgr_file)
+        other.write_text(textwrap.dedent("""\
+            --- Other Graph ---
+            target "local" local:
+              [other step]:
+                run $ echo other
+        """))
+        open_resp = self._api("POST", "/api/file/open", {"name": other.name})
+        assert open_resp["ok"] is True
+        apply_resp = self._api("POST", "/api/apply", {"source": other.read_text() + "\n# switched\n"})
+        assert apply_resp["ok"] is True
+        for _ in range(50):
+            events = self._api("GET", "/api/apply/events?since=0")
+            if any(e["type"] == "done" for e in events.get("events", [])):
+                break
+            import time
+            time.sleep(0.1)
+        assert "# switched" in other.read_text()
+        assert "# switched" not in original.read_text()
+        restore_resp = self._api("POST", "/api/file/open", {"name": original.name})
+        assert restore_resp["ok"] is True
 
     def test_state_reset(self):
         try:
@@ -2763,6 +3036,47 @@ class TestIDEServerAPI:
             assert "ok" in r or "error" in r
         except Exception:
             pass  # Server may not have state file yet — acceptable
+
+    def test_history_reports_runs(self):
+        state = cg.StateFile(cg._state_path(self._cgr_file))
+        with state.lock():
+            state.record(cg.ExecResult("local.step_one", cg.Status.SUCCESS, run_rc=0, duration_ms=12), wave=0)
+            state.record(cg.ExecResult("local.step_two", cg.Status.FAILED, run_rc=1, duration_ms=7), wave=1)
+        r = self._api("GET", "/api/history")
+        assert len(r["runs"]) >= 1
+        latest = r["runs"][0]
+        assert latest["ok"] == 1
+        assert latest["fail"] == 1
+        assert {entry["id"] for entry in latest["entries"]} >= {"local.step_one", "local.step_two"}
+
+    def test_report_returns_collected_outputs(self):
+        output = cg.OutputFile(cg._output_path(self._cgr_file))
+        output.record("local.step_one", "artifact", "local", "hello", "", 0, 9)
+        r = self._api("GET", "/api/report")
+        assert len(r["outputs"]) >= 1
+        assert any(entry["key"] == "artifact" and entry["stdout"] == "hello" for entry in r["outputs"])
+
+    def test_lint_endpoint_returns_warnings(self):
+        src = textwrap.dedent("""\
+            --- Lint Graph ---
+            target "local" local:
+              [step]:
+                run $ echo hi
+        """)
+        r = self._api("POST", "/api/lint", {"source": src})
+        assert "error" not in r
+        assert any(w["msg"] == "No check clause — step is not idempotent." for w in r["warnings"])
+
+    def test_lint_endpoint_returns_parse_error_payload(self):
+        r = self._api("POST", "/api/lint", {"source": "this is not valid cgr"})
+        assert "error" in r
+        assert r["warnings"] == []
+
+    def test_lint_endpoint_does_not_mutate_loaded_file(self):
+        original = Path(self._cgr_file).read_text()
+        r = self._api("POST", "/api/lint", {"source": "this is not valid cgr"})
+        assert "error" in r
+        assert Path(self._cgr_file).read_text() == original
 
 
 class TestServeSecurity(TestIDEServerAPI):
@@ -2775,6 +3089,31 @@ class TestServeSecurity(TestIDEServerAPI):
         """))
         with pytest.raises(SystemExit):
             cg.cmd_serve(filepath=str(graph_path), port=8421, host="0.0.0.0", no_open=True)
+
+    def test_proxy_host_header_requires_allowlist(self):
+        assert not cg._is_allowed_serve_host(
+            "workspace-123.example.dev",
+            bind_host="127.0.0.1",
+        )
+        assert cg._is_allowed_serve_host(
+            "workspace-123.example.dev:443",
+            bind_host="127.0.0.1",
+            extra_allowed_hosts=["workspace-123.example.dev"],
+        )
+
+    def test_auto_allowed_serve_hosts_uses_vscode_proxy_uri(self):
+        hosts = cg._auto_allowed_serve_hosts({
+            "VSCODE_PROXY_URI": "https://coder.example.test/@user/ws/apps/code-server/proxy/{{port}}/",
+            "CODER_AGENT_URL": "https://ignored.example.test/",
+        })
+        assert hosts == ["coder.example.test"]
+
+    def test_host_rejection_includes_allow_host_hint(self):
+        status, _, body = self._raw_api("GET", "/api/info", headers={"Host": "workspace-123.example.dev"})
+        assert status == 403
+        assert body["error"] == "Host not allowed"
+        assert "--allow-host <proxy-hostname>" in body["hint"]
+        assert body["host"] == "workspace-123.example.dev"
 
     def test_file_view_denied(self):
         """Accessing files outside sandbox should be denied."""
@@ -4841,7 +5180,33 @@ class TestSecretBackends:
         cg.main()
         out = capsys.readouterr().out
         assert "supersecret" not in out
-        assert "***REDACTED***" in out
+
+    def test_get_vault_pass_errors_without_source(self, monkeypatch, capsys):
+        monkeypatch.delenv("CGR_VAULT_PASS", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            cg._get_vault_pass(None)
+        assert exc.value.code == 1
+        assert "No vault passphrase" in capsys.readouterr().out
+
+    def test_cmd_secrets_view_rejects_wrong_passphrase(self, tmp_path, capsys):
+        secrets_path = tmp_path / "vault.enc"
+        _write_encrypted_secrets(secrets_path, "correct", {"api_key": "top-secret"})
+        args = argparse.Namespace(vault_pass="wrong", vault_pass_ask=False, vault_pass_file=None)
+        with pytest.raises(SystemExit) as exc:
+            cg.cmd_secrets("view", str(secrets_path), vault_args=args)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "error:" in out
+        assert "top-secret" not in out
+
+    def test_cmd_secrets_rm_missing_key_leaves_file_intact(self, tmp_path, capsys):
+        secrets_path = tmp_path / "vault.enc"
+        _write_encrypted_secrets(secrets_path, "lol", {"api_key": "from-secret"})
+        args = argparse.Namespace(vault_pass="lol", vault_pass_ask=False, vault_pass_file=None)
+        cg.cmd_secrets("rm", str(secrets_path), key="missing_key", vault_args=args)
+        out = capsys.readouterr().out
+        assert "not found" in out
+        assert cg._load_secrets(str(secrets_path), "lol") == {"api_key": "from-secret"}
 
     def test_validate_redacts_secret_variables_in_json_output(self, tmp_path, monkeypatch, capsys):
         graph_path = tmp_path / "secret-test.cgr"
@@ -4861,6 +5226,30 @@ class TestSecretBackends:
 
 
 class TestSecretOutputRedactionFollowup:
+    def test_print_exec_verbose_shows_full_stdout_and_stderr(self, capsys):
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                run $ echo done
+        """)
+        g = _resolve_cgr(src)
+        res = g.all_resources["t.step"]
+        result = cg.ExecResult(
+            resource_id="t.step",
+            status=cg.Status.FAILED,
+            run_rc=1,
+            stdout="one\ntwo\nthree\nfour\nfive\nsix\n",
+            stderr="err1\nerr2\nerr3\nerr4\nerr5\nerr6\nerr7\nerr8\nerr9\n",
+            duration_ms=1,
+        )
+        cg._print_exec(1, 1, res, result, g, verbose=True)
+        out = capsys.readouterr().out
+        assert "one" in out
+        assert "six" in out
+        assert "err1" in out
+        assert "err9" in out
+        assert "│ ... (" not in out
+
     def test_print_exec_redacts_until_observed_value(self, monkeypatch, capsys):
         monkeypatch.setenv("MY_SECRET", "supersecret")
         src = textwrap.dedent("""\

@@ -3,19 +3,24 @@
 using apt/install_package
 
 target "local" local:
-  [install npm] from apt/install_package:
-    name = "npm"
+  [install Claude Code prerequisites] from apt/install_package:
+    name = "curl"
 
-  [install Claude Code] as root, timeout 5m, retry 1x wait 10s:
-    first [install npm]
-    skip if $ command -v claude >/dev/null 2>&1
-    run $ npm install -g @anthropic-ai/claude-code
+  [install Claude Code] timeout 5m, retry 1x wait 10s:
+    first [install Claude Code prerequisites]
+    skip if $ command -v claude >/dev/null 2>&1 || [ -x "$HOME/.local/bin/claude" ]
+    run $ curl -fsSL https://claude.ai/install.sh | bash
 
-  [update Claude Code] as root, timeout 5m, retry 1x wait 10s:
-    first [install npm]
-    skip if $ ! command -v claude >/dev/null 2>&1
-    run $ claude update || npm install -g @anthropic-ai/claude-code
+  [add Claude Code to PATH] timeout 1m:
+    first [install Claude Code]
+    skip if $ grep -Fqx 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc"
+    run $ printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bashrc"
+
+  [update Claude Code] timeout 5m, retry 1x wait 10s:
+    first [install Claude Code], [add Claude Code to PATH]
+    skip if $ ! command -v claude >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/claude" ]
+    run $ export PATH="$HOME/.local/bin:$PATH" && claude update
 
   verify "claude available":
-    first [install Claude Code], [update Claude Code]
-    run $ command -v claude && claude --version
+    first [install Claude Code], [update Claude Code], [add Claude Code to PATH]
+    run $ export PATH="$HOME/.local/bin:$PATH" && command -v claude && claude --version

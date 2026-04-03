@@ -529,6 +529,27 @@
     "version": "1.0.0"
   },
   {
+    "path": "file/ensure_line",
+    "name": "ensure_line",
+    "params": [
+      [
+        "text",
+        null
+      ],
+      [
+        "file",
+        null
+      ],
+      [
+        "reload",
+        ""
+      ]
+    ],
+    "description": "Ensure '${text}' in ${file}",
+    "file": "file/ensure_line.cgr",
+    "version": "1.0.0"
+  },
+  {
     "path": "file/logrotate_app",
     "name": "logrotate_app",
     "params": [
@@ -554,6 +575,64 @@
     "version": "1.0.0"
   },
   {
+    "path": "file/patch_ini",
+    "name": "patch_ini",
+    "params": [
+      [
+        "dest",
+        null
+      ],
+      [
+        "section",
+        null
+      ],
+      [
+        "key",
+        null
+      ],
+      [
+        "value",
+        null
+      ],
+      [
+        "reload",
+        ""
+      ]
+    ],
+    "description": "Patch INI ${dest}: [${section}] ${key} = ${value}",
+    "file": "file/patch_ini.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "file/patch_json",
+    "name": "patch_json",
+    "params": [
+      [
+        "dest",
+        null
+      ],
+      [
+        "key",
+        null
+      ],
+      [
+        "value",
+        null
+      ],
+      [
+        "assert_key",
+        ""
+      ],
+      [
+        "reload",
+        ""
+      ]
+    ],
+    "description": "Patch JSON ${dest}: ${key} = ${value}",
+    "file": "file/patch_json.cgr",
+    "version": "1.0.0"
+  },
+  {
     "path": "file/set_sysctl",
     "name": "set_sysctl",
     "params": [
@@ -568,6 +647,31 @@
     ],
     "description": "Set sysctl ${key} = ${value}",
     "file": "file/set_sysctl.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "file/write_config",
+    "name": "write_config",
+    "params": [
+      [
+        "src",
+        null
+      ],
+      [
+        "dest",
+        null
+      ],
+      [
+        "mode",
+        "0644"
+      ],
+      [
+        "owner",
+        ""
+      ]
+    ],
+    "description": "Write config to ${dest}",
+    "file": "file/write_config.cgr",
     "version": "1.0.0"
   },
   {
@@ -623,6 +727,85 @@
     ],
     "description": "Allow ${service} in firewalld (${zone})",
     "file": "firewall/firewalld_allow_service.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "k8s/apply_manifest",
+    "name": "apply_manifest",
+    "params": [
+      [
+        "manifest",
+        null
+      ],
+      [
+        "namespace",
+        "default"
+      ],
+      [
+        "kubeconfig",
+        ""
+      ],
+      [
+        "extra_flags",
+        ""
+      ]
+    ],
+    "description": "Apply manifest ${manifest}",
+    "file": "k8s/apply_manifest.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "k8s/helm_install",
+    "name": "helm_install",
+    "params": [
+      [
+        "release",
+        null
+      ],
+      [
+        "chart",
+        null
+      ],
+      [
+        "namespace",
+        "default"
+      ],
+      [
+        "values_file",
+        ""
+      ],
+      [
+        "extra_flags",
+        ""
+      ]
+    ],
+    "description": "Helm install/upgrade ${release} (${chart})",
+    "file": "k8s/helm_install.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "k8s/wait_ready",
+    "name": "wait_ready",
+    "params": [
+      [
+        "resource",
+        null
+      ],
+      [
+        "namespace",
+        "default"
+      ],
+      [
+        "timeout",
+        "120s"
+      ],
+      [
+        "kubeconfig",
+        ""
+      ]
+    ],
+    "description": "Wait for ${resource} to be ready",
+    "file": "k8s/wait_ready.cgr",
     "version": "1.0.0"
   },
   {
@@ -682,6 +865,48 @@
     ],
     "description": "Configure Nginx vhost for ${domain}",
     "file": "nginx/vhost.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "pkg/install_from_url",
+    "name": "install_from_url",
+    "params": [
+      [
+        "url",
+        null
+      ],
+      [
+        "name",
+        null
+      ],
+      [
+        "type",
+        "deb"
+      ]
+    ],
+    "description": "Install ${name} from URL",
+    "file": "pkg/install_from_url.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "pkg/pin_version",
+    "name": "pin_version",
+    "params": [
+      [
+        "name",
+        null
+      ],
+      [
+        "version",
+        null
+      ],
+      [
+        "priority",
+        "1001"
+      ]
+    ],
+    "description": "Pin ${name} to version ${version}",
+    "file": "pkg/pin_version.cgr",
     "version": "1.0.0"
   },
   {
@@ -757,6 +982,60 @@
     "version": "1.0.0"
   },
   {
+    "path": "service/create_unit",
+    "name": "create_unit",
+    "params": [
+      [
+        "name",
+        null
+      ],
+      [
+        "unit_file",
+        null
+      ],
+      [
+        "enable",
+        "yes"
+      ],
+      [
+        "start",
+        "yes"
+      ]
+    ],
+    "description": "Install systemd unit ${name}",
+    "file": "service/create_unit.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "service/timer_unit",
+    "name": "timer_unit",
+    "params": [
+      [
+        "name",
+        null
+      ],
+      [
+        "service_file",
+        null
+      ],
+      [
+        "timer_file",
+        null
+      ],
+      [
+        "enable",
+        "yes"
+      ],
+      [
+        "start",
+        "yes"
+      ]
+    ],
+    "description": "Install systemd timer ${name}",
+    "file": "service/timer_unit.cgr",
+    "version": "1.0.0"
+  },
+  {
     "path": "ssh/authorize_key",
     "name": "authorize_key",
     "params": [
@@ -821,6 +1100,82 @@
     "version": "1.0.0"
   },
   {
+    "path": "tls/install_ca_cert",
+    "name": "install_ca_cert",
+    "params": [
+      [
+        "ca_file",
+        null
+      ],
+      [
+        "ca_name",
+        "custom-ca"
+      ]
+    ],
+    "description": "Install CA cert ${ca_name}",
+    "file": "tls/install_ca_cert.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "tls/self_signed",
+    "name": "self_signed",
+    "params": [
+      [
+        "domain",
+        null
+      ],
+      [
+        "cert_dir",
+        "/etc/ssl/private"
+      ],
+      [
+        "days",
+        "3650"
+      ],
+      [
+        "key_bits",
+        "4096"
+      ]
+    ],
+    "description": "Generate self-signed cert for ${domain}",
+    "file": "tls/self_signed.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "user/add_to_group",
+    "name": "add_to_group",
+    "params": [
+      [
+        "username",
+        null
+      ],
+      [
+        "group",
+        null
+      ]
+    ],
+    "description": "Add ${username} to group ${group}",
+    "file": "user/add_to_group.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "user/create_group",
+    "name": "create_group",
+    "params": [
+      [
+        "group",
+        null
+      ],
+      [
+        "gid",
+        ""
+      ]
+    ],
+    "description": "Create group ${group}",
+    "file": "user/create_group.cgr",
+    "version": "1.0.0"
+  },
+  {
     "path": "user/create_user",
     "name": "create_user",
     "params": [
@@ -843,6 +1198,23 @@
     ],
     "description": "Create user ${username}",
     "file": "user/create_user.cgr",
+    "version": "1.0.0"
+  },
+  {
+    "path": "user/set_password",
+    "name": "set_password",
+    "params": [
+      [
+        "user",
+        null
+      ],
+      [
+        "password",
+        null
+      ]
+    ],
+    "description": "Set password for ${user}",
+    "file": "user/set_password.cgr",
     "version": "1.0.0"
   },
   {

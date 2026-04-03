@@ -295,6 +295,9 @@ textarea#code { position:absolute; top:0; left:0; width:100%; height:100%; paddi
 .exec-log .ev-stream:empty { display:none; }
 .exec-log .ev-stream.stdout { color:var(--text2); }
 .exec-log .ev-stream.stderr { color:var(--red); border-color:rgba(248,81,73,.3); }
+.exec-log .ev-meta { margin:2px 0 0 20px; color:var(--text3); font-size:10px; white-space:pre-wrap; }
+.exec-log .ev-meta.waiting { color:var(--amber); }
+.exec-log .ev-cmd { margin:2px 0 0 20px; padding:4px 7px; background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); white-space:pre-wrap; word-break:break-all; max-height:120px; overflow:auto; font-size:10px; color:var(--text); }
 .exec-input { display:none; gap:8px; align-items:center; padding:8px 0 0; }
 .exec-input.show { display:flex; }
 .exec-input-label { color:var(--text3); font-size:10px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.5px; }
@@ -564,6 +567,10 @@ let csrfToken = null;
 let vaultRetryPass = null;
 let execInputTargetRid = null;
 let execInputTargetName = null;
+let runningStepMeta = new Map();
+let runningStepTicker = null;
+let applyHeartbeatTs = null;
+let applyPollErrorTs = null;
 
 // ── API helpers ────────────────────────────────────────
 // Compute base path so API calls work through path-prefixed proxies (e.g. Coder).
@@ -586,11 +593,30 @@ async function api(method, path, body) {
   }
   if (body !== undefined) opts.body = JSON.stringify(body);
   const r = await fetch(_API_BASE + path, opts);
-  return r.json();
+  const text = await r.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = null;
+    }
+  }
+  if (!r.ok) {
+    const msg = (data && data.error) ? data.error : (text ? text.slice(0, 300) : `${r.status} ${r.statusText}`);
+    return { error: `HTTP ${r.status}: ${msg}` };
+  }
+  if (data !== null) return data;
+  if (!text) return {};
+  return { error: `Invalid JSON response from ${path}: ${text.slice(0, 300)}` };
 }
 
 // ── File operations ────────────────────────────────────
 async function loadFile(name) {
+  if (name) {
+    const openResp = await api('POST', '/api/file/open', { name });
+    if (openResp.error) { setStatus('err', openResp.error); return; }
+  }
   const r = await api('GET', '/api/file' + (name ? '?name=' + encodeURIComponent(name) : ''));
   if (r.error) { setStatus('err', r.error); return; }
   currentFile = r.name;
@@ -1412,6 +1438,94 @@ function appendTerminalChunk(el, chunk) {
   renderTerminalInto(el, next);
 }
 
+function formatDurationShort(ms) {
+  const totalSeconds = Math.max(0, Math.floor((ms || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function isoToMs(ts) {
+  const parsed = Date.parse(ts || '');
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function runningMetaSummary(meta) {
+  const now = Date.now();
+  const startedMs = isoToMs(meta.startedAt);
+  const lastOutputMs = isoToMs(meta.lastOutputAt);
+  const parts = [];
+  if (startedMs !== null) parts.push(`running ${formatDurationShort(now - startedMs)}`);
+  if (meta.timeoutS) parts.push(`timeout ${formatDurationShort(meta.timeoutS * 1000)}`);
+  if (meta.pid) {
+    if (meta.procAlive === false) {
+      const rc = meta.returnCode === null || meta.returnCode === undefined ? '?' : meta.returnCode;
+      parts.push(`pid ${meta.pid} exited rc=${rc}`);
+    } else {
+      parts.push(`pid ${meta.pid}`);
+    }
+  }
+  if (lastOutputMs !== null) parts.push(`last output ${formatDurationShort(now - lastOutputMs)} ago`);
+  else parts.push('no output yet');
+  if (meta.interactive) parts.push('waiting for input is possible');
+  if (meta.procAlive === false) parts.push('step has not reported completion yet');
+  return parts.join(' | ');
+}
+
+function updateRunningMetaDisplay(rid) {
+  const meta = runningStepMeta.get(rid);
+  if (!meta) return;
+  const summary = runningMetaSummary(meta);
+  document.querySelectorAll(`[data-running-meta="${rid}"]`).forEach(el => {
+    el.textContent = summary;
+    el.classList.toggle('waiting', !!meta.interactive);
+  });
+  document.querySelectorAll(`[data-running-elapsed="${rid}"]`).forEach(el => {
+    const startedMs = isoToMs(meta.startedAt);
+    el.textContent = startedMs === null ? 'running...' : formatDurationShort(Date.now() - startedMs);
+  });
+}
+
+function startRunningStepTicker() {
+  if (runningStepTicker) return;
+  runningStepTicker = setInterval(() => {
+    for (const rid of runningStepMeta.keys()) updateRunningMetaDisplay(rid);
+  }, 1000);
+}
+
+function stopRunningStepTicker() {
+  if (!runningStepTicker) return;
+  clearInterval(runningStepTicker);
+  runningStepTicker = null;
+}
+
+function refreshExecInputAvailability() {
+  const hasInteractive = [...runningStepMeta.values()].some(meta => meta.interactive);
+  setExecInputVisible(hasInteractive);
+}
+
+function updateApplyConnectionStatus() {
+  if (!applyPollTimer) return;
+  const now = Date.now();
+  if (applyPollErrorTs && now - applyPollErrorTs < 4000) {
+    logTitle.textContent = 'Executing... (polling lost)';
+    return;
+  }
+  if (!applyHeartbeatTs) {
+    logTitle.textContent = 'Executing... (waiting for heartbeat)';
+    return;
+  }
+  const age = now - applyHeartbeatTs;
+  if (age > 4000) {
+    logTitle.textContent = `Executing... (heartbeat stale: ${formatDurationShort(age)})`;
+    return;
+  }
+  logTitle.textContent = `Executing... (connected, last heartbeat ${formatDurationShort(age)} ago)`;
+}
+
 // Extract human-readable bracket name from resource ID
 // web-1.install_nginx → [install nginx]
 // web-1.install_nginx.update_cache → [install nginx] › update cache
@@ -2158,6 +2272,18 @@ function addLogWave(wave, count) {
 }
 
 function addRunningLogEntry(ev) {
+  runningStepMeta.set(ev.id, {
+    id: ev.id,
+    name: ev.name,
+    startedAt: ev.ts || new Date().toISOString(),
+    timeoutS: ev.timeout_s || 0,
+    interactive: false,
+    pid: null,
+    procAlive: null,
+    returnCode: null,
+    lastOutputAt: null,
+  });
+  startRunningStepTicker();
   const entry = document.createElement('div');
   entry.className = 'log-entry running';
   entry.dataset.id = ev.id;
@@ -2165,9 +2291,15 @@ function addRunningLogEntry(ev) {
     <div class="log-entry-hdr">
       <span class="log-icon">&#9655;</span>
       <span class="log-name">[${ev.idx || '?'} / ${ev.total || '?'}] ${esc(ev.name)}</span>
-      <span class="log-time" style="color:var(--amber)">running...</span>
+      <span class="log-time" style="color:var(--amber)" data-running-elapsed="${esc(ev.id)}">running...</span>
     </div>
     <div class="log-detail open">
+      <div class="log-detail-section">
+        <span class="log-detail-label">Status</span>
+        <div class="log-detail-cmd" data-running-meta="${esc(ev.id)}">starting...</div>
+      </div>
+      ${ev.check ? `<div class="log-detail-section"><span class="log-detail-label">Check</span><div class="log-detail-cmd">$ ${esc(ev.check)}</div></div>` : ''}
+      ${ev.run ? `<div class="log-detail-section"><span class="log-detail-label">Run${ev.run_as ? ' (as ' + esc(ev.run_as) + ')' : ''}</span><div class="log-detail-cmd">$ ${esc(ev.run)}</div></div>` : ''}
       <div class="log-detail-section" data-stream="stdout" style="display:none">
         <span class="log-detail-label">stdout</span>
         <div class="log-detail-cmd cmd-stdout"></div>
@@ -2179,11 +2311,19 @@ function addRunningLogEntry(ev) {
     </div>`;
   logBody.appendChild(entry);
   logBody.scrollTop = logBody.scrollHeight;
+  updateRunningMetaDisplay(ev.id);
 }
 
 function appendRunningLogOutput(rid, stream, chunk) {
   const entry = logBody.querySelector(`.log-entry.running[data-id="${rid}"]`);
   if (!entry) return;
+  const meta = runningStepMeta.get(rid);
+  if (meta) {
+    meta.lastOutputAt = new Date().toISOString();
+    meta.interactive = false;
+    updateRunningMetaDisplay(rid);
+    refreshExecInputAvailability();
+  }
   const section = entry.querySelector(`.log-detail-section[data-stream="${stream}"]`);
   const box = section ? section.querySelector('.log-detail-cmd') : null;
   if (!section || !box) return;
@@ -2280,8 +2420,8 @@ function updateExecInputTarget() {
   const targetRid = (selId && document.querySelector(`.ev-block.ev-running[data-rid="${CSS.escape(selId)}"]`))
     ? selId
     : execInputTargetRid;
-  const targetName = (targetRid === selId && selId && resById[selId])
-    ? resById[selId].short_name
+  const targetName = (targetRid === selId && selId && byId[selId])
+    ? byId[selId].short_name
     : execInputTargetName;
   if (targetRid && targetName) {
     label.textContent = `Input → ${targetName}`;
@@ -2352,14 +2492,18 @@ function addExecRunningEntry(ev) {
     <div class="ev">
       <span class="ev-icon" style="animation:demo-pulse .8s infinite">&#9655;</span>
       <span class="ev-name">${esc(ev.name)}</span>
-      <span class="ev-time" style="color:var(--amber)">running...</span>
+      <span class="ev-time" style="color:var(--amber)" data-running-elapsed="${esc(ev.id)}">running...</span>
     </div>
+    <div class="ev-meta" data-running-meta="${esc(ev.id)}">starting...</div>
+    ${ev.check ? `<pre class="ev-cmd">$ ${esc(ev.check)}</pre>` : ''}
+    ${ev.run ? `<pre class="ev-cmd">$ ${esc(ev.run)}</pre>` : ''}
     <pre class="ev-stream stdout"></pre>
     <pre class="ev-stream stderr"></pre>`;
   log.appendChild(block);
   execInputTargetRid = ev.id;
   execInputTargetName = ev.name;
   updateExecInputTarget();
+  updateRunningMetaDisplay(ev.id);
 }
 
 function appendExecOutput(rid, stream, chunk) {
@@ -2367,10 +2511,17 @@ function appendExecOutput(rid, stream, chunk) {
   if (!log) return;
   const block = log.querySelector(`.ev-block.ev-running[data-rid="${rid}"]`);
   if (!block) return;
+  const meta = runningStepMeta.get(rid);
+  if (meta) {
+    meta.lastOutputAt = new Date().toISOString();
+    meta.interactive = false;
+    updateRunningMetaDisplay(rid);
+    refreshExecInputAvailability();
+  }
   const box = block.querySelector(`.ev-stream.${stream}`);
   if (!box) return;
   execInputTargetRid = rid;
-  execInputTargetName = (resById[rid] && resById[rid].short_name) || execInputTargetName || rid;
+  execInputTargetName = (byId[rid] && byId[rid].short_name) || execInputTargetName || rid;
   updateExecInputTarget();
   appendTerminalChunk(box, chunk);
   box.scrollTop = box.scrollHeight;
@@ -2398,16 +2549,19 @@ function finishExecEntry(ev) {
     <pre class="ev-stream stderr">${ansiToHtml(ev.stderr || '')}</pre>`;
   if (existing) existing.replaceWith(block);
   else log.appendChild(block);
+  runningStepMeta.delete(ev.id);
+  if (runningStepMeta.size === 0) stopRunningStepTicker();
   if (execInputTargetRid === ev.id) {
     execInputTargetRid = null;
     execInputTargetName = null;
     const remaining = document.querySelector('.ev-block.ev-running[data-rid]');
     if (remaining) {
       execInputTargetRid = remaining.dataset.rid;
-      execInputTargetName = (resById[execInputTargetRid] && resById[execInputTargetRid].short_name) || execInputTargetRid;
+      execInputTargetName = (byId[execInputTargetRid] && byId[execInputTargetRid].short_name) || execInputTargetRid;
     }
   }
   updateExecInputTarget();
+  refreshExecInputAvailability();
 }
 
 function addLogSummary(hasFail, wasStopped) {
@@ -2435,6 +2589,8 @@ async function doApply() {
   document.getElementById('logExpandBtn').innerHTML = '&#8863; Collapse All';
   applyCursor = 0;
   applyStopClicks = 0;
+  applyHeartbeatTs = null;
+  applyPollErrorTs = null;
 
   // Show progress bar, reset to 0
   document.getElementById('progressWrap').style.display = '';
@@ -2445,7 +2601,7 @@ async function doApply() {
   switchInspTab('exec');
   ensureExecShell();
   document.getElementById('execLog').innerHTML = '<div style="color:var(--text3)">Starting apply...</div>';
-  setExecInputVisible(true);
+  setExecInputVisible(false);
 
   const r = await apiWithVaultRetry('POST', '/api/apply', { source: codeEl.value });
   if (r.error) {
@@ -2474,6 +2630,10 @@ async function doApplyStop() {
 function resetApplyBtn() {
   clearInterval(applyPollTimer); applyPollTimer = null;
   applyStopClicks = 0;
+  applyHeartbeatTs = null;
+  applyPollErrorTs = null;
+  runningStepMeta.clear();
+  stopRunningStepTicker();
   setExecInputVisible(false);
   applyBtn.textContent = '▶ Apply';
   applyBtn.className = 'btn btn-green';
@@ -2485,11 +2645,16 @@ function resetApplyBtn() {
 async function pollApplyEvents() {
   try {
     const r = await api('GET', '/api/apply/events?since=' + applyCursor);
+    if (r.error) throw new Error(r.error);
     if (!r.events) return;
     let stepCount = 0, failCount = 0;
     let skipCount = 0, cancelCount = 0;
     r.events.forEach(ev => {
-      if (ev.type === 'wave') {
+      if (ev.type === 'apply_heartbeat') {
+        applyHeartbeatTs = Date.parse(ev.ts || '') || Date.now();
+        applyPollErrorTs = null;
+        updateApplyConnectionStatus();
+      } else if (ev.type === 'wave') {
         const log = document.getElementById('execLog');
         if (log) {
           const tw = ev.total_waves || '?', dn = ev.done || 0, tot = ev.total || '?';
@@ -2510,6 +2675,23 @@ async function pollApplyEvents() {
         }
         addExecRunningEntry(ev);
         addRunningLogEntry(ev);
+      } else if (ev.type === 'step_proc') {
+        const meta = runningStepMeta.get(ev.id);
+        if (meta) {
+          meta.pid = ev.pid || null;
+          meta.interactive = !!ev.interactive;
+          meta.procAlive = true;
+          meta.returnCode = null;
+          updateRunningMetaDisplay(ev.id);
+          refreshExecInputAvailability();
+        }
+      } else if (ev.type === 'step_proc_state') {
+        const meta = runningStepMeta.get(ev.id);
+        if (meta) {
+          meta.procAlive = !!ev.alive;
+          meta.returnCode = ev.returncode;
+          updateRunningMetaDisplay(ev.id);
+        }
       } else if (ev.type === 'step_output') {
         appendExecOutput(ev.id, ev.stream, ev.chunk || '');
         appendRunningLogOutput(ev.id, ev.stream, ev.chunk || '');
@@ -2577,7 +2759,16 @@ async function pollApplyEvents() {
     applyCursor = r.cursor;
     const log = document.getElementById('execLog');
     if (log && document.getElementById('logFollowCb').checked) log.scrollTop = log.scrollHeight;
-  } catch(e) { resetApplyBtn(); }
+    updateApplyConnectionStatus();
+  } catch(e) {
+    applyPollErrorTs = Date.now();
+    const msg = e && e.message ? e.message : String(e);
+    logTitle.textContent = `Executing... (polling lost: ${msg})`;
+    setStatus('err', 'Apply polling failed: ' + msg);
+    const log = document.getElementById('execLog');
+    if (log) log.innerHTML += `<div class="ev ev-fail"><span class="ev-icon">✗</span><span class="ev-name">${esc('Apply polling failed: ' + msg)}</span></div>`;
+    resetApplyBtn();
+  }
 }
 
 async function doApplyFresh() {

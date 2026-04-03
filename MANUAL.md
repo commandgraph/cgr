@@ -1870,7 +1870,7 @@ This makes the HTML file a self-contained pitch: send someone `webserver.html`, 
 | `why FILE STEP` | Show what steps depend on a step (reverse of explain). |
 | `check FILE` | Re-run all check clauses against the live system and report drift. |
 | `test` | Run template tests: parse, resolve, and validate all templates in the repo. |
-| `serve [FILE]` | Start the web IDE (editor + live visualization + execution). `--port N` sets the port (default: 8420). `--host ADDR` sets the bind address (default: 127.0.0.1). `--no-open` suppresses automatic browser launch (for headless/CI environments). |
+| `serve [FILE]` | Start the web IDE (editor + live visualization + execution). `--port N` sets the port (default: 8420). `--host ADDR` sets the bind address (default: 127.0.0.1). `--allow-host HOST` allows a reverse-proxy hostname through the Host-header check. If `VSCODE_PROXY_URI` is set, its hostname is auto-allowed. `--no-open` suppresses automatic browser launch (for headless/CI environments). |
 | `version` | Show engine version and Python version. |
 
 All commands that load a graph file accept `--repo DIR` to set the repository path. The engine searches: `--repo` flag → `CGR_REPO` env var → `repo/` next to the graph file → `repo/` in CWD → `~/.cgr/repo/` → `~/.commandgraph/repo/` (legacy).
@@ -1879,6 +1879,8 @@ All commands that load a graph file accept `--repo DIR` to set the repository pa
 
 - The IDE is intended for local use. The default bind address is `127.0.0.1`.
 - Browser access is restricted to same-port localhost origins only: `localhost`, `127.0.0.1`, and `::1`.
+- Reverse proxies that rewrite the `Host` header can be allowlisted with `--allow-host proxy.example.com` while keeping the server bound to loopback.
+- If `VSCODE_PROXY_URI` is present, `cgr serve` auto-allows that proxy hostname.
 - Mutating API calls require a CSRF token generated on server startup.
 - The token is written to `~/.config/cgr/.ide-token` with mode `0600` and is also available to the served IDE via `GET /api/csrf`.
 - Side-editor writes reject symlink targets and use atomic replace-on-write semantics.
