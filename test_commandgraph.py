@@ -5660,6 +5660,59 @@ class TestOnSuccessFailureSet:
         assert result.var_bindings.get("action") == "compress"
         assert result.var_bindings.get("do_compress") == "yes"
 
+    def test_runtime_binding_expands_in_later_run_command(self):
+        src = textwrap.dedent("""\
+            set has_python = ""
+            target "t" local:
+              [detect]:
+                run $ command -v definitely_not_a_real_binary_for_commandgraph_test
+                on success: set has_python = "yes"
+                on failure: set has_python = "no"
+                if fails ignore
+
+              [report]:
+                first [detect]
+                run $ echo "${has_python}"
+        """)
+        g = _resolve_cgr(src)
+        node = cg.HostNode(name="t", via_method="local", via_props={}, resources={})
+
+        detect = cg.exec_resource(g.all_resources["t.detect"], node, variables=g.variables)
+        g.variables.update(detect.var_bindings)
+        report = cg.exec_resource(g.all_resources["t.report"], node, variables=g.variables)
+
+        assert detect.var_bindings.get("has_python") == "no"
+        assert report.stdout.strip() == "no"
+
+    def test_runtime_bindings_replay_from_state_on_resume(self, tmp_path):
+        graph_file = tmp_path / "resume_vars.cgr"
+        out_file = tmp_path / "report.txt"
+        graph_file.write_text(textwrap.dedent(f"""\
+            set has_python = ""
+            target "t" local:
+              [detect]:
+                run $ command -v definitely_not_a_real_binary_for_commandgraph_test
+                on success: set has_python = "yes"
+                on failure: set has_python = "no"
+                if fails ignore
+
+              [report]:
+                first [detect]
+                run $ echo "${{has_python}}" > {out_file}
+        """))
+
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1)
+        assert out_file.read_text().strip() == "no"
+
+        out_file.unlink()
+        state = cg.StateFile(cg._state_path(str(graph_file)))
+        state.drop("t.report")
+
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1)
+        assert out_file.read_text().strip() == "no"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Gap 3: reduce "key" — aggregate collected outputs

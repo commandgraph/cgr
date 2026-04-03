@@ -357,6 +357,10 @@ textarea#code { position:absolute; top:0; left:0; width:100%; height:100%; paddi
 .file-picker-hdr { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--border); font-family:var(--mono); font-size:12px; color:var(--text2); }
 .file-picker-search { margin:12px; margin-bottom:8px; width:calc(100% - 24px); background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-family:var(--mono); font-size:12px; padding:8px 10px; outline:none; }
 .file-picker-search:focus { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.file-picker-controls { display:flex; align-items:center; gap:10px; padding:0 12px 10px; }
+.file-picker-filter { display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px; color:var(--text3); }
+.file-picker-filter select { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-family:var(--mono); font-size:11px; padding:6px 8px; outline:none; }
+.file-picker-filter select:focus { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
 .file-picker-list { padding:0 12px 12px; overflow:auto; }
 .file-picker-item { padding:8px 10px; margin:0 0 6px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg3); cursor:pointer; transition:all .15s; }
 .file-picker-item:hover { border-color:var(--accent); background:var(--bg-hover); }
@@ -364,6 +368,11 @@ textarea#code { position:absolute; top:0; left:0; width:100%; height:100%; paddi
 .file-picker-path { font-family:var(--mono); font-size:12px; color:var(--text); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .file-picker-meta { margin-top:2px; font-size:10px; color:var(--text3); }
 .file-picker-tag { display:inline-block; padding:1px 6px; border-radius:999px; font-size:9px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; }
+.file-picker-tag.cgr { background:rgba(88,166,255,.14); color:var(--accent); }
+.file-picker-tag.cg { background:rgba(210,153,34,.14); color:var(--amber); }
+.file-picker-tag.root { background:rgba(139,148,158,.18); color:var(--text2); }
+.file-picker-tag.example { background:rgba(63,185,80,.14); color:var(--green); }
+.file-picker-tag.testing { background:rgba(188,140,255,.14); color:var(--purple); }
 .file-picker-tag.template { background:rgba(240,136,62,.15); color:var(--coral); }
 .file-picker-empty { padding:14px 6px; color:var(--text3); font-size:12px; text-align:center; }
 .file-picker-trigger { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg3); color:var(--text2); cursor:pointer; font-size:12px; transition:all .15s; }
@@ -510,6 +519,14 @@ textarea#code { position:absolute; top:0; left:0; width:100%; height:100%; paddi
       <button class="btn" onclick="closeFilePicker()" style="font-size:10px;padding:2px 8px">Close</button>
     </div>
     <input class="file-picker-search" id="filePickerSearch" type="text" placeholder="Filter .cgr / .cg files" oninput="renderFilePicker(this.value)">
+    <div class="file-picker-controls">
+      <label class="file-picker-filter" for="filePickerTagFilter">
+        <span>Show</span>
+        <select id="filePickerTagFilter" onchange="renderFilePicker(filePickerSearch.value)">
+          <option value="all">all files</option>
+        </select>
+      </label>
+    </div>
     <div class="file-picker-list" id="filePickerList"></div>
   </div>
 </div>
@@ -539,6 +556,7 @@ let applyCursor = 0;
 let applyStopClicks = 0;
 let availableGraphFiles = [];
 let availableGraphFileEntries = [];
+let filePickerTagOptions = [];
 
 const codeEl = document.getElementById('code');
 const hlEl = document.getElementById('highlight');
@@ -558,6 +576,7 @@ const applyBtn = document.getElementById('applyBtn');
 const rerunBtn = document.getElementById('rerunBtn');
 const filePickerBackdrop = document.getElementById('filePickerBackdrop');
 const filePickerSearch = document.getElementById('filePickerSearch');
+const filePickerTagFilter = document.getElementById('filePickerTagFilter');
 const filePickerList = document.getElementById('filePickerList');
 const filePickerBtn = document.getElementById('filePickerBtn');
 let execInputWrap = null;
@@ -632,7 +651,13 @@ async function loadFile(name) {
 
 function renderFilePicker(filter = '') {
   const q = String(filter || '').toLowerCase().trim();
-  const files = availableGraphFileEntries.filter(f => !q || f.name.toLowerCase().includes(q));
+  const activeTag = filePickerTagFilter ? filePickerTagFilter.value : 'all';
+  const files = availableGraphFileEntries.filter(f => {
+    const matchesSearch = !q || f.name.toLowerCase().includes(q);
+    const tags = Array.isArray(f.tags) ? f.tags : [];
+    const matchesTag = activeTag === 'all' || tags.includes(activeTag);
+    return matchesSearch && matchesTag;
+  });
   filePickerList.innerHTML = '';
   if (!files.length) {
     filePickerList.innerHTML = '<div class="file-picker-empty">No matching graph files</div>';
@@ -642,12 +667,45 @@ function renderFilePicker(filter = '') {
     const name = file.name;
     const isActive = currentFile === name;
     const label = name.split('/').pop();
+    const tags = Array.isArray(file.tags) ? file.tags : [];
+    const tagsHtml = tags.map(tag => `<span class="file-picker-tag ${esc(tag)}">${esc(tag)}</span>`).join('');
     const item = document.createElement('div');
     item.className = 'file-picker-item' + (isActive ? ' active' : '');
-    item.innerHTML = `<div class="file-picker-path"><span>${esc(label)}</span>${file.is_template ? '<span class="file-picker-tag template">template</span>' : ''}</div><div class="file-picker-meta">${esc(name)}${isActive ? ' · current file' : ''}</div>`;
+    item.innerHTML = `<div class="file-picker-path"><span>${esc(label)}</span>${tagsHtml}</div><div class="file-picker-meta">${esc(name)}${isActive ? ' · current file' : ''}</div>`;
     item.addEventListener('click', () => { void chooseFileFromPicker(name); });
     filePickerList.appendChild(item);
   });
+}
+
+function filePickerTagLabel(tag) {
+  const labels = {
+    all: 'all files',
+    root: 'root files',
+    example: 'examples',
+    testing: 'testing',
+    template: 'templates',
+    cgr: '.cgr',
+    cg: '.cg',
+  };
+  return labels[tag] || tag;
+}
+
+function refreshFilePickerTagOptions() {
+  if (!filePickerTagFilter) return;
+  const current = filePickerTagFilter.value || 'all';
+  const preferredOrder = ['root', 'example', 'testing', 'template', 'cgr', 'cg'];
+  const available = new Set();
+  availableGraphFileEntries.forEach(file => {
+    (file.tags || []).forEach(tag => available.add(tag));
+  });
+  filePickerTagOptions = preferredOrder.filter(tag => available.has(tag));
+  available.forEach(tag => {
+    if (!filePickerTagOptions.includes(tag)) filePickerTagOptions.push(tag);
+  });
+  const nextValue = current === 'all' || available.has(current) ? current : 'all';
+  filePickerTagFilter.innerHTML = `<option value="all">${esc(filePickerTagLabel('all'))}</option>`
+    + filePickerTagOptions.map(tag => `<option value="${esc(tag)}">${esc(filePickerTagLabel(tag))}</option>`).join('');
+  filePickerTagFilter.value = nextValue;
 }
 
 function openFilePicker() {
@@ -2956,7 +3014,8 @@ document.addEventListener('keydown', e => {
   try {
     const info = await api('GET', '/api/info');
     availableGraphFiles = info.files || [];
-    availableGraphFileEntries = info.file_entries || availableGraphFiles.map(name => ({ name, is_template: false }));
+    availableGraphFileEntries = info.file_entries || availableGraphFiles.map(name => ({ name, is_template: false, tags: [] }));
+    refreshFilePickerTagOptions();
     filenameEl.title = availableGraphFiles.length ? 'Click to choose file' : 'No graph files available';
     filePickerBtn.classList.toggle('disabled', !availableGraphFiles.length);
     filePickerBtn.title = availableGraphFiles.length ? 'Open graph file (Ctrl+O)' : 'No graph files available';
