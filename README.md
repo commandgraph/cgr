@@ -202,6 +202,45 @@ When a step fails, the engine automatically shows the command and stderr. No re-
 
 ---
 
+## Built-in reporting
+
+CommandGraph ships with two reporting layers. You can collect stdout from specific steps for audit-style output, and you can also ask `apply` to write a machine-readable run summary for CI or archival.
+
+Mark any step with `collect "key"` and its stdout is saved after execution:
+
+```text
+--- Audit a host ---
+
+target "web-1" ssh ops@10.0.1.5:
+
+  [hostname]:
+    run $ hostname
+    collect "hostname"
+
+  [kernel]:
+    run $ uname -r
+    collect "kernel"
+
+  [disk]:
+    run $ df -h /
+    collect "disk_usage"
+```
+
+After `cgr apply audit.cgr`, view or export the collected data:
+
+```bash
+cgr report audit.cgr
+cgr report audit.cgr --format json
+cgr report audit.cgr --format csv -o audit.csv
+cgr report audit.cgr --keys hostname,kernel
+```
+
+For multi-node graphs, `cgr report` turns collected keys into columns, which makes fleet audits and inventory snapshots easy to export.
+
+If you want a run-level execution summary instead, `cgr apply FILE --report run.json` writes JSON containing wall-clock timing, per-step statuses, provenance, dedup information, and any collected outputs.
+
+---
+
 ## SSH execution
 
 Point a target at an SSH host and every command runs remotely. State stays on your machine. No agent or runtime needed on the server -- just SSH access.
