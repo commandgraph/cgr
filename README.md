@@ -543,7 +543,7 @@ cgr apply deploy.cgr   # only the drifted step re-runs
 ## Testing
 
 ```bash
-python3 -m py_compile cgr.py                  # syntax check
+python3 -m py_compile cgr.py                   # syntax check
 python3 -m pytest test_commandgraph.py -q      # test suite
 cd testing/ && ./run-demos.sh                  # 10 local container demos
 cd testing-ssh/ && ./run-ssh-demos.sh          # 5 SSH demos

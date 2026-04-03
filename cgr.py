@@ -8149,6 +8149,26 @@ def _get_vault_pass(args=None) -> str:
     sys.exit(1)
 
 
+def _secure_delete_text_file(path_str: str):
+    """Best-effort wipe of a temporary plaintext file before unlinking it."""
+    try:
+        fpath = Path(path_str)
+        if not fpath.exists():
+            return
+        size = fpath.stat().st_size
+        if size > 0:
+            with fpath.open("r+b") as fh:
+                fh.write(b"\x00" * size)
+                fh.flush()
+                os.fsync(fh.fileno())
+        fpath.unlink()
+    except Exception:
+        try:
+            Path(path_str).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def _add_vault_pass_args(ap):
     """Add standard vault-pass CLI flags to a parser."""
     ap.add_argument("--vault-pass", default=None, metavar="PASS",
@@ -8275,19 +8295,30 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
             print(red(f"error: {e}")); sys.exit(1)
         editor = os.environ.get("EDITOR", "vi")
         import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp:
-            tmp.write(plaintext)
-            tmp_path = tmp.name
+        fd, tmp_path = tempfile.mkstemp(suffix='.txt')
+        try:
+            os.chmod(tmp_path, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as tmp:
+                tmp.write(plaintext)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            _secure_delete_text_file(tmp_path)
+            raise
         try:
             rc = subprocess.call([editor, tmp_path])
             if rc != 0:
                 print(red(f"error: editor exited with {rc}")); return
-            new_text = Path(tmp_path).read_text()
+            new_text = Path(tmp_path).read_text(encoding='utf-8')
             encrypted = _encrypt_data(new_text.encode(), passphrase)
             path.write_bytes(encrypted)
             print(green(f"✓ Secrets file updated: {filepath}"))
         finally:
-            os.unlink(tmp_path)
+            _secure_delete_text_file(tmp_path)
 
     elif action == "audit":
         if not path.exists():
@@ -9369,6 +9400,8 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
     def _allowed_cors_origin(origin: str | None) -> str | None:
         if not origin:
             return None
+        if any(ch in origin for ch in "\r\n"):
+            return None
         try:
             parsed = urllib.parse.urlparse(origin)
         except Exception:
@@ -9379,7 +9412,15 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             return None
         if parsed.port != port:
             return None
-        return origin
+        if parsed.params or parsed.query or parsed.fragment or parsed.username or parsed.password:
+            return None
+        host = parsed.hostname
+        if host is None:
+            return None
+        # Reflect a canonical origin string instead of the raw request header.
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"http://{host}:{parsed.port}"
 
     auto_allowed_hosts = _auto_allowed_serve_hosts()
     extra_allowed_hosts = list(dict.fromkeys([*(allow_hosts or []), *auto_allowed_hosts]))
@@ -9704,14 +9745,27 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
         except Exception:
             return False
 
+    def _normalize_workspace_graph_name(name: str) -> Path | None:
+        """Normalize a user-supplied graph path into a safe relative path."""
+        if not isinstance(name, str):
+            return None
+        raw = name.strip()
+        if not raw:
+            return None
+        rel = Path(raw)
+        if rel.is_absolute() or rel.anchor:
+            return None
+        parts = rel.parts
+        if not parts:
+            return None
+        if any(part in ("..", "") for part in parts):
+            return None
+        return Path(*parts)
+
     def _resolve_workspace_graph_file(name: str):
         """Resolve a user-selected graph file within work_dir, blocking traversal."""
-        if not name:
-            return None
-        rel = Path(name)
-        if rel.is_absolute():
-            return None
-        if any(part == ".." for part in rel.parts):
+        rel = _normalize_workspace_graph_name(name)
+        if rel is None:
             return None
         bases = [work_dir.resolve()]
         if current_file:
@@ -9731,15 +9785,25 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                 fallback = fpath
         return fallback
 
+    def _resolve_current_file_alias(name: str):
+        """Return the active file only for exact known aliases."""
+        if not current_file or not isinstance(name, str):
+            return None
+        raw = name.strip()
+        if not raw:
+            return None
+        aliases = {str(current_file.resolve())}
+        label = _file_label(current_file.resolve())
+        if label:
+            aliases.add(label)
+        return current_file.resolve() if raw in aliases else None
+
     def _resolve_edit_target(name: str):
         """Resolve a file target for save/open.
         Allows the explicit current file, or a workspace graph file."""
-        if current_file:
-            try:
-                if Path(name).resolve() == current_file.resolve():
-                    return current_file.resolve()
-            except Exception:
-                pass
+        fpath = _resolve_current_file_alias(name)
+        if fpath:
+            return fpath
         return _resolve_workspace_graph_file(name)
 
     def _file_label(fpath: Path | None) -> str | None:
