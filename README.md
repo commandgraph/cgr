@@ -6,13 +6,6 @@ CommandGraph is an infrastructure tool that runs shell commands in the right ord
 
 One Python file with zero dependencies. No agents on your servers. No daemon. No database.
 
-Recent additions:
-
-- Sub-graph inclusion: a step can now run another `.cgr` or `.cg` file as a unit with `from ./child.cgr:`
-- Human-in-the-loop wait gates: `wait for webhook "..."` and `wait for file "..."` are first-class steps
-- Machine-readable apply mode: `cgr apply FILE --output json`
-- Execution metrics: per-step, per-wave, and total wall-clock timing are now persisted in the state journal
-
 ```
 --- Deploy my app ---
 
