@@ -604,6 +604,20 @@ auth header "X-API-Key" = "${api_key}"
 
 Body types: `body json '...'` sets `Content-Type: application/json`. `body form "..."` sets `Content-Type: application/x-www-form-urlencoded`.
 
+Wait gates are also first-class steps:
+
+```cgr
+[wait for approval]:
+  wait for webhook "/approve/${deploy_id}"
+  timeout 4h
+
+[wait for file]:
+  wait for file "./ready.flag"
+  timeout 30m
+```
+
+`wait for webhook` starts a lightweight local HTTP listener during `apply`. A `GET` or `POST` to that path unblocks the step. `wait for file` polls for file existence locally or over SSH, depending on the target node.
+
 ### Expect expressions
 
 The `expect` keyword validates the HTTP status code. Three forms:
@@ -1348,6 +1362,15 @@ template template_name(param1, param2 = "default_value"):
 
 The template body uses the same `.cgr` step syntax as target blocks: `[child steps]` for nested prerequisites, `first`/`skip if`/`run` for the root resource, and body-level properties like `as root, timeout 2m` on standalone lines.
 
+You can also include another graph file as a single step:
+
+```cgr
+[deploy app] from ./deploy_app.cgr:
+  version = "2.1.0"
+```
+
+This is `.cgr`-only for now. The included graph runs as a unit with its own state file, while the parent graph tracks only the outer step.
+
 ### Template file structure (.cg — alternative)
 
 ```
@@ -1583,6 +1606,8 @@ The state file is JSON Lines — one record per line, appended after each resour
 ```
 
 The critical safety invariant: a resource is written to the state file **only after** its execution completes. If the process is killed mid-step, that step is NOT in state, so it re-runs on resume.
+
+The journal also records per-wave wall-clock time and the latest run summary (`wall_ms`, bottleneck step, bottleneck duration). `state show` surfaces the latest run wall time and bottleneck.
 
 ### Resume behavior
 
@@ -1846,7 +1871,7 @@ This makes the HTML file a self-contained pitch: send someone `webserver.html`, 
 | Command | Description |
 |---------|-------------|
 | `plan FILE` | Show execution plan. `-v` shows check/run commands. |
-| `apply FILE` | Execute the graph. `--dry-run` simulates. `--parallel N` sets concurrency. `--report FILE.json` writes JSON results with `wall_clock_ms`. `--timeout SECS` aborts after SECS seconds. `--start-from STEP` skips waves before STEP. `--no-resume` ignores state. `-v` shows all commands and output. `--no-color` disables color. |
+| `apply FILE` | Execute the graph. `--dry-run` simulates. `--parallel N` sets concurrency. `--report FILE.json` writes JSON results with `wall_clock_ms`. `--output json` prints machine-readable execution results to stdout. `--timeout SECS` aborts after SECS seconds. `--start-from STEP` skips waves before STEP. `--no-resume` ignores state. `-v` shows all commands and output. `--no-color` disables color. |
 | `validate FILE` | Parse and validate without executing. Shows node/resource/wave counts and provenance. `-q`/`--quiet` exits 0/1 only (for CI/CD). `--json` outputs machine-readable JSON with all validation details (nodes, resources, waves, variables, provenance, cross-node deps). On error, outputs `{"valid": false, "error": "..."}`. |
 | `visualize FILE` | Generate self-contained interactive HTML visualization. `-o FILE.html` sets the output path. `--state FILE.state` overlays execution results (auto-detected if omitted). |
 | `dot FILE` | Emit Graphviz DOT format to stdout. Pipe to `dot -Tpng -o graph.png`. |

@@ -96,6 +96,8 @@ list_demos() {
     echo -e "  ${CYAN}7${RESET}  HTTP steps and collected reports"
     echo -e "  ${CYAN}8${RESET}  CLI tooling (fmt, lint, explain, why, convert)"
     echo -e "  ${CYAN}9${RESET}  Isolated state journals (--run-id, --state)"
+    echo -e "  ${CYAN}10${RESET} Sub-graph inclusion (invoke another .cgr as a step)"
+    echo -e "  ${CYAN}11${RESET} Wait gates (webhook + file) and machine-readable output"
     echo ""
     echo -e "${DIM}Usage: ./run-demos.sh [NUMBER]${RESET}"
 }
@@ -112,6 +114,8 @@ demo_scripts=(
     "07-http-report.sh"
     "08-cli-tooling.sh"
     "09-state-isolation.sh"
+    "10-subgraph.sh"
+    "11-wait-gate.sh"
 )
 
 # ─── Main ──────────────────────────────────────────────────────────────
@@ -136,7 +140,7 @@ case "${1:-all}" in
     all)
         build_image
         echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${RESET}"
-        echo -e "${BOLD}${CYAN}║  CommandGraph Demo Suite — Running all 10 demos             ║${RESET}"
+        echo -e "${BOLD}${CYAN}║  CommandGraph Demo Suite — Running all 12 demos             ║${RESET}"
         echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════════╝${RESET}"
         echo ""
 
@@ -147,12 +151,16 @@ case "${1:-all}" in
         done
 
         echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════════════════════════╗${RESET}"
-        echo -e "${BOLD}${GREEN}║  All 10 demos completed successfully.                       ║${RESET}"
+        echo -e "${BOLD}${GREEN}║  All 12 demos completed successfully.                       ║${RESET}"
         echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════════╝${RESET}"
         ;;
-    [0-9])
+    [0-9]|[0-9][0-9])
         build_image
         idx=$1
+        if [[ $idx -ge ${#demo_scripts[@]} ]]; then
+            echo -e "${RED}Demo $idx not found. Run './run-demos.sh list' to see available demos.${RESET}"
+            exit 1
+        fi
         run_demo "${demo_scripts[$idx]}"
         ;;
     *)

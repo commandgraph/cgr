@@ -1,0 +1,29 @@
+--- Sub-graph inclusion demo ---
+--- Each [install *] step invokes subgraph-install-step.cgr as a unit, ---
+--- passing its own variable overrides. The parent graph tracks only    ---
+--- the outer step; the child graph keeps its own state journal.        ---
+
+set install_root = "/workspace/subgraph/apps"
+
+target "local" local:
+
+  [prepare workspace]:
+    skip if $ test -d ${install_root}
+    run    $ mkdir -p ${install_root}
+
+  [install frontend] from ./subgraph-install-step.cgr:
+    first [prepare workspace]
+    app_name     = "frontend"
+    version      = "2.1.0"
+    install_root = "/workspace/subgraph/apps"
+
+  [install backend] from ./subgraph-install-step.cgr:
+    first [prepare workspace]
+    app_name     = "backend"
+    version      = "1.8.3"
+    install_root = "/workspace/subgraph/apps"
+
+  verify "both apps installed":
+    first [install frontend]
+    first [install backend]
+    run $ ls ${install_root}

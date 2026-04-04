@@ -18,10 +18,10 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-import argparse, codecs, datetime, fcntl, hashlib, hmac, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
+import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
+from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from pathlib import Path
@@ -171,6 +171,10 @@ class ASTResource:
     http_body_type: str|None = None  # "json" or "form"
     http_auth: tuple[str,str|None]|None = None  # ("bearer", token) or ("basic", "user:pass")
     http_expect: str|None = None     # expected status codes: "200", "200..299", "200, 201"
+    wait_kind: str|None = None       # "webhook" or "file"
+    wait_target: str|None = None
+    subgraph_path: str|None = None
+    subgraph_vars: dict[str, str] = field(default_factory=dict)
     # Parallel constructs (populated by parser, expanded by resolver)
     parallel_block: list[ASTResource] = field(default_factory=list)
     parallel_limit: int|None = None
@@ -1480,7 +1484,7 @@ def _parse_cgr_header_props(header: str) -> dict:
 _CGR_CONTINUATION_STOPWORDS = (
     "needs ", "first ", "skip if ", "run ", "script ", "always run ", "env ",
     "when ", "collect ", "flag ", "until ", "parallel", "race", "each ", "stage ",
-    "as ", "timeout ", "retry ", "if fails",
+    "as ", "timeout ", "retry ", "if fails", "wait for ",
     "content ", "line ", "put ", "validate ",
     "block ", "ini ", "json ", "assert ",
     "on success:", "on success :", "on failure:", "on failure :",
@@ -1511,10 +1515,25 @@ def _parse_cgr_step_line(text: str):
     return None
 
 
+def _parse_cgr_stringish(text: str) -> str:
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        return text[1:-1]
+    return text
+
+
+def _parse_cgr_from_target(header: str) -> str | None:
+    m = re.search(r'\bfrom\s+("([^"]+)"|\'([^\']+)\'|(\S+))', header)
+    if not m:
+        return None
+    return m.group(2) or m.group(3) or m.group(4)
+
+
 def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                     allow_no_run_with_children: bool = False) -> ASTResource:
     """Parse a [step name] block into an ASTResource."""
     hp = _parse_cgr_header_props(header)
+    from_target = _parse_cgr_from_target(header)
     slug = _slug(name)
     needs: list[str] = []
     check: str | None = None
@@ -1533,6 +1552,10 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
     http_headers: list[tuple[str,str]] = []; http_body: str|None = None
     http_body_type: str|None = None; http_auth: tuple|None = None
     http_expect: str|None = None
+    wait_kind: str|None = None
+    wait_target: str|None = None
+    subgraph_path: str|None = None
+    subgraph_vars: dict[str, str] = {}
     parallel_block: list[ASTResource] = []
     parallel_limit: int|None = None
     parallel_fail_policy: str = "wait"
@@ -1579,10 +1602,13 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                 child_body.append(body[j]); j += 1
             if inline_child is not None:
                 child_body = [(bln, bindent + 2, inline_child)] + child_body
-            from_m = re.search(r'from\s+([\w/]+)', child_header)
+            from_m = _parse_cgr_from_target(child_header)
             if from_m:
-                child = _parse_cgr_template_child_instantiation(
-                    child_name, from_m.group(1), child_body, bln)
+                if from_m.endswith((".cgr", ".cg")):
+                    child = _parse_cgr_step(child_name, child_header, child_body, bln, err)
+                else:
+                    child = _parse_cgr_template_child_instantiation(
+                        child_name, from_m, child_body, bln)
             else:
                 child = _parse_cgr_step(child_name, child_header, child_body, bln, err)
             children.append(child)
@@ -1661,6 +1687,18 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         expect_m = re.match(r'expect\s+(.+)', btext)
         if expect_m:
             http_expect = expect_m.group(1).strip()
+            i += 1; continue
+
+        wait_webhook_m = re.match(r"wait\s+for\s+webhook\s+(['\"])(.+)\1$", btext)
+        if wait_webhook_m:
+            wait_kind = "webhook"
+            wait_target = wait_webhook_m.group(2)
+            i += 1; continue
+
+        wait_file_m = re.match(r"wait\s+for\s+file\s+(['\"])(.+)\1$", btext)
+        if wait_file_m:
+            wait_kind = "file"
+            wait_target = wait_file_m.group(2)
             i += 1; continue
 
         # run $ command
@@ -1868,6 +1906,14 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                 if em.group(3):
                     env_when[em.group(1)] = em.group(3).strip().strip('"')
             i += 1; continue
+
+        if from_target and from_target.endswith((".cgr", ".cg")):
+            subgraph_path = from_target
+            assign_m = re.match(r'(\w+)\s*=\s*(.+)$', btext)
+            if assign_m:
+                subgraph_vars[assign_m.group(1)] = _parse_cgr_stringish(assign_m.group(2))
+                i += 1; continue
+            raise err(f"Invalid subgraph argument line: {btext}", bln)
 
         if btext.startswith("flag "):
             fm = re.match(r'flag\s+"([^"]*)"(?:\s+when\s+(.+))?$', btext)
@@ -2147,6 +2193,7 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         or reduce_key
     )
     if (run_cmd is None and script_path is None and not has_construct and not has_http and not has_prov
+            and wait_kind is None and subgraph_path is None
             and not (allow_no_run_with_children and children)):
         raise err(f"Step [{name}] has no 'run' command", ln)
     if flags and run_cmd is None:
@@ -2164,6 +2211,8 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         http_method=http_method, http_url=http_url, http_headers=http_headers,
         http_body=http_body, http_body_type=http_body_type,
         http_auth=http_auth, http_expect=http_expect,
+        wait_kind=wait_kind, wait_target=wait_target,
+        subgraph_path=subgraph_path, subgraph_vars=dict(subgraph_vars),
         parallel_block=parallel_block, parallel_limit=parallel_limit,
         parallel_fail_policy=parallel_fail_policy, race_block=race_block, race_into=race_into,
         each_var=each_var, each_list_expr=each_list_expr,
@@ -2613,6 +2662,13 @@ class Resource:
     http_body_type: str|None = None
     http_auth: tuple[str,str|None]|None = None
     http_expect: str|None = None
+    wait_kind: str|None = None
+    wait_target: str|None = None
+    raw_wait_target: str|None = None
+    subgraph_path: str|None = None
+    raw_subgraph_path: str|None = None
+    subgraph_vars: dict[str, str] = field(default_factory=dict)
+    raw_subgraph_vars: dict[str, str] = field(default_factory=dict)
     # Provisioning operation fields (Phase 1)
     prov_content_inline: str|None = None
     prov_content_from: str|None = None
@@ -2977,7 +3033,9 @@ def _flatten_ast_resource(
                 reduce_key=body.reduce_key, reduce_var=body.reduce_var,
                 inner_template_name=body.inner_template_name,
                 inner_template_args=dict(body.inner_template_args), flags=list(body.flags),
-                env_when=dict(body.env_when), until=body.until)
+                env_when=dict(body.env_when), until=body.until,
+                wait_kind=body.wait_kind, wait_target=body.wait_target,
+                subgraph_path=body.subgraph_path, subgraph_vars=dict(body.subgraph_vars))
             ec_prefix = f"{prefix}.{item_name}"
             ec_id = _flatten_ast_resource(expanded, node_name, ec_prefix, each_vs, provenance,
                                           collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -3040,7 +3098,9 @@ def _flatten_ast_resource(
                             reduce_key=pbody.reduce_key, reduce_var=pbody.reduce_var,
                             inner_template_name=pbody.inner_template_name,
                             inner_template_args=dict(pbody.inner_template_args), flags=list(pbody.flags),
-                            env_when=dict(pbody.env_when), until=pbody.until)
+                            env_when=dict(pbody.env_when), until=pbody.until,
+                            wait_kind=pbody.wait_kind, wait_target=pbody.wait_target,
+                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars))
                         v_prefix = f"{prefix}.__phase_{pi}.{pbody.name}"
                         v_id = _flatten_ast_resource(v_res, node_name, v_prefix,
                             each_vs, provenance, collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -3064,7 +3124,9 @@ def _flatten_ast_resource(
                             reduce_key=pbody.reduce_key, reduce_var=pbody.reduce_var,
                             inner_template_name=pbody.inner_template_name,
                             inner_template_args=dict(pbody.inner_template_args), flags=list(pbody.flags),
-                            env_when=dict(pbody.env_when), until=pbody.until)
+                            env_when=dict(pbody.env_when), until=pbody.until,
+                            wait_kind=pbody.wait_kind, wait_target=pbody.wait_target,
+                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars))
                         ec_prefix = f"{prefix}.__phase_{pi}.{item_name}"
                         ec_id = _flatten_ast_resource(expanded, node_name, ec_prefix,
                             each_vs, provenance, collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -3125,6 +3187,14 @@ def _flatten_ast_resource(
         exp_http_url_early = _expand(ast_res.http_url, vs) if ast_res.http_url else ""
         exp_run = f"{ast_res.http_method} {exp_http_url_early}"
         effective_run_key = exp_run
+    exp_wait_target = _expand(ast_res.wait_target, vs) if ast_res.wait_target else None
+    if ast_res.wait_kind and not effective_run_key:
+        effective_run_key = f"__wait__ {ast_res.wait_kind} {exp_wait_target or ''}".strip()
+    exp_subgraph_path = _expand(ast_res.subgraph_path, vs) if ast_res.subgraph_path else None
+    exp_subgraph_vars = {k: _expand(v, vs) or v for k, v in (ast_res.subgraph_vars or {}).items()}
+    if exp_subgraph_path and not effective_run_key:
+        subgraph_sig = ",".join(f"{k}={exp_subgraph_vars[k]}" for k in sorted(exp_subgraph_vars))
+        effective_run_key = f"__subgraph__ {exp_subgraph_path} {subgraph_sig}".strip()
     # Expand provisioning fields
     exp_prov_content_inline = _expand(ast_res.prov_content_inline, vs) if ast_res.prov_content_inline is not None else ast_res.prov_content_inline
     exp_prov_content_from = _expand(ast_res.prov_content_from, vs) if ast_res.prov_content_from else None
@@ -3219,6 +3289,9 @@ def _flatten_ast_resource(
         http_headers=exp_http_headers, http_body=exp_http_body,
         http_body_type=ast_res.http_body_type,
         http_auth=exp_http_auth, http_expect=exp_http_expect,
+        wait_kind=ast_res.wait_kind, wait_target=exp_wait_target, raw_wait_target=ast_res.wait_target,
+        subgraph_path=exp_subgraph_path, raw_subgraph_path=ast_res.subgraph_path,
+        subgraph_vars=exp_subgraph_vars, raw_subgraph_vars=dict(ast_res.subgraph_vars),
         prov_content_inline=exp_prov_content_inline, prov_content_from=exp_prov_content_from,
         prov_dest=exp_prov_dest, prov_lines=exp_prov_lines,
         prov_put_src=exp_prov_put_src, prov_put_mode=ast_res.prov_put_mode,
@@ -4273,6 +4346,10 @@ def _runtime_resource_view(res: Resource, variables: dict[str, str] | None) -> R
             _expand_runtime_or_resolved(res.raw_http_auth[1], res.http_auth[1] if res.http_auth else None, vs)
             if res.raw_http_auth[1] else None,
         )
+    runtime_subgraph_vars = {
+        key: _expand_runtime_or_resolved(raw_val, res.subgraph_vars.get(key), vs) or raw_val
+        for key, raw_val in (res.raw_subgraph_vars or {}).items()
+    }
     return replace(
         res,
         check=_expand_runtime_or_resolved(res.raw_check, res.check, vs),
@@ -4283,6 +4360,9 @@ def _runtime_resource_view(res: Resource, variables: dict[str, str] | None) -> R
         http_headers=runtime_http_headers,
         http_body=_expand_runtime_or_resolved(res.raw_http_body, res.http_body, vs),
         http_auth=runtime_http_auth,
+        wait_target=_expand_runtime_or_resolved(res.raw_wait_target, res.wait_target, vs),
+        subgraph_path=_expand_runtime_or_resolved(res.raw_subgraph_path, res.subgraph_path, vs),
+        subgraph_vars=runtime_subgraph_vars,
     )
 
 def _effective_run_cmd(res: Resource, graph_file: str|None = None) -> str:
@@ -4291,6 +4371,133 @@ def _effective_run_cmd(res: Resource, graph_file: str|None = None) -> str:
     if res.script_path:
         return shlex.quote(_resolve_script_fs_path(res.script_path, graph_file))
     return ""
+
+
+def _normalize_webhook_path(path: str) -> str:
+    if not path:
+        return "/"
+    return path if path.startswith("/") else "/" + path
+
+
+class WebhookGateServer:
+    """Lightweight local HTTP endpoint registry for wait-for-webhook steps."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int | None = None):
+        import http.server
+
+        self.host = host
+        self.port = port or int(os.environ.get("CGR_WEBHOOK_PORT", "0") or "0")
+        self._lock = threading.Lock()
+        self._triggered: set[str] = set()
+        self._waiters: dict[str, list[threading.Event]] = defaultdict(list)
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def _handle(self):
+                path = _normalize_webhook_path(self.path.split("?", 1)[0])
+                outer.trigger(path)
+                payload = json.dumps({"ok": True, "path": path}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_GET(self):
+                self._handle()
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                if length:
+                    self.rfile.read(length)
+                self._handle()
+
+            def log_message(self, fmt, *args):
+                return
+
+        self._server = http.server.ThreadingHTTPServer((self.host, self.port), Handler)
+        self.port = int(self._server.server_port)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def endpoint(self, path: str) -> str:
+        return f"http://{self.host}:{self.port}{_normalize_webhook_path(path)}"
+
+    def trigger(self, path: str):
+        path = _normalize_webhook_path(path)
+        with self._lock:
+            self._triggered.add(path)
+            waiters = self._waiters.pop(path, [])
+        for event in waiters:
+            event.set()
+
+    def wait(self, path: str, timeout: float, cancel_check=None) -> bool:
+        path = _normalize_webhook_path(path)
+        with self._lock:
+            if path in self._triggered:
+                return True
+            event = threading.Event()
+            self._waiters[path].append(event)
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                if cancel_check and cancel_check():
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                if event.wait(min(0.2, remaining)):
+                    return True
+        finally:
+            with self._lock:
+                waiters = self._waiters.get(path, [])
+                if event in waiters:
+                    waiters.remove(event)
+                if not waiters:
+                    self._waiters.pop(path, None)
+
+    def stop(self):
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=2)
+
+
+def _wait_for_file_path(path: str, node, res, timeout: int, cancel_check=None) -> tuple[int, str, str]:
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancel_check and cancel_check():
+            return 130, "", "Cancelled"
+        if node.via_method == "ssh":
+            remaining = max(1, int(deadline - time.monotonic()))
+            rc, _, stderr = _run_cmd(f"test -e {shlex.quote(path)}", node, res, timeout=min(5, remaining))
+            if rc == 0:
+                return 0, path, ""
+            if time.monotonic() >= deadline:
+                break
+        else:
+            if Path(path).exists():
+                return 0, path, ""
+            if time.monotonic() >= deadline:
+                break
+        time.sleep(0.25)
+    return 124, "", f"Timed out after {timeout}s waiting for file {path}"
+
+
+def _exec_subgraph_resource(res: Resource, *, graph_file: str | None, webhook_server: WebhookGateServer | None):
+    subgraph_path = _resolve_script_fs_path(res.subgraph_path or "", graph_file)
+    if not subgraph_path:
+        raise ResolveError("Subgraph step is missing a graph path")
+    subgraph = _load(subgraph_path, extra_vars=dict(res.subgraph_vars or {}), raise_on_error=True)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        results, wall_ms = cmd_apply_stateful(
+            subgraph,
+            subgraph_path,
+            max_parallel=4,
+            webhook_server=webhook_server,
+        )
+    failed = any(r.status in (Status.FAILED, Status.TIMEOUT) for r in results)
+    return failed, wall_ms, buf.getvalue(), ""
 
 def _check_http_expect(status_code: int, expect: str) -> bool:
     """Check if an HTTP status code matches an expect expression.
@@ -5069,7 +5276,8 @@ def _last_nonempty_line(text: str) -> str|None:
     return None
 
 def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=None, graph_file=None,
-                  accumulated_collected=None, on_output=None, register_proc=None, unregister_proc=None, cancel_check=None):
+                  accumulated_collected=None, on_output=None, register_proc=None, unregister_proc=None,
+                  cancel_check=None, webhook_server: WebhookGateServer | None = None):
     t0=time.monotonic()
     res = _runtime_resource_view(res, variables)
     if not _eval_when(res.when, variables):
@@ -5103,6 +5311,8 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
         or res.prov_block_dest or res.prov_ini_dest or res.prov_json_dest
         or res.prov_asserts
     )
+    is_wait = bool(res.wait_kind and res.wait_target)
+    is_subgraph = bool(res.subgraph_path)
     if dry_run:
         is_http = bool(res.http_method and res.http_url)
         if is_http:
@@ -5112,6 +5322,14 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
             if res.http_body_type: parts.append(f"body={res.http_body_type}")
             if res.http_expect: parts.append(f"expect={res.http_expect}")
             reason = " | ".join(parts)
+        elif is_wait:
+            label = f"dry-run: would wait for {res.wait_kind} {res.wait_target}"
+            if res.wait_kind == "webhook" and webhook_server is not None:
+                label += f" ({webhook_server.endpoint(res.wait_target)})"
+            reason = label
+        elif is_subgraph:
+            vars_part = ", ".join(f"{k}={v}" for k, v in sorted((res.subgraph_vars or {}).items()))
+            reason = f"dry-run: would apply subgraph {res.subgraph_path}" + (f" [{vars_part}]" if vars_part else "")
         elif is_prov:
             parts = [f"dry-run: would write {res.prov_dest}" if res.prov_dest else "dry-run: would provision"]
             if res.prov_put_src:
@@ -5139,6 +5357,32 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
                 lr,lo,le=_exec_http_ssh(res, node)
             else:
                 lr,lo,le=_exec_http_local(res)
+        elif is_wait:
+            if res.wait_kind == "webhook":
+                if webhook_server is None:
+                    lr, lo, le = 1, "", "Webhook gate server is not available"
+                else:
+                    if on_output:
+                        on_output("stderr", f"waiting for webhook {webhook_server.endpoint(res.wait_target)}\n")
+                    ok = webhook_server.wait(res.wait_target, res.timeout, cancel_check=cancel_check)
+                    if ok:
+                        lr, lo, le = 0, webhook_server.endpoint(res.wait_target), ""
+                    else:
+                        timed_out = not (cancel_check and cancel_check())
+                        lr, lo, le = (124, "", f"Timed out after {res.timeout}s waiting for webhook {res.wait_target}") if timed_out else (130, "", "Cancelled")
+            else:
+                wait_path = _resolve_script_fs_path(res.wait_target or "", graph_file) if node.via_method == "local" else (res.wait_target or "")
+                if on_output:
+                    on_output("stderr", f"waiting for file {wait_path}\n")
+                lr, lo, le = _wait_for_file_path(wait_path, node, res, res.timeout, cancel_check=cancel_check)
+        elif is_subgraph:
+            try:
+                failed, _child_ms, child_stdout, child_stderr = _exec_subgraph_resource(
+                    res, graph_file=graph_file, webhook_server=webhook_server)
+                lr = 1 if failed else 0
+                lo, le = child_stdout, child_stderr
+            except Exception as e:
+                lr, lo, le = 1, "", str(e)
         elif is_prov:
             if node.via_method == "ssh":
                 lr,lo,le=_exec_prov_ssh(res, node, graph_file=graph_file)
@@ -5203,7 +5447,7 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
                       duration_ms=int((time.monotonic()-t0)*1000),attempts=mx,var_bindings=fail_vb,
                       observed_value=observed_value)
 
-def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False):
+def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False, webhook_server: WebhookGateServer | None = None):
     total=sum(len(w) for w in graph.waves)
     print(); print(bold(f"{'═'*64}"))
     mode=yellow("DRY-RUN") if dry_run else green("APPLY")
@@ -5237,6 +5481,7 @@ def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False):
                 variables=graph.variables,
                 graph_file=graph.graph_file,
                 accumulated_collected=runtime_collected,
+                webhook_server=webhook_server,
             )
         with ThreadPoolExecutor(max_workers=min(max_parallel,len(wave))) as pool:
             futs={pool.submit(_run_with_start, rid):rid for rid in wave}
@@ -5397,6 +5642,24 @@ class StateEntry:
     observed_value: str|None = None
     var_bindings: dict[str, str] = field(default_factory=dict)
 
+
+@dataclass
+class WaveMetric:
+    wave: int
+    wall_ms: int
+    ts: str
+    to_run: int = 0
+    skipped: int = 0
+
+
+@dataclass
+class RunMetric:
+    wall_ms: int
+    ts: str
+    total_results: int = 0
+    bottleneck_id: str | None = None
+    bottleneck_ms: int = 0
+
 class StateFile:
     """Append-only JSON Lines state journal with crash-safe writes."""
 
@@ -5405,6 +5668,8 @@ class StateFile:
         self.lock_path = Path(f"{self.path}.lock")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._entries: dict[str, StateEntry] = {}  # latest entry per resource id
+        self._wave_metrics: dict[int, WaveMetric] = {}
+        self._run_metric: RunMetric | None = None
         self._lock_pid: int|None = None
         self._lock_fh = None
         if self.path.exists():
@@ -5425,6 +5690,25 @@ class StateFile:
                 continue
             if d.get("_unlock"):
                 self._lock_pid = None
+                continue
+            if d.get("_wave"):
+                wave = int(d.get("wave", 0) or 0)
+                self._wave_metrics[wave] = WaveMetric(
+                    wave=wave,
+                    wall_ms=int(d.get("wall_ms", 0) or 0),
+                    ts=d.get("ts", ""),
+                    to_run=int(d.get("to_run", 0) or 0),
+                    skipped=int(d.get("skipped", 0) or 0),
+                )
+                continue
+            if d.get("_run"):
+                self._run_metric = RunMetric(
+                    wall_ms=int(d.get("wall_ms", 0) or 0),
+                    ts=d.get("ts", ""),
+                    total_results=int(d.get("total_results", 0) or 0),
+                    bottleneck_id=d.get("bottleneck_id"),
+                    bottleneck_ms=int(d.get("bottleneck_ms", 0) or 0),
+                )
                 continue
             if d.get("_drop"):
                 resource_id = d.get("id")
@@ -5526,6 +5810,12 @@ class StateFile:
     def all_entries(self) -> dict[str, StateEntry]:
         return dict(self._entries)
 
+    def wave_metrics(self) -> list[WaveMetric]:
+        return [self._wave_metrics[k] for k in sorted(self._wave_metrics)]
+
+    def run_metric(self) -> RunMetric | None:
+        return self._run_metric
+
     def should_skip(self, resource_id: str) -> bool:
         """Return True if this resource was completed and should be skipped on resume."""
         e = self._entries.get(resource_id)
@@ -5564,6 +5854,37 @@ class StateFile:
         self._entries.pop(resource_id, None)
         self._append({"id": resource_id, "_drop": True, "ts": _now()})
 
+    def record_wave(self, wave: int, wall_ms: int, *, to_run: int = 0, skipped: int = 0):
+        metric = WaveMetric(wave=wave, wall_ms=wall_ms, ts=_now(), to_run=to_run, skipped=skipped)
+        self._wave_metrics[wave] = metric
+        self._append({
+            "_wave": True,
+            "wave": metric.wave,
+            "wall_ms": metric.wall_ms,
+            "to_run": metric.to_run,
+            "skipped": metric.skipped,
+            "ts": metric.ts,
+        })
+
+    def record_run(self, wall_ms: int, *, total_results: int = 0,
+                   bottleneck_id: str | None = None, bottleneck_ms: int = 0):
+        metric = RunMetric(
+            wall_ms=wall_ms,
+            ts=_now(),
+            total_results=total_results,
+            bottleneck_id=bottleneck_id,
+            bottleneck_ms=bottleneck_ms,
+        )
+        self._run_metric = metric
+        self._append({
+            "_run": True,
+            "wall_ms": metric.wall_ms,
+            "total_results": metric.total_results,
+            "bottleneck_id": metric.bottleneck_id,
+            "bottleneck_ms": metric.bottleneck_ms,
+            "ts": metric.ts,
+        })
+
     def _append(self, obj: dict):
         """Append a JSON line and fsync."""
         with open(self.path, "a") as f:
@@ -5594,9 +5915,23 @@ class StateFile:
                     "check_rc": entry.check_rc,
                     **({"manual": True} if entry.manual else {})
                 }, separators=(",", ":")) + "\n")
+            for wave in self.wave_metrics():
+                f.write(json.dumps({
+                    "_wave": True, "wave": wave.wave, "wall_ms": wave.wall_ms,
+                    "to_run": wave.to_run, "skipped": wave.skipped, "ts": wave.ts,
+                }, separators=(",", ":")) + "\n")
+            if self._run_metric is not None:
+                f.write(json.dumps({
+                    "_run": True,
+                    "wall_ms": self._run_metric.wall_ms,
+                    "total_results": self._run_metric.total_results,
+                    "bottleneck_id": self._run_metric.bottleneck_id,
+                    "bottleneck_ms": self._run_metric.bottleneck_ms,
+                    "ts": self._run_metric.ts,
+                }, separators=(",", ":")) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        new_lines = len(self._entries)
+        new_lines = len(self._entries) + len(self._wave_metrics) + (1 if self._run_metric is not None else 0)
         return old_lines - new_lines
 
     def state_summary(self) -> dict[str, int]:
@@ -5725,7 +6060,7 @@ def _describe_group(group_key: str, count: int, limit: int|None, is_race: bool) 
         return ("║ group", parent_label, f"({count} resources)")
 
 
-def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_resume=False, verbose=False, global_timeout=None, start_from=None, log_file=None, on_complete=None, become_pass=None, blast_radius=False, include_tags=None, exclude_tags=None, skip_steps=None, confirm=False, run_id=None, state_path=None, progress_mode=False):
+def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_resume=False, verbose=False, global_timeout=None, start_from=None, log_file=None, on_complete=None, become_pass=None, blast_radius=False, include_tags=None, exclude_tags=None, skip_steps=None, confirm=False, run_id=None, state_path=None, progress_mode=False, webhook_server: WebhookGateServer | None = None):
     """Execute the graph with persistent state tracking for crash recovery.
     Returns (results, wall_clock_ms)."""
     wall_t0 = time.monotonic()
@@ -5853,9 +6188,13 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
     done = 0; started = 0; results = []; hard_fail = False
     start_lock = threading.Lock()
     runtime_collected: dict = {}  # key → list[str] for collect/reduce
+    owned_webhook_server = None
+    if webhook_server is None and any(r.wait_kind == "webhook" for r in graph.all_resources.values()):
+        webhook_server = owned_webhook_server = WebhookGateServer()
     try:
         with lock_cm:
             for wi, wave in enumerate(graph.waves):
+                wave_t0 = time.monotonic()
                 if hard_fail: break
                 # Check global timeout before starting a new wave
                 if deadline and time.monotonic() > deadline:
@@ -5927,7 +6266,12 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                 elif to_run:
                     print(dim(f"── Wave {wi+1}/{len(graph.waves)} ({len(to_run)} resources) ──"))
 
-                if not to_run: continue
+                if not to_run:
+                    wave_wall_ms = int((time.monotonic() - wave_t0) * 1000)
+                    if state and not dry_run:
+                        state.record_wave(wi + 1, wave_wall_ms, to_run=0,
+                                          skipped=len(to_skip_start) + len(to_skip_state) + len(to_skip_manual) + len(to_skip_tag))
+                    continue
 
                 # Interactive confirmation before each wave
                 if confirm and not dry_run and to_run:
@@ -5983,6 +6327,8 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                             cancel_check=cancel_check,
                             register_proc=register_proc,
                             unregister_proc=unregister_proc,
+                            graph_file=graph_file,
+                            webhook_server=webhook_server,
                         )
 
                     if is_race:
@@ -6095,6 +6441,9 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                                         elif fp == "ignore":
                                             pass
                                         # "wait" = default, continue all
+                wave_wall_ms = int((time.monotonic() - wave_t0) * 1000)
+                if state and not dry_run:
+                    state.record_wave(wi + 1, wave_wall_ms, to_run=len(to_run), skipped=len(to_skip_start) + len(to_skip_state) + len(to_skip_manual) + len(to_skip_tag))
     except RuntimeError as e:
         print(red(f"error: {e}"))
         print(f"  If the process crashed, run: cgr state reset {graph_file}")
@@ -6104,6 +6453,8 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
         _become_pass = None
         if has_ssh and not dry_run:
             _ssh_pool_stop()
+        if owned_webhook_server is not None:
+            owned_webhook_server.stop()
 
     _print_summary(results)
     if output and output.all_outputs():
@@ -6113,6 +6464,15 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
         print(f"  View with: cgr report {graph_file}")
         print()
     wall_ms = int((time.monotonic() - wall_t0) * 1000)
+    if state and not dry_run:
+        step_metrics = {
+            r.resource_id: r.duration_ms
+            for r in results
+            if r.resource_id in graph.all_resources and not graph.all_resources[r.resource_id].is_barrier
+        }
+        bottleneck_id = max(step_metrics, key=step_metrics.get) if step_metrics else None
+        state.record_run(wall_ms, total_results=len(results), bottleneck_id=bottleneck_id,
+                         bottleneck_ms=step_metrics.get(bottleneck_id, 0) if bottleneck_id else 0)
 
     # Finalize log
     if log_fh:
@@ -6218,6 +6578,12 @@ def cmd_state_show(graph_file: str, graph: Graph|None = None):
     if fail_count: parts.append(red(f"Failed: {fail_count}"))
     if pending_count: parts.append(dim(f"Pending: {pending_count}"))
     print(f"  {' | '.join(parts)}")
+    run_metric = state.run_metric()
+    if run_metric is not None:
+        bottleneck = ""
+        if run_metric.bottleneck_id:
+            bottleneck = f"  |  Bottleneck: {run_metric.bottleneck_id.split('.')[-1]} ({run_metric.bottleneck_ms}ms)"
+        print(f"  {dim(f'Last run wall time: {run_metric.wall_ms}ms')}{dim(bottleneck)}")
 
     # Show resume hint
     if fail_count or pending_count:
@@ -6481,6 +6847,70 @@ def cmd_report(graph_file: str, *, fmt: str = "table", output_file: str|None = N
     print(bold("─" * 64))
     print(dim(f"  Export: cgr report {graph_file} --format csv|json [-o FILE]"))
     print()
+
+
+def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
+                        *, graph_file: str, state_path: str | None = None) -> dict:
+    sp = state_path or _state_path(graph_file)
+    state = StateFile(sp) if Path(sp).exists() else None
+    wave_metrics = []
+    run_metric = None
+    if state:
+        wave_metrics = [
+            {
+                "wave": w.wave,
+                "wall_ms": w.wall_ms,
+                "to_run": w.to_run,
+                "skipped": w.skipped,
+                "ts": w.ts,
+            }
+            for w in state.wave_metrics()
+        ]
+        rm = state.run_metric()
+        if rm is not None:
+            run_metric = {
+                "wall_ms": rm.wall_ms,
+                "total_results": rm.total_results,
+                "bottleneck_id": rm.bottleneck_id,
+                "bottleneck_ms": rm.bottleneck_ms,
+                "ts": rm.ts,
+            }
+    report = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "version": __version__,
+        "file": graph_file,
+        "wall_clock_ms": wall_ms,
+        "total_resources": len(results),
+        "dedup": {h: ids for h, ids in graph.dedup_map.items() if len(ids) > 1},
+        "provenance": [
+            {"source": p.source_file, "template": p.template_name, "params": p.params_used}
+            for p in graph.provenance_log
+        ],
+        "results": [
+            {
+                "id": r.resource_id,
+                "status": r.status.value,
+                "run_rc": r.run_rc,
+                "check_rc": r.check_rc,
+                "duration_ms": r.duration_ms,
+                "attempts": r.attempts,
+                "reason": r.reason,
+            }
+            for r in results
+        ],
+        "metrics": {
+            "waves": wave_metrics,
+            "run": run_metric or {"wall_ms": wall_ms},
+        },
+    }
+    opath = _output_path(graph_file)
+    if Path(opath).exists():
+        of = OutputFile(opath)
+        report["outputs"] = {
+            f"{e.get('node','')}/{e.get('key','')}": e.get("stdout", "").strip()
+            for e in of.all_outputs()
+        }
+    return report
 
 
 # ── Check command (live drift detection without prior run) ─────────────
@@ -8515,6 +8945,8 @@ def _graph_to_json(graph: Graph, state_data: dict|None = None) -> str:
             "source_line": res.source_line,
             "collect_key": res.collect_key,
             "http_method": res.http_method,
+            "wait_kind": res.wait_kind,
+            "subgraph_path": res.subgraph_path,
         }
         if state_data and rid in state_data:
             r["state"] = state_data[rid]
@@ -10877,6 +11309,7 @@ def main():
     sa.add_argument("--parallel",type=int,default=4,help="Max concurrent steps per wave (default: 4)")
     sa.add_argument("--progress",action="store_true",help="Show step start/progress updates during apply")
     sa.add_argument("--report",metavar="FILE",help="Write JSON execution report to FILE")
+    sa.add_argument("--output",choices=["text","json"],default="text",help="Apply output format (default: text)")
     sa.add_argument("--no-color",action="store_true",help="Disable colored output")
     sa.add_argument("--no-resume",action="store_true",help="Ignore state file, run everything fresh")
     sa.add_argument("--run-id",metavar="ID",help="Salt the default state file path for this apply run")
@@ -11332,7 +11765,7 @@ def main():
             args.blast_radius = True
         _inc = set(args.tags.split(",")) if getattr(args,"tags",None) else None
         _exc = set(args.skip_tags.split(",")) if getattr(args,"skip_tags",None) else None
-        results, wall_ms=cmd_apply_stateful(graph, args.file,
+        apply_kwargs = dict(
             dry_run=args.dry_run, max_parallel=args.parallel,
             no_resume=getattr(args,"no_resume",False),
             verbose=getattr(args,"verbose",False),
@@ -11347,24 +11780,23 @@ def main():
             confirm=getattr(args,"confirm",False),
             run_id=getattr(args,"run_id",None),
             state_path=getattr(args,"apply_state",None),
-            progress_mode=getattr(args,"progress",False))
+            progress_mode=getattr(args,"progress",False),
+        )
+        if getattr(args, "output", "text") == "json":
+            with redirect_stdout(io.StringIO()):
+                results, wall_ms = cmd_apply_stateful(graph, args.file, **apply_kwargs)
+        else:
+            results, wall_ms = cmd_apply_stateful(graph, args.file, **apply_kwargs)
         if args.report:
-            rpt={"timestamp":time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                 "version":__version__,
-                 "wall_clock_ms":wall_ms,
-                 "total_resources":len(results),
-                 "dedup":{h:ids for h,ids in graph.dedup_map.items() if len(ids)>1},
-                 "provenance":[{"source":p.source_file,"template":p.template_name,"params":p.params_used} for p in graph.provenance_log],
-                 "results":[{"id":r.resource_id,"status":r.status.value,"run_rc":r.run_rc,
-                             "duration_ms":r.duration_ms,"attempts":r.attempts} for r in results]}
-            # Include collected outputs if any
-            opath = _output_path(args.file)
-            if Path(opath).exists():
-                of = OutputFile(opath)
-                rpt["outputs"] = {f"{e.get('node','')}/{e.get('key','')}": e.get("stdout","").strip()
-                                  for e in of.all_outputs()}
+            rpt = _build_apply_report(graph, results, wall_ms, graph_file=args.file,
+                                      state_path=getattr(args, "apply_state", None))
             Path(args.report).write_text(json.dumps(rpt,indent=2))
-            print(dim(f"Report → {args.report}"))
-        sys.exit(1 if any(r.status==Status.FAILED for r in results) else 0)
+            if getattr(args, "output", "text") != "json":
+                print(dim(f"Report → {args.report}"))
+        if getattr(args, "output", "text") == "json":
+            rpt = _build_apply_report(graph, results, wall_ms, graph_file=args.file,
+                                      state_path=getattr(args, "apply_state", None))
+            print(json.dumps(rpt, indent=2))
+        sys.exit(1 if any(r.status in (Status.FAILED, Status.TIMEOUT) for r in results) else 0)
 
 if __name__=="__main__": main()

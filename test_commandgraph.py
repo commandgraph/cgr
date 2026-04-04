@@ -14,11 +14,15 @@ import importlib.util
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import textwrap
 import unittest
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -487,6 +491,30 @@ class TestCGRParser:
         deploy = web.resources[0]
         # Cross-node refs use dot notation internally: "db.setup_schema"
         assert "db.setup_schema" in deploy.needs
+
+    def test_wait_for_webhook(self):
+        src = textwrap.dedent("""\
+            target "local" local:
+              [wait for approval]:
+                wait for webhook '/approve/${deploy_id}'
+                timeout 4h
+        """)
+        ast = cg.parse_cgr(src)
+        res = ast.nodes[0].resources[0]
+        assert res.wait_kind == "webhook"
+        assert res.wait_target == "/approve/${deploy_id}"
+        assert res.timeout == 14400
+
+    def test_subgraph_step(self):
+        src = textwrap.dedent("""\
+            target "local" local:
+              [deploy app] from ./deploy_app.cgr:
+                version = '2.1.0'
+        """)
+        ast = cg.parse_cgr(src)
+        res = ast.nodes[0].resources[0]
+        assert res.subgraph_path == "./deploy_app.cgr"
+        assert res.subgraph_vars == {"version": "2.1.0"}
 
     def test_parse_error_on_invalid(self):
         with pytest.raises(cg.CGRParseError):
@@ -1302,7 +1330,10 @@ class TestStateCli:
         assert "State compacted" in out
 
         raw_lines = [line for line in Path(cg._state_path(str(graph_path))).read_text().splitlines() if line.strip()]
-        assert len(raw_lines) == 1
+        resource_lines = [line for line in raw_lines if '"id":"local.create_marker"' in line]
+        assert len(resource_lines) == 1
+        assert any('"_wave":true' in line for line in raw_lines)
+        assert any('"_run":true' in line for line in raw_lines)
 
     def test_state_compact_missing_graph_does_not_emit_load_error(self, tmp_path, monkeypatch, capsys):
         graph_path = tmp_path / "missing.cgr"
@@ -2153,6 +2184,99 @@ class TestEndToEndApply:
         graph = cg._load(str(graph_file), raise_on_error=True)
         cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1, state_path=str(explicit_state))
         assert explicit_state.exists()
+
+    def test_apply_subgraph_step(self, tmp_path):
+        child = tmp_path / "deploy_app.cgr"
+        marker = tmp_path / "version.txt"
+        child.write_text(textwrap.dedent(f"""\
+            target "local" local:
+              [write version]:
+                run $ printf '%s' "${{version}}" > {marker}
+        """))
+        parent = tmp_path / "parent.cgr"
+        parent.write_text(textwrap.dedent("""\
+            target "local" local:
+              [deploy app] from ./deploy_app.cgr:
+                version = '2.1.0'
+        """))
+
+        graph = cg._load(str(parent), raise_on_error=True)
+        results, _ = cg.cmd_apply_stateful(graph, str(parent), max_parallel=1)
+
+        assert marker.read_text() == "2.1.0"
+        assert any(r.resource_id == "local.deploy_app" and r.status == cg.Status.SUCCESS for r in results)
+
+    def test_apply_wait_for_webhook(self, tmp_path, monkeypatch):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        monkeypatch.setenv("CGR_WEBHOOK_PORT", str(port))
+
+        graph_file = tmp_path / "wait.cgr"
+        marker = tmp_path / "approved.txt"
+        graph_file.write_text(textwrap.dedent(f"""\
+            set deploy_id = "abc123"
+            target "local" local:
+              [wait for approval]:
+                wait for webhook '/approve/${{deploy_id}}'
+                timeout 2s
+              [mark approved]:
+                first [wait for approval]
+                run $ touch {marker}
+        """))
+
+        def _send_webhook():
+            time.sleep(0.2)
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/approve/abc123").read()
+
+        t = threading.Thread(target=_send_webhook, daemon=True)
+        t.start()
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        results, _ = cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1)
+        t.join(timeout=1)
+
+        assert marker.exists()
+        assert any(r.resource_id == "local.wait_for_approval" and r.status == cg.Status.SUCCESS for r in results)
+
+    def test_apply_output_json(self, tmp_path, monkeypatch, capsys):
+        graph_file = tmp_path / "json_apply.cgr"
+        graph_file.write_text(textwrap.dedent("""\
+            target "local" local:
+              [step]:
+                run $ echo ok
+        """))
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "apply", str(graph_file), "--output", "json"])
+        with pytest.raises(SystemExit) as exc:
+            cg.main()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert payload["file"] == str(graph_file)
+        assert payload["results"][0]["status"] == "success"
+        assert payload["metrics"]["run"]["wall_ms"] >= 0
+
+    def test_state_records_wave_and_run_metrics(self, tmp_path):
+        graph_file = tmp_path / "metrics.cgr"
+        graph_file.write_text(textwrap.dedent("""\
+            target "local" local:
+              [a]:
+                run $ echo a
+              [b]:
+                first [a]
+                run $ echo b
+        """))
+
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1)
+
+        state = cg.StateFile(cg._state_path(str(graph_file)))
+        waves = state.wave_metrics()
+        run_metric = state.run_metric()
+        assert len(waves) == 2
+        assert run_metric is not None
+        assert run_metric.wall_ms >= 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════

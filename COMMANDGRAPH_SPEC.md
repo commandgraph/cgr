@@ -562,6 +562,8 @@ The state file (`<graph>.state` by default, or a run-specific variant when `--ru
 - Not in state → run (never attempted)
 - `cancelled` (race) → re-run the race
 
+The journal may also include `_wave` and `_run` metadata records that store wall-clock timing for each wave and the latest completed apply run.
+
 ### 8.4 SSH Connection Pooling
 
 The engine opens a persistent SSH connection (ControlMaster) per unique host at the start of `apply` and reuses it for all commands. This eliminates the ~50ms TCP+handshake overhead per command.
@@ -833,7 +835,7 @@ cgr plan FILE [--repo DIR] [-v]           # show execution order
 cgr apply FILE [--repo DIR] [--parallel N] # execute
                         [--dry-run] [--no-resume] [-v] [--no-color]
                         [--start-from STEP] [--timeout SECS]
-                        [--report FILE.json]
+                        [--report FILE.json] [--output text|json]
 cgr validate FILE [--repo DIR] [-q] [--no-color] # check syntax
 cgr visualize FILE [--repo DIR] [-o F.html]      # interactive HTML
                             [--state FILE.state]
@@ -846,6 +848,7 @@ cgr version                                # show version info
 
 Key flags:
 - `--report FILE.json` writes a JSON report including `wall_clock_ms`, `total_resources`, per-resource status, and provenance data.
+- `--output json` prints the apply result as machine-readable JSON to stdout.
 - `--run-id ID` salts the default state file path for this apply run.
 - `--state FILE` uses an explicit state journal path for this apply run.
 - `--start-from STEP` skips all waves before the named step (for debugging mid-graph).

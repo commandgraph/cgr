@@ -6,6 +6,13 @@ CommandGraph is an infrastructure tool that runs shell commands in the right ord
 
 One Python file with zero dependencies. No agents on your servers. No daemon. No database.
 
+Recent additions:
+
+- Sub-graph inclusion: a step can now run another `.cgr` or `.cg` file as a unit with `from ./child.cgr:`
+- Human-in-the-loop wait gates: `wait for webhook "..."` and `wait for file "..."` are first-class steps
+- Machine-readable apply mode: `cgr apply FILE --output json`
+- Execution metrics: per-step, per-wave, and total wall-clock timing are now persisted in the state journal
+
 ```
 --- Deploy my app ---
 
@@ -49,6 +56,26 @@ target "web" ssh deploy@10.0.1.5:
 ```
 
 That's a complete, runnable deployment. `[brackets]` name your steps. `first` declares what must happen before. `skip if` makes it idempotent. `content >` writes config files with automatic `validate` and rollback. `verify` is your smoke test.
+
+You can also compose graphs and pause for external approval:
+
+```cgr
+set deploy_id = "abc123"
+
+target "local" local:
+
+  [deploy app] from ./deploy_app.cgr:
+    version = "2.1.0"
+
+  [wait for approval]:
+    first [deploy app]
+    wait for webhook "/approve/${deploy_id}"
+    timeout 4h
+
+  [resume rollout]:
+    first [wait for approval]
+    run $ echo approved
+```
 
 ---
 
@@ -238,6 +265,39 @@ cgr report audit.cgr --keys hostname,kernel
 For multi-node graphs, `cgr report` turns collected keys into columns, which makes fleet audits and inventory snapshots easy to export.
 
 If you want a run-level execution summary instead, `cgr apply FILE --report run.json` writes JSON containing wall-clock timing, per-step statuses, provenance, dedup information, and any collected outputs.
+
+If you want the entire `apply` command itself to be machine-readable, use:
+
+```bash
+cgr apply deploy.cgr --output json
+```
+
+That prints the execution result to stdout as JSON, including per-step results plus wave and run timing pulled from the state journal.
+
+## Wait gates and metrics
+
+Two lightweight coordination primitives are now built in:
+
+```cgr
+[wait for file]:
+  wait for file "./ready.flag"
+  timeout 30m
+
+[wait for approval]:
+  wait for webhook "/approve/${deploy_id}"
+  timeout 4h
+```
+
+`wait for file` polls for file existence locally or over SSH. `wait for webhook` starts a small local HTTP listener during `apply`; a `GET` or `POST` to the configured path releases the step.
+
+Execution timing is also tracked automatically. The state journal now stores:
+
+- Wall-clock time per step
+- Wall-clock time per wave
+- Total wall-clock time for the latest run
+- The latest bottleneck step and its duration
+
+That means runs can answer questions like "how long did this deploy take?" without any external metrics system.
 
 ---
 

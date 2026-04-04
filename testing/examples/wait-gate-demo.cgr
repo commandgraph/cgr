@@ -1,0 +1,26 @@
+--- Wait gate demo: webhook-triggered deployment ---
+--- The [await QA sign-off] step blocks until an HTTP POST/GET hits    ---
+--- the registered path. The demo script sends the curl while apply    ---
+--- is running, simulating an external approval or CI signal.          ---
+
+set deploy_id = "demo-run-1"
+set work_dir  = "/workspace/wait-gate"
+
+target "local" local:
+
+  [prepare workspace]:
+    skip if $ test -d ${work_dir}
+    run    $ mkdir -p ${work_dir}
+
+  [await QA sign-off]:
+    first [prepare workspace]
+    wait for webhook "/approve/${deploy_id}"
+    timeout 30s
+
+  [write deploy manifest]:
+    first [await QA sign-off]
+    run $ printf 'deploy_id=%s\napproved=true\n' "${deploy_id}" > ${work_dir}/manifest.txt
+
+  verify "manifest written":
+    first [write deploy manifest]
+    run $ grep -q "approved=true" ${work_dir}/manifest.txt

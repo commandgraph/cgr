@@ -2,6 +2,13 @@
 
 CommandGraph is a DSL and execution engine for declaring CLI command dependencies as a DAG. Two formats (`.cg` brace-delimited, `.cgr` indentation-based) produce identical ASTs. The engine is a single file (`cgr.py`), requires Python 3.9+, and has zero dependencies. The CLI is `cgr`.
 
+Recent engine changes to keep in mind:
+
+- Sub-graph inclusion as a step unit: `[deploy app] from ./deploy_app.cgr:`
+- Wait gates: `wait for webhook "..."` and `wait for file "..."`
+- Machine-readable apply output: `cgr apply FILE --output json`
+- Execution timing persisted in state via per-wave and per-run metric records
+
 ## File layout
 
 ```text
@@ -34,6 +41,9 @@ benchmarks/              # Parallelism benchmarks
 4. Parallel desugaring: `parallel`, `race`, `each`, and `stage` all desugar into gate → fork → join DAG patterns. Do not add executor-only special cases unless that architecture is being intentionally changed.
 5. Cross-node dedup is disabled: The identity hash includes `node_name`, so identical commands on different hosts are never deduplicated.
 6. HTTP steps are first-class: `get` / `post` / `put` / `patch` / `delete` desugar into the same `(rc, stdout, stderr)` execution model. Local targets use `urllib`; SSH targets construct `curl` commands. Auth tokens must remain redacted.
+7. Sub-graph inclusion is an execution type, not resolver flattening: the parent graph tracks the outer step, and the child graph keeps its own state file.
+8. Wait gates are first-class steps: preserve timeout, cancellation, and resume behavior; do not replace them with ad hoc shell polling unless intentionally redesigning the feature.
+9. State journals now contain both resource records and metric records (`_wave`, `_run`). Any state tooling or compaction logic must preserve both.
 
 ## Known limitations
 
@@ -42,6 +52,8 @@ benchmarks/              # Parallelism benchmarks
 - Race cancellation does not kill subprocesses that already started.
 - `state test` only works for resources with `check` clauses.
 - HTTP syntax is only supported in the `.cgr` parser, not `.cg`, at present.
+- Sub-graph inclusion currently uses `.cgr` step syntax; there is no matching `.cg` surface syntax yet.
+- `wait for webhook` is a lightweight local listener for `apply`, not a general distributed signal system.
 - State files are not run-instance unique: the state file is always `FILE.cgr.state`, keyed only to the graph file path, not to `--set` values. Two concurrent runs of the same graph with different parameters share one state file and identical resource IDs, so they can clobber each other. The advisory PID lock prevents simultaneous runs on the same machine, but it does not isolate distinct parameterized invocations. A future `--run-id` or `--state FILE` flag would be needed for per-invocation isolation.
 
 ## How to test
@@ -71,6 +83,9 @@ testing-ssh/run-ssh-demos.sh  # 5 SSH demos
 - Treat `MANUAL.md` as the syntax authority and `COMMANDGRAPH_SPEC.md` as the formal grammar reference.
 - Use `.claude/docs/design_doc_*.md` for historical design rationale when behavior is unclear.
 - Keep `.cg` and `.cgr` behavior aligned. If you touch one parser or syntax path, inspect the corresponding path in the other format.
+- If you touch apply output, keep `--output json` and `--report FILE.json` aligned by deriving both from the same execution/result data when possible.
+- If you touch state handling, inspect both resource-entry behavior and `_wave` / `_run` metric behavior.
+- If you touch sub-graph inclusion, preserve the contract that the child graph runs as a unit rather than as flattened parent resources.
 - Test against the example graphs after changes, not just unit tests.
 - Templates may exist in either `.cgr` or `.cg`, but the stdlib in `repo/` is `.cgr`, and the repo loader prefers `.cgr`.
 - Be cautious with state semantics, dependency resolution, and desugaring changes. Small regressions in those areas can silently break resume behavior or execution ordering.

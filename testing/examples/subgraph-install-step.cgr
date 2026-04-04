@@ -1,0 +1,20 @@
+--- Versioned app installer (used as a sub-graph step) ---
+
+set app_name     = "app"
+set version      = "0.0.0"
+set install_root = "/workspace/subgraph/apps"
+
+target "local" local:
+
+  [create install dir]:
+    skip if $ test -d ${install_root}/${app_name}
+    run    $ mkdir -p ${install_root}/${app_name}
+
+  [write version file]:
+    first [create install dir]
+    skip if $ grep -qx "${version}" ${install_root}/${app_name}/VERSION 2>/dev/null
+    run    $ printf '%s\n' "${version}" > ${install_root}/${app_name}/VERSION
+
+  verify "correct version installed":
+    first [write version file]
+    run $ grep -qx "${version}" ${install_root}/${app_name}/VERSION
