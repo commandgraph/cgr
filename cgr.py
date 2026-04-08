@@ -5462,38 +5462,58 @@ def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False, webh
     print(bold(f"{'═'*64}")); print()
     done=0; started=0; results=[]; hard_fail=False
     start_lock = threading.Lock()
-    inline_updates = progress_mode and _COLOR and max_parallel == 1
+    live_progress = _LiveApplyProgress(enabled=_stdout_supports_live_updates())
+    emit_start_updates = progress_mode and not live_progress.enabled
+    inline_updates = emit_start_updates and _COLOR and max_parallel == 1
     runtime_collected: dict = {}  # key → list[str] for collect/reduce
-    for wi,wave in enumerate(graph.waves):
-        if hard_fail: break
-        print(dim(f"── Wave {wi+1}/{len(graph.waves)} ({done}/{total} done, {len(wave)} to run) ──"))
-        def _run_with_start(rid):
-            nonlocal started
-            res = graph.all_resources[rid]
-            if progress_mode:
-                with start_lock:
-                    started += 1
-                    _print_exec_start(started, total, res, graph, inline=inline_updates)
-            return exec_resource(
-                res,
-                graph.nodes[res.node_name],
-                dry_run=dry_run,
-                variables=graph.variables,
-                graph_file=graph.graph_file,
-                accumulated_collected=runtime_collected,
-                webhook_server=webhook_server,
-            )
-        with ThreadPoolExecutor(max_workers=min(max_parallel,len(wave))) as pool:
-            futs={pool.submit(_run_with_start, rid):rid for rid in wave}
-            for f in as_completed(futs):
-                rid=futs[f]; r=f.result(); results.append(r); done+=1
-                res=graph.all_resources[rid]
-                _print_exec(done,total,res,r,graph,inline=inline_updates)
-                if r.var_bindings:
-                    graph.variables.update(r.var_bindings)
-                if res.collect_key and r.status == Status.SUCCESS:
-                    runtime_collected.setdefault(res.collect_key, []).append(r.stdout)
-                if r.status in (Status.FAILED, Status.TIMEOUT): hard_fail=True
+    live_progress.start()
+    try:
+        for wi,wave in enumerate(graph.waves):
+            if hard_fail: break
+            live_progress.set_wave(wi + 1, len(graph.waves), len(wave))
+            live_progress.before_print()
+            print(dim(f"── Wave {wi+1}/{len(graph.waves)} ({done}/{total} done, {len(wave)} to run) ──"))
+            def _run_with_start(rid):
+                nonlocal started
+                res = graph.all_resources[rid]
+                if live_progress.enabled:
+                    live_progress.step_started(rid, res.short_name, res.timeout)
+                elif emit_start_updates:
+                    with start_lock:
+                        started += 1
+                        _print_exec_start(started, total, res, graph, inline=inline_updates)
+                on_output = None
+                if live_progress.enabled:
+                    sensitive = graph.sensitive_values if hasattr(graph, "sensitive_values") else set()
+                    on_output = lambda stream_name, text, _rid=rid, _name=res.short_name, _s=sensitive: (
+                        live_progress.stream_stdout(_rid, _name, text, sensitive=_s)
+                        if stream_name == "stdout" else None
+                    )
+                return exec_resource(
+                    res,
+                    graph.nodes[res.node_name],
+                    dry_run=dry_run,
+                    variables=graph.variables,
+                    graph_file=graph.graph_file,
+                    accumulated_collected=runtime_collected,
+                    on_output=on_output,
+                    webhook_server=webhook_server,
+                )
+            with ThreadPoolExecutor(max_workers=min(max_parallel,len(wave))) as pool:
+                futs={pool.submit(_run_with_start, rid):rid for rid in wave}
+                for f in as_completed(futs):
+                    rid=futs[f]; r=f.result(); results.append(r); done+=1
+                    res=graph.all_resources[rid]
+                    live_progress.step_finished(rid)
+                    live_progress.before_print()
+                    _print_exec(done,total,res,r,graph,inline=inline_updates)
+                    if r.var_bindings:
+                        graph.variables.update(r.var_bindings)
+                    if res.collect_key and r.status == Status.SUCCESS:
+                        runtime_collected.setdefault(res.collect_key, []).append(r.stdout)
+                    if r.status in (Status.FAILED, Status.TIMEOUT): hard_fail=True
+    finally:
+        live_progress.stop()
     _print_summary(results)
     # ── Execute on_complete / on_failure hooks ───────────────────────────
     has_failure = any(r.status in (Status.FAILED, Status.TIMEOUT) for r in results)
@@ -5611,6 +5631,132 @@ def _print_exec_start(idx, total, res, graph, indent="", inline=False):
             target = "local"
         print(f"{pad}{dim(f'executing on {target}')}")
     print()
+
+def _stdout_supports_live_updates() -> bool:
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+class _LiveApplyProgress:
+    def __init__(self, *, enabled: bool, stream=None, interval: float = 0.2):
+        self.enabled = enabled
+        self.stream = stream or sys.stdout
+        self.interval = interval
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._spin = 0
+        self._wave_label = ""
+        self._running: dict[str, tuple[str, float, int | None]] = {}
+        self._stdout_buffers: dict[str, str] = {}
+        self._stdout_meta: dict[str, tuple[str, set[str]]] = {}
+
+    def start(self):
+        if not self.enabled or self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="cgr-live-progress", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if not self.enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+        self.clear()
+
+    def clear(self):
+        if not self.enabled:
+            return
+        with self._lock:
+            self._write("\r\033[2K")
+
+    def set_wave(self, current: int, total: int, to_run: int):
+        if not self.enabled:
+            return
+        with self._lock:
+            self._wave_label = f"Wave {current}/{total}"
+            if to_run <= 0:
+                self._running.clear()
+
+    def step_started(self, rid: str, short_name: str, timeout: int | None = None):
+        if not self.enabled:
+            return
+        with self._lock:
+            self._running[rid] = (short_name, time.monotonic(), timeout)
+            self._stdout_buffers[rid] = ""
+            self._stdout_meta[rid] = ("", set())
+
+    def step_finished(self, rid: str):
+        if not self.enabled:
+            return
+        with self._lock:
+            self._flush_stdout_buffer(rid)
+            self._running.pop(rid, None)
+            self._stdout_buffers.pop(rid, None)
+            self._stdout_meta.pop(rid, None)
+
+    def before_print(self):
+        self.clear()
+
+    def stream_stdout(self, rid: str, short_name: str, text: str, *, indent: str = "", sensitive: set[str] | None = None):
+        if not self.enabled or not text:
+            return
+        with self._lock:
+            buf = self._stdout_buffers.get(rid, "")
+            buf += text.replace("\r\n", "\n").replace("\r", "\n")
+            self._stdout_meta[rid] = (indent, set(sensitive or set()))
+            parts = buf.split("\n")
+            self._stdout_buffers[rid] = parts.pop()
+            for line in parts:
+                self._emit_stdout_line(short_name, line, indent=indent, sensitive=sensitive)
+
+    def _write(self, text: str):
+        self.stream.write(text)
+        self.stream.flush()
+
+    def _emit_stdout_line(self, short_name: str, line: str, *, indent: str = "", sensitive: set[str] | None = None):
+        redacted = _redact(line.rstrip(), sensitive or set())
+        prefix = f"{indent}  {dim('│ out  ')} {bold(short_name)} {dim('|')}"
+        self._write("\r\033[2K")
+        self._write(f"{prefix} {redacted}\n")
+        self._write(self._render())
+
+    def _flush_stdout_buffer(self, rid: str):
+        buf = self._stdout_buffers.get(rid, "")
+        if not buf:
+            return
+        short_name = self._running.get(rid, (rid, 0.0, None))[0]
+        indent, sensitive = self._stdout_meta.get(rid, ("", set()))
+        self._emit_stdout_line(short_name, buf, indent=indent, sensitive=sensitive)
+        self._stdout_buffers[rid] = ""
+
+    def _render(self) -> str:
+        spinner = "|/-\\"[self._spin % 4]
+        if not self._running:
+            label = self._wave_label or "Preparing apply"
+            return f"\r\033[2K  {blue(spinner)} {dim(label + '...')}"
+        items = list(self._running.values())
+        names = [name for name, _, _ in items]
+        shown_parts = []
+        for name, _, timeout in items[:2]:
+            part = name
+            if timeout:
+                part += f" (timeout {timeout}s)"
+            shown_parts.append(part)
+        shown = ", ".join(shown_parts)
+        if len(items) > 2:
+            shown += f" +{len(items) - 2} more"
+        elapsed = int(max(time.monotonic() - started_at for _, started_at, _ in items))
+        label = self._wave_label or "Apply"
+        return f"\r\033[2K  {blue(spinner)} {dim(f'{label}: running {shown} ({elapsed}s)')}"
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            with self._lock:
+                self._spin += 1
+                self._write(self._render())
 
 def _print_summary(results):
     c=defaultdict(int)
@@ -6187,11 +6333,13 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
 
     done = 0; started = 0; results = []; hard_fail = False
     start_lock = threading.Lock()
+    live_progress = _LiveApplyProgress(enabled=_stdout_supports_live_updates())
     runtime_collected: dict = {}  # key → list[str] for collect/reduce
     owned_webhook_server = None
     if webhook_server is None and any(r.wait_kind == "webhook" for r in graph.all_resources.values()):
         webhook_server = owned_webhook_server = WebhookGateServer()
     try:
+        live_progress.start()
         with lock_cm:
             for wi, wave in enumerate(graph.waves):
                 wave_t0 = time.monotonic()
@@ -6215,6 +6363,7 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                         to_skip_tag.append(rid)
                     else:
                         to_run.append(rid)
+                live_progress.set_wave(wi + 1, len(graph.waves), len(to_run))
 
                 skip_info = []
                 if to_skip_start: skip_info.append(f"{len(to_skip_start)} before start")
@@ -6222,6 +6371,7 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                 if to_skip_manual: skip_info.append(f"{len(to_skip_manual)} skipped")
                 if to_skip_tag: skip_info.append(f"{len(to_skip_tag)} by tag")
                 if skip_info:
+                    live_progress.before_print()
                     print(dim(f"── Wave {wi+1}/{len(graph.waves)} ({', '.join(skip_info)}, {len(to_run)} to run) ──"))
                     for rid in to_skip_start:
                         done += 1
@@ -6264,9 +6414,11 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                         results.append(ExecResult(resource_id=rid, status=Status.SKIP_WHEN,
                                                  duration_ms=0, reason="skipped by tag filter"))
                 elif to_run:
+                    live_progress.before_print()
                     print(dim(f"── Wave {wi+1}/{len(graph.waves)} ({len(to_run)} resources) ──"))
 
                 if not to_run:
+                    live_progress.set_wave(wi + 1, len(graph.waves), 0)
                     wave_wall_ms = int((time.monotonic() - wave_t0) * 1000)
                     if state and not dry_run:
                         state.record_wave(wi + 1, wave_wall_ms, to_run=0,
@@ -6303,20 +6455,31 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
 
                     # Print group banner for named parallel groups
                     if group_key is not None:
+                        live_progress.before_print()
                         gtype, glabel, ginfo = _describe_group(group_key, len(group_rids), limit, is_race)
                         print(f"  {cyan(gtype)} {bold(glabel)} {dim(ginfo)}")
 
                     gi = "    " if group_key is not None else ""  # group indent
 
-                    inline_updates = progress_mode and _COLOR and limit == 1
+                    emit_start_updates = progress_mode and not live_progress.enabled
+                    inline_updates = emit_start_updates and _COLOR and limit == 1
 
                     def _run_with_start(rid, *, cancel_check=None, register_proc=None, unregister_proc=None):
                         nonlocal started
                         res = graph.all_resources[rid]
-                        if progress_mode:
+                        if live_progress.enabled:
+                            live_progress.step_started(rid, res.short_name, res.timeout)
+                        elif emit_start_updates:
                             with start_lock:
                                 started += 1
                                 _print_exec_start(started, total, res, graph, indent=gi, inline=inline_updates)
+                        on_output = None
+                        if live_progress.enabled:
+                            sensitive = graph.sensitive_values if hasattr(graph, "sensitive_values") else set()
+                            on_output = lambda stream_name, text, _rid=rid, _name=res.short_name, _gi=gi, _s=sensitive: (
+                                live_progress.stream_stdout(_rid, _name, text, indent=_gi, sensitive=_s)
+                                if stream_name == "stdout" else None
+                            )
                         return exec_resource(
                             res,
                             graph.nodes[res.node_name],
@@ -6324,6 +6487,7 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                             blast_radius=blast_radius,
                             variables=graph.variables,
                             accumulated_collected=runtime_collected,
+                            on_output=on_output,
                             cancel_check=cancel_check,
                             register_proc=register_proc,
                             unregister_proc=unregister_proc,
@@ -6346,6 +6510,7 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                                 if r.var_bindings:
                                     graph.variables.update(r.var_bindings)
                                 res = graph.all_resources[rid]
+                                live_progress.step_finished(rid)
                                 race_results.append((rid, r, res))
                                 if r.status == Status.SUCCESS and not race_won:
                                     race_won = True
@@ -6364,6 +6529,7 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                                 results.append(r)
                                 if res.collect_key:
                                     runtime_collected.setdefault(res.collect_key, []).append(r.stdout)
+                                live_progress.before_print()
                                 _print_exec(done - len(race_results) + race_results.index((rid, r, res)) + 1, total, res, r, graph, verbose=verbose, indent=gi, inline=inline_updates)
                                 if state and not dry_run: state.record(r, wi + 1, sensitive=graph.sensitive_values)
                                 if output and res.collect_key:
@@ -6377,6 +6543,7 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                                                 attempts=r.attempts, reason=reason)
                                 results.append(cr)
                                 idx = done - len(race_results) + race_results.index((rid, r, res)) + 1
+                                live_progress.before_print()
                                 print(f"{gi}  {dim(f'[{idx}/{total}]')} {dim('○ race ')} {bold(res.short_name)}")
                                 display_reason = "cancelled — another branch won" if winner_found else f"lost — exit={r.run_rc}"
                                 print(f"{gi}              {dim(display_reason)}")
@@ -6410,6 +6577,8 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                             for f in as_completed(futs):
                                 rid = futs[f]; r = f.result(); results.append(r); done += 1
                                 res = graph.all_resources[rid]
+                                live_progress.step_finished(rid)
+                                live_progress.before_print()
                                 _print_exec(done, total, res, r, graph, verbose=verbose, indent=gi, inline=inline_updates)
                                 if r.var_bindings:
                                     graph.variables.update(r.var_bindings)
@@ -6442,13 +6611,16 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                                             pass
                                         # "wait" = default, continue all
                 wave_wall_ms = int((time.monotonic() - wave_t0) * 1000)
+                live_progress.set_wave(wi + 1, len(graph.waves), 0)
                 if state and not dry_run:
                     state.record_wave(wi + 1, wave_wall_ms, to_run=len(to_run), skipped=len(to_skip_start) + len(to_skip_state) + len(to_skip_manual) + len(to_skip_tag))
     except RuntimeError as e:
+        live_progress.before_print()
         print(red(f"error: {e}"))
         print(f"  If the process crashed, run: cgr state reset {graph_file}")
         sys.exit(1)
     finally:
+        live_progress.stop()
         # Always release lock and close SSH pool, even on crash/interrupt
         _become_pass = None
         if has_ssh and not dry_run:

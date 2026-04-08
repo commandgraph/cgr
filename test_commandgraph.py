@@ -11,6 +11,7 @@ Run:  python3 -m pytest test_commandgraph.py -v
 from __future__ import annotations
 import argparse
 import importlib.util
+import io
 import json
 import os
 import shlex
@@ -2256,6 +2257,30 @@ class TestEndToEndApply:
         assert payload["file"] == str(graph_file)
         assert payload["results"][0]["status"] == "success"
         assert payload["metrics"]["run"]["wall_ms"] >= 0
+
+    def test_apply_live_progress_activation_uses_tty_only(self, monkeypatch):
+        monkeypatch.setattr(cg.sys.stdout, "isatty", lambda: True, raising=False)
+        assert cg._stdout_supports_live_updates() is True
+
+        monkeypatch.setattr(cg.sys.stdout, "isatty", lambda: False, raising=False)
+        assert cg._stdout_supports_live_updates() is False
+
+    def test_live_progress_streams_stdout_lines_and_flushes_partial(self):
+        stream = io.StringIO()
+        progress = cg._LiveApplyProgress(enabled=True, stream=stream, interval=999)
+
+        progress.set_wave(1, 1, 1)
+        progress.step_started("local.step", "step", 30)
+        progress.stream_stdout("local.step", "step", "hello")
+        progress.stream_stdout("local.step", "step", " world\nline 2\npartial tail")
+        progress.step_finished("local.step")
+
+        out = stream.getvalue()
+        assert "hello world" in out
+        assert "line 2" in out
+        assert "partial tail" in out
+        assert "step" in out
+        assert "timeout 30s" in out
 
     def test_state_records_wave_and_run_metrics(self, tmp_path):
         graph_file = tmp_path / "metrics.cgr"
