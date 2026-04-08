@@ -209,12 +209,24 @@ Written inline on the step header line, comma-separated:
 |----------|---------|---------|
 | `as USER` | `as root` | current user |
 | `timeout Ns` or `timeout Nm` | `timeout 3m` | 300s |
+| `timeout Ns reset on output` | `timeout 30s reset on output` | disabled |
 | `retry Nx wait Ns` | `retry 2x wait 10s` | no retries |
 | `retry Nx backoff Xs` | `retry 3x backoff 30s` | exponential backoff, no cap |
 | `retry Nx backoff Xs..Ys` | `retry 3x backoff 30s..300s` | exponential backoff, capped at Ys |
 | `retry Nx backoff Xs..Ys jitter Z%` | `retry 3x backoff 30s..300s jitter 10%` | backoff with ±10% jitter |
 | `until "VALUE"` | `until "0"` | disabled |
 | `if fails stop\|warn\|ignore` | `if fails warn` | stop |
+
+`timeout` is a hard execution deadline by default. If you add `reset on output`, it becomes an inactivity timeout instead: every new stdout or stderr chunk from the running command resets the timer.
+
+Example:
+
+```cgr
+[stream logs] timeout 30s reset on output:
+  run $ ./follow-progress.sh
+```
+
+This step can run longer than 30 seconds overall as long as it keeps producing CLI output at least once every 30 seconds. If output stops for 30 seconds, the step times out.
 
 ### The `first` keyword — why not `after`?
 
@@ -1108,7 +1120,7 @@ resource install_nginx {
 | `check` | No | `null` | Shell command (backtick-delimited). If exits 0, the resource is **skipped** (already satisfied). Set to `` `false` `` to force the resource to always run. |
 | `run` | **Yes** | — | Shell command to execute. This is the action. |
 | `as` | No | current user | Run as this Unix user (uses `sudo -u`). |
-| `timeout` | No | `300` | Max seconds before the command is killed. Append `s` or `m` for units. |
+| `timeout` | No | `300` | Max seconds before the command is killed. Append `s` or `m` for units. Add `reset on output` to treat it as an inactivity timeout instead. |
 | `retry` | No | `0` | Number of retry attempts after failure. |
 | `delay` | No | `5` | Seconds between retries. Follows `retry`. |
 | `on_fail` | No | `stop` | What to do on failure: `stop` (abort the graph), `warn` (continue, mark as warned), `ignore` (treat as success). |

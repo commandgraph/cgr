@@ -265,11 +265,37 @@ class TestCGRParser:
         ast = cg.parse_cgr(src)
         assert ast.nodes[0].resources[0].timeout == 120
 
+    def test_timeout_reset_on_output_cgr(self):
+        src = textwrap.dedent('''\
+            target "local" local:
+              [step] timeout 30s reset on output:
+                run $ echo hi
+        ''')
+        ast = cg.parse_cgr(src)
+        r = ast.nodes[0].resources[0]
+        assert r.timeout == 30
+        assert r.timeout_reset_on_output is True
+
+    def test_timeout_reset_on_output_cg(self):
+        src = textwrap.dedent('''\
+            node "local" {
+              via local
+              resource step {
+                timeout 30 reset on output
+                run `echo hi`
+              }
+            }
+        ''')
+        ast = cg.Parser(cg.lex(src), src, "<test>").parse()
+        r = ast.nodes[0].resources[0]
+        assert r.timeout == 30
+        assert r.timeout_reset_on_output is True
+
     def test_timeout_hours(self):
         src = textwrap.dedent("""\
             target "local" local:
-              [step] timeout 2h:
-                run $ echo hi
+                [step] timeout 2h:
+                  run $ echo hi
         """)
         ast = cg.parse_cgr(src)
         assert ast.nodes[0].resources[0].timeout == 7200
@@ -310,6 +336,32 @@ class TestCGRParser:
         assert len(verify) == 1
         assert verify[0].retries == 3
         assert verify[0].retry_delay == 2
+
+    def test_verify_block_multiline_run_and_timeout(self):
+        src = textwrap.dedent('''\
+            target "local" local:
+              [step]:
+                run $ echo hi
+              verify "it works":
+                first [step]
+                run $ cd /tmp && \\
+                      ((echo one || \\
+                        echo two) | wc -l | grep -q '^1$')
+                retry 5x wait 5s
+                timeout 60m reset on output
+        ''')
+        ast = cg.parse_cgr(src)
+        verify = [r for r in ast.nodes[0].resources if r.is_verify]
+        assert len(verify) == 1
+        assert verify[0].run.startswith("cd /tmp && \\")
+        assert "echo one || \\" in verify[0].run
+        assert "echo two" in verify[0].run
+        assert "grep -q '^1$')" in verify[0].run
+        assert verify[0].run.count("\n") == 2
+        assert verify[0].retries == 5
+        assert verify[0].retry_delay == 5
+        assert verify[0].timeout == 3600
+        assert verify[0].timeout_reset_on_output is True
 
     def test_if_fails_warn(self):
         src = textwrap.dedent('''\
@@ -1892,6 +1944,29 @@ class TestConvert:
         graph = cg._load(str(cgr_file), raise_on_error=True)
         assert len(graph.all_resources) == 2
 
+    def test_timeout_reset_on_output_roundtrip(self, tmp_path):
+        src = textwrap.dedent('''\
+            node "local" {
+              via local
+              resource step {
+                timeout 30 reset on output
+                run `echo hi`
+              }
+            }
+        ''')
+        cg_file = tmp_path / "timeout_reset.cg"
+        cgr_file = tmp_path / "timeout_reset.cgr"
+        cg_file.write_text(src)
+
+        cg.cmd_convert(str(cg_file), output_file=str(cgr_file))
+
+        out = cgr_file.read_text()
+        assert "timeout 30s reset on output" in out
+        graph = cg._load(str(cgr_file), raise_on_error=True)
+        step = next(iter(graph.all_resources.values()))
+        assert step.timeout == 30
+        assert step.timeout_reset_on_output is True
+
     def test_cgr_to_cg_template_step_refs_roundtrip(self, tmp_path):
         """Converted .cg should preserve template-step dependencies from .cgr."""
         project_dir = Path(__file__).resolve().parent
@@ -2094,6 +2169,32 @@ class TestEndToEndApply:
         # Still successful
         assert all(e.status in ("success", "skip_check") for e in sf.all_entries().values())
 
+    def test_timeout_reset_on_output_allows_chatty_command(self, tmp_path):
+        graph_file = tmp_path / "chatty_ok.cgr"
+        graph_file.write_text(textwrap.dedent("""\
+            target "local" local:
+              [chatty] timeout 1s reset on output:
+                run $ python3 -c "import sys,time; [print(i, flush=True) or time.sleep(0.4) for i in range(4)]"
+        """))
+
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        results, _ = cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1)
+
+        assert any(r.resource_id == "local.chatty" and r.status == cg.Status.SUCCESS for r in results)
+
+    def test_timeout_without_reset_still_times_out_chatty_command(self, tmp_path):
+        graph_file = tmp_path / "chatty_timeout.cgr"
+        graph_file.write_text(textwrap.dedent("""\
+            target "local" local:
+              [chatty] timeout 1s:
+                run $ python3 -c "import sys,time; [print(i, flush=True) or time.sleep(0.4) for i in range(4)]"
+        """))
+
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        results, _ = cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1)
+
+        assert any(r.resource_id == "local.chatty" and r.status == cg.Status.TIMEOUT for r in results)
+
     def test_start_from_reports_skips_as_start_from(self, tmp_path, capsys):
         graph_file = tmp_path / "start_from.cgr"
         a = tmp_path / "a.txt"
@@ -2265,14 +2366,19 @@ class TestEndToEndApply:
         monkeypatch.setattr(cg.sys.stdout, "isatty", lambda: False, raising=False)
         assert cg._stdout_supports_live_updates() is False
 
-    def test_live_progress_streams_stdout_lines_and_flushes_partial(self):
+    def test_live_progress_streams_stdout_lines_and_flushes_partial(self, monkeypatch):
+        fake_now = [100.0]
+        monkeypatch.setattr(cg.time, "monotonic", lambda: fake_now[0])
         stream = io.StringIO()
         progress = cg._LiveApplyProgress(enabled=True, stream=stream, interval=999)
 
         progress.set_wave(1, 1, 1)
-        progress.step_started("local.step", "step", 30)
+        progress.step_started("local.step", "step", 30, True)
+        fake_now[0] = 107.0
         progress.stream_stdout("local.step", "step", "hello")
         progress.stream_stdout("local.step", "step", " world\nline 2\npartial tail")
+        fake_now[0] = 111.0
+        render = progress._render()
         progress.step_finished("local.step")
 
         out = stream.getvalue()
@@ -2280,7 +2386,8 @@ class TestEndToEndApply:
         assert "line 2" in out
         assert "partial tail" in out
         assert "step" in out
-        assert "timeout 30s" in out
+        assert "idle timeout 30s, counter 30s" in out
+        assert "idle timeout 30s, counter 26s" in render
 
     def test_state_records_wave_and_run_metrics(self, tmp_path):
         graph_file = tmp_path / "metrics.cgr"
@@ -3160,6 +3267,7 @@ class TestIDEServerAPI:
         assert "start" in types
         step_start = next(e for e in r2["events"] if e["type"] == "step_start")
         assert "timeout_s" in step_start
+        assert "timeout_reset_on_output" in step_start
         assert "run" in step_start
         assert "ts" in step_start
         assert "done" in types

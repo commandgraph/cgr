@@ -137,17 +137,19 @@ Properties appear after the `]` and before the `:`, comma-separated:
 | Property | Syntax | Default | Meaning |
 |----------|--------|---------|---------|
 | `as USER` | `as root` | (SSH user or local user) | Run command as this user via sudo |
-| `timeout` | `timeout 30s` or `timeout 2m` | `300s` | Kill command after this duration |
+| `timeout` | `timeout 30s`, `timeout 2m`, or `timeout 30s reset on output` | `300s` | Kill command after this duration; `reset on output` makes it an inactivity timeout |
 | `retry` | `retry 3x wait 10s` | 0 retries | Retry on failure, with delay |
 | `if fails` | `if fails stop\|warn\|ignore` | `stop` | What to do on failure |
 
 **Properties can also appear as standalone lines in the step body** (useful in templates):
-```
+``` 
 [step name]:
   skip if $ some check
   run    $ some command
   as root, timeout 2m, retry 1x wait 5s
 ```
+
+When `timeout ... reset on output` is used, the timeout is measured as output inactivity, not total wall-clock runtime. Any new stdout or stderr from the running step resets the deadline.
 
 ### 3.3 Step Body Keywords
 
@@ -762,7 +764,7 @@ target_body   = (step / verify / template_inst / stage_block)*
 step          = "[" STEP_NAME "]" header_props? ":" INDENT step_body DEDENT
 header_props  = (as_prop / timeout_prop / retry_prop / fail_prop)*
 as_prop       = "as" IDENT
-timeout_prop  = "timeout" INT ("s" / "m")?
+timeout_prop  = "timeout" INT ("s" / "m")? ("reset" "on" "output")?
 retry_prop    = "retry" INT "x" ("wait" INT ("s" / "m")?)?
 fail_prop     = "if" "fails" ("stop" / "warn" / "ignore")
 
