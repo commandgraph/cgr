@@ -1,6 +1,6 @@
 # AGENTS.md — CommandGraph Project Context
 
-CommandGraph is a DSL and execution engine for declaring CLI command dependencies as a DAG. Two formats (`.cg` brace-delimited, `.cgr` indentation-based) produce identical ASTs. The engine is a single file (`cgr.py`), requires Python 3.9+, and has zero dependencies. The CLI is `cgr`.
+CommandGraph is a DSL and execution engine for declaring CLI command dependencies as a DAG. Two formats (`.cg` brace-delimited, `.cgr` indentation-based) produce identical ASTs. Development source lives in `cgr_src/`; the shipped single-file artifact `cgr.py` is generated from those modules. The CLI is `cgr`.
 
 Recent engine changes to keep in mind:
 
@@ -12,7 +12,10 @@ Recent engine changes to keep in mind:
 ## File layout
 
 ```text
-cgr.py                   # Engine (~8000 lines, single file)
+cgr_src/                 # Source modules used during development
+cgr_dev.py               # Dev entrypoint that imports `cgr_src.cli:main()`
+cgr.py                   # Generated single-file artifact shipped to users
+MODULE_MAP.md            # Quick lookup for where to make changes
 ide.html                 # Web IDE frontend, served by `cgr serve`
 MANUAL.md                # Authoritative syntax reference
 COMMANDGRAPH_SPEC.md     # Formal language spec (PEG grammar, for code generators)
@@ -80,6 +83,7 @@ testing-ssh/run-ssh-demos.sh  # 5 SSH demos
 ## Working guidelines
 
 - Prefer changes that preserve English-like syntax. In `.cgr`, use `first`, not `after`, `before`, or `needs`.
+- Make code changes in `cgr_src/`, not `cgr.py`; the canonical rebuild path is `python3 cgr_dev.py apply build.cgr` (or `python3 cgr.py apply build.cgr`) after changing source modules, `ide.html`, or `visualize_template.py`.
 - Treat `MANUAL.md` as the syntax authority and `COMMANDGRAPH_SPEC.md` as the formal grammar reference.
 - Use `.claude/docs/design_doc_*.md` for historical design rationale when behavior is unclear.
 - Keep `.cg` and `.cgr` behavior aligned. If you touch one parser or syntax path, inspect the corresponding path in the other format.

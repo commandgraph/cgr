@@ -6,6 +6,7 @@ __pycache__/
 # Runtime artifacts
 *.state
 *.output
+.build/
 
 # Generated HTML visualizations (regenerable via cgr visualize)
 nginx_setup.html

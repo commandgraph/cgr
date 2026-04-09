@@ -30,7 +30,7 @@ import pytest
 
 # ── Import engine ────────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
-import build_cgr
+import build_helpers
 import cgr as cg
 
 
@@ -1676,6 +1676,30 @@ class TestExecution:
         assert "err-1" in result.stdout
         assert any(stream == "stdout" and "out-1" in chunk for stream, chunk in seen)
         assert any(stream == "stdout" and "err-1" in chunk for stream, chunk in seen)
+
+    def test_exec_resource_live_output_does_not_toggle_tty_modes(self, monkeypatch):
+        cmd = f"{sys.executable} -c \"print('out')\""
+        res = self._resource(run=cmd)
+
+        class _FakeStdin:
+            def isatty(self):
+                return True
+
+        calls = []
+
+        monkeypatch.setattr(cg.sys, "stdin", _FakeStdin())
+        monkeypatch.setattr(cg.tty, "setcbreak", lambda fd: calls.append(("setcbreak", fd)))
+        monkeypatch.setattr(cg.termios, "tcgetattr", lambda fd: [0, 0, 0, 0, 0, 0, []])
+        monkeypatch.setattr(cg.termios, "tcsetattr", lambda fd, when, attrs: calls.append(("tcsetattr", fd, when, attrs)))
+
+        result = cg.exec_resource(
+            res,
+            self._local_node(),
+            on_output=lambda stream, chunk: None,
+        )
+
+        assert result.status == cg.Status.SUCCESS
+        assert calls == []
 
     def test_exec_resource_cancel_check_terminates_process(self, tmp_path):
         marker = tmp_path / "cancelled.txt"
@@ -3405,13 +3429,14 @@ class TestServeSecurity(TestIDEServerAPI):
 class TestSingleFileBuild:
     def test_build_is_deterministic(self, tmp_path):
         target = tmp_path / "cgr.py"
-        source = Path(cg.__file__).resolve()
-        repo_root = Path(__file__).resolve().parent
-
-        target.write_text(source.read_text())
-        first = build_cgr.build(target, repo_root / "visualize_template.py", repo_root / "ide.html")
+        first = build_helpers.full_build()
         target.write_text(first)
-        second = build_cgr.build(target, repo_root / "visualize_template.py", repo_root / "ide.html")
+        second = build_helpers.full_build()
+        assert first == second
+
+    def test_bootstrap_idempotent(self):
+        first = build_helpers.full_build()
+        second = build_helpers.full_build()
         assert first == second
 
 
@@ -3455,11 +3480,8 @@ class TestVisualizeSecrets:
         import py_compile
 
         target = tmp_path / "cgr.py"
-        source = Path(cg.__file__).resolve()
-        repo_root = Path(__file__).resolve().parent
 
-        target.write_text(source.read_text())
-        target.write_text(build_cgr.build(target, repo_root / "visualize_template.py", repo_root / "ide.html"))
+        target.write_text(build_helpers.full_build())
         py_compile.compile(str(target), doraise=True)
 
         built = _load_module_from_path("cgr_built_test", target)

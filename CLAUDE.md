@@ -1,6 +1,6 @@
 # CLAUDE.md — CommandGraph Project Context
 
-CommandGraph is a DSL and execution engine for declaring CLI command dependencies as a DAG. Two formats (`.cg` brace-delimited, `.cgr` indentation-based) produce identical ASTs. Single-file engine (`cgr.py`, Python 3.9+, zero deps). CLI is `cgr`.
+CommandGraph is a DSL and execution engine for declaring CLI command dependencies as a DAG. Two formats (`.cg` brace-delimited, `.cgr` indentation-based) produce identical ASTs. Development source lives in `cgr_src/`; `cgr.py` is the generated single-file artifact shipped to users. CLI is `cgr`.
 
 Current notable features beyond the original core:
 
@@ -12,7 +12,10 @@ Current notable features beyond the original core:
 ## File layout
 
 ```
-cgr.py                   # Engine (~8000 lines, single file)
+cgr.py                   # Built single-file artifact, still shipped and tracked
+cgr_dev.py               # Dev entrypoint that imports cgr_src.cli:main()
+cgr_src/                 # Source modules used during development
+MODULE_MAP.md            # Quick lookup for where to make specific changes
 ide.html                 # Web IDE frontend, served by `cgr serve`
 MANUAL.md                # Authoritative syntax reference
 COMMANDGRAPH_SPEC.md     # Formal language spec (PEG grammar, for code generators)
@@ -61,9 +64,15 @@ benchmarks/              # Parallelism benchmarks
 ```bash
 # Compile check
 python3 -c "import py_compile; py_compile.compile('cgr.py', doraise=True)"
+python3 -c "import py_compile; py_compile.compile('cgr_dev.py', doraise=True)"
+
+# Build graph
+python3 cgr.py validate build.cgr
+python3 cgr.py apply build.cgr
 
 # Pytest suite
 python3 -m pytest test_commandgraph.py -x -q
+python3 -m pytest test_modularization.py -x -q
 
 # Validate all example files
 cgr validate nginx_setup.cg && cgr validate nginx_setup.cgr
@@ -80,6 +89,8 @@ testing-ssh/run-ssh-demos.sh  # 5 SSH demos
 ## Working guidelines
 
 - Syntax should read like English. `.cgr` uses `first` (not `after`/`before`/`needs`).
+- Edit the development modules under `cgr_src/`, then rebuild `cgr.py` via the self-hosted build graph with `python3 cgr_dev.py apply build.cgr` or `python3 cgr.py apply build.cgr`.
+- Use `MODULE_MAP.md` first when choosing which module to inspect for a change.
 - For composition, prefer sub-graph steps when the user wants another graph executed as one unit rather than flattened child resources.
 - When touching state code, account for both resource entries and `_wave` / `_run` metric records.
 - When touching apply output, keep `--report FILE.json` and `--output json` consistent by deriving both from the same result data when possible.

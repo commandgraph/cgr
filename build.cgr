@@ -1,0 +1,43 @@
+set modules = "01:common,02:lexer,03:ast_nodes,04:parser_cg,05:parser_cgr,06:repo,07:resolver,08:executor,09:state,10:commands,11:dot,12:visualize,13:serve,14:cli"
+set build_dir = ".build"
+set target = "cgr.py"
+
+target "local" local:
+  [clean staging]:
+    run $ rm -rf ${build_dir} && mkdir -p ${build_dir}
+
+  [strip modules]:
+    first [clean staging]
+    each mod in ${modules}:
+      [strip ${mod}]:
+        run $ python3 -c "from pathlib import Path; from build_helpers import strip_module; num, name = '${mod}'.split(':', 1); Path(f'${build_dir}/{num}_{name}.py').write_text(strip_module(f'cgr_src/{name}.py'))"
+
+  [write header]:
+    first [strip modules]
+    run $ python3 -c "from pathlib import Path; from build_helpers import assemble_header; Path('${build_dir}/00_header.py').write_text(assemble_header('cgr_src'))"
+
+  [concatenate]:
+    first [write header]
+    run $ cat ${build_dir}/[0-9][0-9]_*.py > ${build_dir}/assembled.py
+
+  [inject visualizer]:
+    first [concatenate]
+    run $ python3 -c "from pathlib import Path; from build_helpers import inject_visualizer; p = Path('${build_dir}/assembled.py'); p.write_text(inject_visualizer(p.read_text(), 'visualize_template.py'))"
+
+  [inject ide html]:
+    first [inject visualizer]
+    run $ python3 -c "from pathlib import Path; from build_helpers import inject_ide; p = Path('${build_dir}/assembled.py'); p.write_text(inject_ide(p.read_text(), 'ide.html'))"
+
+  [compile check]:
+    first [inject ide html]
+    run $ python3 -c "import py_compile; py_compile.compile('${build_dir}/assembled.py', doraise=True)"
+
+  [verify fixed point]:
+    first [compile check]
+    skip if $ diff -q ${build_dir}/assembled.py ${target} >/dev/null 2>&1
+    run $ cp ${build_dir}/assembled.py ${target}
+
+  [verify idempotent]:
+    first [verify fixed point]
+    skip if $ python3 -c "from build_helpers import full_build; from pathlib import Path; import sys; sys.exit(0 if Path('${target}').read_text() == full_build() else 1)"
+    run $ echo 'FATAL: build is not idempotent' >&2 && exit 1

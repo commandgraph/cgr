@@ -6,7 +6,7 @@ CommandGraph is an infrastructure tool that runs shell commands in the right ord
 
 One Python file with zero dependencies. No agents on your servers. No daemon. No database.
 
-```
+```python
 --- Deploy my app ---
 
 target "web" ssh deploy@10.0.1.5:
@@ -52,7 +52,7 @@ That's a complete, runnable deployment. `[brackets]` name your steps. `first` de
 
 You can also compose graphs and pause for external approval:
 
-```cgr
+```python
 set deploy_id = "abc123"
 
 target "local" local:
@@ -139,27 +139,13 @@ Inside that shell, `cgr` is already on `PATH`, examples live in `/opt/cgr/exampl
 
 ## Why not Ansible / Puppet / Chef / Salt?
 
-Those tools are good and widely used. CommandGraph is not intended to replace or replicate them. It sits above, bridging things tightly together.
-
-How does CommandGraph compare to, say Ansible?
-
-| Scenario | Ansible | CommandGraph |
-|----------|---------|-------------|
-| Set up a new server | Write a playbook, install Ansible, configure inventory, install collections | Write a `.cgr` file, copy one Python file, run it |
-| See what will happen | `--check` (unreliable for shell/command) | `cgr plan` shows exact execution waves |
-| Run steps in parallel | Set `forks` globally, `serial` per play, hope for the best | Automatic. Independent steps run concurrently. Or use `parallel`, `each`, `race` for explicit control |
-| Resume after failure | Re-run entire playbook, skip with tags or `--start-at-task` | `cgr apply` resumes from exactly where it stopped |
-| Detect drift | Write a separate check playbook | `cgr state test` re-runs checks, reports what changed |
-| Deploy to air-gapped server | Install Ansible + deps on control node | `scp cgr.py` and go |
-| Understand the dependency graph | Read the YAML top to bottom, hope the ordering is right | `cgr visualize` generates an interactive HTML DAG |
-
-**The deeper difference**: Ansible executes tasks in the order you wrote them. CommandGraph builds a dependency graph and figures out the order for you. You declare *what depends on what* and the engine maximizes parallelism automatically.
+CommandGraph is not trying to replace those tools. It solves a narrower problem: declare dependencies between operational steps, then let the engine plan order, maximize parallelism, and resume exactly from failure. Traditional config-management tools are still good at configuration management; CommandGraph is good at orchestration across shell commands, remote steps, API calls, wait gates, and sub-graphs.
 
 ### Running Ansible playbooks from CommandGraph
 
 Already have Ansible playbooks? Run them as steps inside a CommandGraph. This lets you sequence playbooks alongside shell commands, API calls, and other tools -- with crash recovery, dependency ordering, and parallel execution that Ansible alone can't express:
 
-```
+```python
 --- Provision and configure with Ansible ---
 
 set env = "staging"
@@ -228,7 +214,7 @@ CommandGraph ships with two reporting layers. You can collect stdout from specif
 
 Mark any step with `collect "key"` and its stdout is saved after execution:
 
-```text
+```python
 --- Audit a host ---
 
 target "web-1" ssh ops@10.0.1.5:
@@ -271,7 +257,7 @@ That prints the execution result to stdout as JSON, including per-step results p
 
 Two lightweight coordination primitives are now built in:
 
-```cgr
+```python
 [wait for file]:
   wait for file "./ready.flag"
   timeout 30m
@@ -316,7 +302,7 @@ Four constructs for explicit concurrency, all composable with everything else:
 
 ### `parallel` -- fork/join with bounded concurrency
 
-```
+```python
 [build everything]:
   parallel 2 at a time:
     [compile frontend]: run $ npm run build
@@ -326,7 +312,7 @@ Four constructs for explicit concurrency, all composable with everything else:
 
 ### `race` -- first to succeed wins, rest cancelled
 
-```
+```python
 [download package]:
   race into pkg.tar.gz:
     [us mirror]:  run $ curl -sf https://us.example.com/pkg.tar.gz -o ${_race_out}
@@ -337,7 +323,7 @@ Each branch writes to its own temp file. The winner is atomically renamed. No cl
 
 ### `each` -- parallel iteration over a list
 
-```
+```python
 set servers = "web-1,web-2,web-3,web-4"
 
 [deploy to fleet]:
@@ -348,7 +334,7 @@ set servers = "web-1,web-2,web-3,web-4"
 
 ### `stage`/`phase` -- canary rollouts with verification gates
 
-```
+```python
 [rolling deploy]:
   stage "production":
     phase "canary" 1 from ${servers}:
@@ -369,7 +355,7 @@ The canary deploys to 1 server. Its verify must pass before the rest begin. If u
 
 Write configs, edit lines, manage INI/JSON files -- all with built-in validation:
 
-```
+```python
 [write nginx config]:
   content > /etc/nginx/sites-available/myapp:
     server {
@@ -398,7 +384,7 @@ Inline `content >` and `block in` bodies preserve literal `#` characters, so con
 
 Call APIs directly -- no curl piping, no shell escaping:
 
-```
+```python
 [register host]:
   post "${api_host}/hosts"
   auth bearer "${api_token}"
@@ -415,7 +401,7 @@ Supports `get`, `post`, `put`, `patch`, `delete`. Auth tokens are automatically 
 
 44 standard templates across 21 categories -- packages, containers, TLS, firewalls, databases, monitoring, backups, and more. Here's a production-grade nginx + certbot deployment that uses five of them:
 
-```
+```python
 --- Full-stack Nginx + TLS deployment ---
 
 using apt/install_package, firewall/allow_port, systemd/enable_service, tls/certbot, nginx/vhost
@@ -481,7 +467,7 @@ Categories include: `apt`, `dnf`, `nginx`, `tls`, `firewall`, `systemd`, `servic
 
 ## Cross-distro, conditionals, and runtime detection
 
-```
+```python
 [install packages (apt)]:
   when os_family == "debian"
   run $ apt-get install -y nginx
@@ -491,7 +477,7 @@ Categories include: `apt`, `dnf`, `nginx`, `tls`, `firewall`, `systemd`, `servic
   run $ yum install -y nginx
 ```
 
-```
+```python
 [detect pigz]:
   run $ command -v pigz
   on success: set compressor = "pigz"
@@ -514,7 +500,7 @@ cgr secrets create vault.enc        # create encrypted vault
 cgr secrets edit vault.enc          # edit in $EDITOR
 ```
 
-```
+```python
 secrets "vault.enc"
 
 target "db" ssh deploy@10.0.2.3:
@@ -530,7 +516,7 @@ Secrets are decrypted at runtime, never written to disk, and auto-redacted from 
 
 Already have inventory files? Use them directly:
 
-```
+```python
 inventory "hosts.ini"
 
 each name, addr in ${webservers}:
@@ -543,12 +529,18 @@ each name, addr in ${webservers}:
 
 ### Maintainer note
 
-The release artifact is a single `cgr.py`. For maintainers, regenerate after changing `ide.html` or `visualize_template.py`:
+The release artifact is a single `cgr.py`. Development now happens in `cgr_src/`, with `cgr_dev.py` as the thin dev entrypoint. For maintainers, rebuild after changing source modules, `ide.html`, or `visualize_template.py`:
 
 ```bash
-python3 build_cgr.py
-python3 build_cgr.py --check
+python3 cgr_dev.py version
+python3 cgr_dev.py plan build.cgr
+python3 cgr_dev.py apply build.cgr
+python3 cgr_dev.py apply build.cgr --no-resume
 ```
+
+`build.cgr` is the canonical rebuild path. `build_helpers.full_build()` uses the same assembly logic, but it is a lower-level helper, not the normal maintainer workflow.
+
+Use [MODULE_MAP.md](MODULE_MAP.md) as the quick reference for where parser, resolver, executor, state, IDE, and CLI changes now live.
 
 ---
 

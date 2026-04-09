@@ -30,6 +30,23 @@ target "cluster" local:
     retry 60x wait 10s
 ```
 
+### Use an inactivity timeout for chatty long-running commands
+
+```
+target "logs" local:
+  [stream migration]:
+    run $ ./run-migration-with-progress.sh
+    timeout 30s reset on output
+```
+
+**When to use:** The step may run for a long time overall, but it should keep producing progress output.
+
+**How it works:**
+- `timeout 30s reset on output` is an idle timeout, not a wall-clock limit
+- Every new stdout or stderr chunk resets the 30-second timer
+- The step can run longer than 30 seconds total as long as it stays noisy
+- If output stops for 30 seconds, the step fails with a timeout
+
 ### Generate config files with DSL-native writes
 
 ```

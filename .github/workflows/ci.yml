@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python3 -m pip install --upgrade pip pytest
+      - name: Validate bootstrap build graph
+        run: python3 cgr.py validate build.cgr
+      - name: Check generated artifact
+        run: python3 -c "from pathlib import Path; import sys; from build_helpers import full_build; sys.exit(0 if Path('cgr.py').read_text() == full_build() else 1)"
+      - name: Compile entry points
+        run: python3 -m py_compile cgr.py cgr_dev.py build_helpers.py
+      - name: Test built artifact
+        run: python3 -m pytest test_commandgraph.py -x -q
+      - name: Test source package parity
+        run: python3 -m pytest test_modularization.py -x -q
