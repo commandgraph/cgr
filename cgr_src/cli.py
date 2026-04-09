@@ -196,7 +196,7 @@ def _print_completion(shell: str):
                         visualize) opts="$opts -o --output --state" ;;
                         serve) opts="$opts --port --host --no-open" ;;
                         diff) opts="$opts --json" ;;
-                        report) opts="$opts --format -o --output --keys" ;;
+                        report) opts="$opts --format -o --output --keys --run-id" ;;
                     esac
                     COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
                     return
@@ -377,6 +377,7 @@ def main():
     rpt.add_argument("--format",choices=["table","json","csv"],default="table",help="Output format (default: table)")
     rpt.add_argument("-o","--output",metavar="FILE",help="Write report to file instead of stdout")
     rpt.add_argument("--keys",help="Comma-separated list of collect keys to include")
+    rpt.add_argument("--run-id",metavar="ID",help="Read collected output for a specific apply run-id")
 
     sc=sub.add_parser("serve",help="Start the web IDE (editor + live visualization)")
     sc.add_argument("file",nargs="?",default=None,help="Graph file to open (.cg or .cgr)")
@@ -526,7 +527,8 @@ def main():
 
     if args.command=="report":
         fk = args.keys.split(",") if args.keys else None
-        cmd_report(args.file, fmt=args.format, output_file=args.output, filter_keys=fk)
+        cmd_report(args.file, fmt=args.format, output_file=args.output,
+                   filter_keys=fk, run_id=getattr(args, "run_id", None))
         return
 
     if args.command=="repo":
@@ -558,6 +560,10 @@ def main():
                             vault_prompt=vault_prompt)
             except SystemExit:
                 pass  # graph may not parse for show/reset
+
+        if graph and graph.stateless and args.action in ("test", "show", "set", "drop", "compact"):
+            print(red(f"error: 'state {args.action}' is not available for stateless graphs (set stateless = true)"))
+            sys.exit(1)
 
         if args.action=="show":
             cmd_state_show(args.file, graph)
@@ -789,13 +795,15 @@ def main():
             results, wall_ms = cmd_apply_stateful(graph, args.file, **apply_kwargs)
         if args.report:
             rpt = _build_apply_report(graph, results, wall_ms, graph_file=args.file,
-                                      state_path=getattr(args, "apply_state", None))
+                                      state_path=getattr(args, "apply_state", None),
+                                      run_id=getattr(args, "run_id", None))
             Path(args.report).write_text(json.dumps(rpt,indent=2))
             if getattr(args, "output", "text") != "json":
                 print(dim(f"Report → {args.report}"))
         if getattr(args, "output", "text") == "json":
             rpt = _build_apply_report(graph, results, wall_ms, graph_file=args.file,
-                                      state_path=getattr(args, "apply_state", None))
+                                      state_path=getattr(args, "apply_state", None),
+                                      run_id=getattr(args, "run_id", None))
             print(json.dumps(rpt, indent=2))
         sys.exit(1 if any(r.status in (Status.FAILED, Status.TIMEOUT) for r in results) else 0)
 

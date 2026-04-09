@@ -332,8 +332,9 @@ def _state_path(graph_file: str, run_id: str | None = None) -> str:
     suffix = f".{_sanitize_run_id(run_id)}" if run_id else ""
     return str(cwd / ".state" / rel.parent / f"{rel.name}{suffix}.state")
 
-def _output_path(graph_file: str) -> str:
-    return graph_file + ".output"
+def _output_path(graph_file: str, run_id: str | None = None) -> str:
+    suffix = f".{_sanitize_run_id(run_id)}" if run_id else ""
+    return graph_file + suffix + ".output"
 
 
 class OutputFile:
@@ -468,11 +469,14 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
             print(yellow(f"  warning: --skip '{skip_name}' not found, ignoring."))
 
     sp = state_path or _state_path(graph_file, run_id=run_id)
-    state = StateFile(sp) if not no_resume else None
+    effective_stateless = graph.stateless and not state_path
+    if graph.stateless and state_path:
+        print(yellow(f"  warning: --state FILE overrides 'set stateless = true'; state will be persisted."))
+    state = StateFile(sp) if not no_resume and not effective_stateless else None
 
     # Output collector for steps with collect clauses
     has_collect = any(r.collect_key for r in graph.all_resources.values())
-    output = OutputFile(_output_path(graph_file)) if has_collect and not dry_run else None
+    output = OutputFile(_output_path(graph_file, run_id=run_id)) if has_collect and not dry_run else None
 
     total = sum(len(w) for w in graph.waves)
 
@@ -515,7 +519,10 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
         if skip_from_state >= total:
             print(f"  {dim('All steps are already marked complete in the state file.')}")
             print(f"  {dim('Use --no-resume to ignore the state file and run everything fresh.')}")
-    print(f"  State: {dim(sp)}")
+    if effective_stateless:
+        print(f"  State: {dim('(stateless — no disk persistence)')}")
+    else:
+        print(f"  State: {dim(sp)}")
     if log_file:
         print(f"  Log: {dim(log_file)}")
     print(bold(f"{'═'*64}")); print()
@@ -854,10 +861,13 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
 
     _print_summary(results)
     if output and output.all_outputs():
-        op = _output_path(graph_file)
+        op = _output_path(graph_file, run_id=run_id)
         n = len(output.all_outputs())
         print(f"  {cyan('📋 Collected')} {n} output(s) → {dim(op)}")
-        print(f"  View with: cgr report {graph_file}")
+        report_cmd = f"cgr report {graph_file}"
+        if run_id:
+            report_cmd += f" --run-id {shlex.quote(run_id)}"
+        print(f"  View with: {report_cmd}")
         print()
     wall_ms = int((time.monotonic() - wall_t0) * 1000)
     if state and not dry_run:

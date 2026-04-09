@@ -284,6 +284,7 @@ class Graph:
     on_complete: Resource|None = None   # hook: runs after successful apply
     on_failure: Resource|None = None    # hook: runs after failed apply
     graph_file: str|None = None         # path to the source .cgr/.cg file (for relative put/content from)
+    stateless: bool = False             # set stateless = true: skip state file persistence
 
 @dataclass
 class ExecResult:
@@ -1357,6 +1358,7 @@ def resolve(prog: ASTProgram, repo_dir: str|None = None, graph_file: str|None = 
         on_complete=resolved_on_complete,
         on_failure=resolved_on_failure,
         graph_file=graph_file,
+        stateless=prog.stateless,
     )
 
 

@@ -21,8 +21,10 @@ class ParseError(Exception):
         return "\n".join(parts)
 
 RESOURCE_STMTS = {"description","needs","check","run","script","as","timeout",
-                  "retry","on_fail","when","env","collect","flag","until",
-                  "parallel","race","each","stage"}
+                  "retry","on_fail","on_success","on_failure","when","env",
+                  "collect","reduce","flag","until","wait","from",
+                  "parallel","race","each","stage",
+                  "get","post","put","patch","delete","auth","header","body","expect"}
 
 class Parser:
     def __init__(self, tokens, source, filename=""):
@@ -308,8 +310,14 @@ class Parser:
         on_fail=d.get("on_fail","stop"); when=None; env={}; env_when={}; children=[]; flags=[]; until=None
         collect_key=None
         collect_format=None
+        collect_var=None
+        reduce_key=None
+        reduce_var=None
+        on_success_set=[]; on_failure_set=[]
         http_method=None; http_url=None; http_headers=[]; http_body=None
         http_body_type=None; http_auth=None; http_expect=None
+        wait_kind=None; wait_target=None
+        subgraph_path=None; subgraph_vars={}
 
         while not self._at(TT.RBRACE) and not self._at(TT.EOF):
             s=self._peek()
@@ -323,7 +331,18 @@ class Parser:
             elif s.value=="as":          self._advance(); run_as=self._expect(TT.IDENT).value
             elif s.value=="collect":
                 self._advance(); collect_key=self._expect(TT.STRING).value
-                if self._at_id("as"): self._advance(); collect_format=self._expect(TT.IDENT).value
+                if self._at_id("as"):
+                    self._advance()
+                    collect_as = self._expect(TT.IDENT).value
+                    if collect_as == "json":
+                        collect_format = collect_as
+                    else:
+                        collect_var = collect_as
+            elif s.value=="reduce":
+                self._advance(); reduce_key=self._expect(TT.STRING).value
+                if self._at_id("as"):
+                    self._advance()
+                    reduce_var=self._expect(TT.IDENT).value
             elif s.value=="tags":
                 self._advance()
                 tag_list = [self._expect(TT.IDENT).value]
@@ -346,6 +365,24 @@ class Parser:
                 self._advance(); of=self._expect(TT.IDENT)
                 if of.value not in ("stop","warn","ignore"): raise self._err(f"Invalid on_fail '{of.value}'")
                 on_fail=of.value
+            elif s.value=="on_success":
+                self._advance()
+                self._expect(TT.IDENT, "set")
+                var_name = self._expect(TT.IDENT).value
+                self._expect(TT.EQUALS)
+                value_tok = self._advance()
+                if value_tok.type not in (TT.STRING, TT.NUMBER, TT.IDENT):
+                    raise self._err("Expected a value after on_success set VAR =")
+                on_success_set.append((var_name, value_tok.value))
+            elif s.value=="on_failure":
+                self._advance()
+                self._expect(TT.IDENT, "set")
+                var_name = self._expect(TT.IDENT).value
+                self._expect(TT.EQUALS)
+                value_tok = self._advance()
+                if value_tok.type not in (TT.STRING, TT.NUMBER, TT.IDENT):
+                    raise self._err("Expected a value after on_failure set VAR =")
+                on_failure_set.append((var_name, value_tok.value))
             elif s.value=="when": self._advance(); when=self._expect(TT.STRING).value
             elif s.value=="env":
                 self._advance(); k=self._expect(TT.IDENT).value
@@ -393,6 +430,17 @@ class Parser:
                 http_body=self._expect(TT.STRING).value
             elif s.value=="expect":
                 self._advance(); http_expect=self._expect(TT.STRING).value
+            elif s.value=="wait":
+                self._advance()
+                if self._at_id("for"):
+                    self._advance()
+                wait_kind=self._expect(TT.IDENT).value
+                if wait_kind not in ("webhook", "file"):
+                    raise self._err(f"Unknown wait target '{wait_kind}'", "Valid: webhook, file")
+                wait_target=self._expect(TT.STRING).value
+            elif s.value=="from":
+                self._advance()
+                subgraph_path=self._expect(TT.STRING).value
             # ── Parallel constructs ──────────────────────────────────────
             elif s.value=="parallel":
                 plimit, ppolicy, pchildren = self._p_parallel(group_defaults)
@@ -403,9 +451,17 @@ class Parser:
                 each_var, each_list_expr, each_limit, each_body = self._p_each(group_defaults)
             elif s.value=="stage":
                 stage_name, stage_phases = self._p_stage(group_defaults)
+            elif (subgraph_path is not None and s.type == TT.IDENT and
+                  self.pos+1 < len(self.tokens) and self.tokens[self.pos+1].type == TT.EQUALS):
+                arg_name = self._advance().value
+                self._expect(TT.EQUALS)
+                arg_value = self._advance()
+                if arg_value.type not in (TT.STRING, TT.NUMBER, TT.IDENT):
+                    raise self._err(f"Expected a simple value for subgraph argument '{arg_name}'")
+                subgraph_vars[arg_name] = arg_value.value
             else:
                 raise self._err(f"Unknown '{s.value}' in resource",
-                    "Valid: description, needs, check, run, script, as, timeout, retry, on_fail, when, env, collect, flag, until, tags, resource, parallel, race, each, stage, get, post, put, patch, delete, auth, header, body, expect")
+                    "Valid: description, needs, check, run, script, as, timeout, retry, on_fail, on_success, on_failure, when, env, collect, reduce, flag, until, wait, from, tags, resource, parallel, race, each, stage, get, post, put, patch, delete, auth, header, body, expect")
         if flags and not run_cmd:
             raise self._err("'flag' requires a 'run' command in the same step")
         if until and retries <= 0:
@@ -419,7 +475,11 @@ class Parser:
             children=children, flags=flags, env_when=env_when, until=until,
             http_method=http_method, http_url=http_url, http_headers=http_headers,
             http_body=http_body, http_body_type=http_body_type,
-            http_auth=http_auth, http_expect=http_expect)
+            http_auth=http_auth, http_expect=http_expect,
+            wait_kind=wait_kind, wait_target=wait_target,
+            subgraph_path=subgraph_path, subgraph_vars=dict(subgraph_vars),
+            on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
+            collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var)
         # Attach optional fields if parsed
         if 'tags' in dir(): res.tags = tags
         if 'parallel_block' in dir(): res.parallel_block = parallel_block; res.parallel_limit = parallel_limit; res.parallel_fail_policy = parallel_fail_policy

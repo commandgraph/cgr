@@ -2061,6 +2061,136 @@ class TestConvert:
         assert cg.cmd_diff(str(src), str(out), json_output=True) == 0
         assert "[db/parent/child]" in out.read_text()
 
+    def test_cgr_to_cg_roundtrip_preserves_advanced_step_features(self, tmp_path):
+        child = tmp_path / "deploy_app.cgr"
+        child.write_text(textwrap.dedent("""\
+            target "local" local:
+              [deploy]:
+                run $ echo ok
+        """))
+        src = tmp_path / "advanced.cgr"
+        out = tmp_path / "advanced.cg"
+        src.write_text(textwrap.dedent("""\
+            target "local" local:
+              [wait for ready]:
+                wait for file "./ready.flag"
+                timeout 5s
+              [deploy app] from "./deploy_app.cgr":
+                first [wait for ready]
+                version = "2.1.0"
+                collect "deploy_result" as deploy_output
+                on success: set deploy_status = "ok"
+                on failure: set deploy_status = "failed"
+              [summarize]:
+                first [deploy app]
+                reduce "deploy_result" as summary
+
+            on complete:
+              post "https://hooks.example.com/done"
+              body json '{"status":"ok"}'
+              expect 200
+        """))
+
+        cg.cmd_convert(str(src), output_file=str(out))
+
+        ast = cg.Parser(cg.lex(out.read_text(), str(out)), out.read_text(), str(out)).parse()
+        wait_res, deploy_res, summarize_res = ast.nodes[0].resources
+        assert wait_res.wait_kind == "file"
+        assert deploy_res.subgraph_path == "./deploy_app.cgr"
+        assert deploy_res.subgraph_vars == {"version": "2.1.0"}
+        assert deploy_res.collect_var == "deploy_output"
+        assert ("deploy_status", "ok") in deploy_res.on_success_set
+        assert ("deploy_status", "failed") in deploy_res.on_failure_set
+        assert summarize_res.reduce_key == "deploy_result"
+        assert summarize_res.reduce_var == "summary"
+        assert ast.on_complete is not None
+        assert ast.on_complete.http_method == "POST"
+        assert cg.cmd_diff(str(src), str(out), json_output=True) == 0
+
+    def test_cg_to_cgr_roundtrip_preserves_advanced_step_features(self, tmp_path):
+        child = tmp_path / "deploy_app.cgr"
+        child.write_text(textwrap.dedent("""\
+            target "local" local:
+              [deploy]:
+                run $ echo ok
+        """))
+        src = tmp_path / "advanced.cg"
+        out = tmp_path / "advanced.cgr"
+        src.write_text(textwrap.dedent("""\
+            node "local" {
+              via local
+              resource wait_ready {
+                wait for file "./ready.flag"
+                timeout 5
+              }
+              resource deploy_app {
+                needs wait_ready
+                from "./deploy_app.cgr"
+                version = "2.1.0"
+                collect "deploy_result" as deploy_output
+                on_success set deploy_status = "ok"
+                on_failure set deploy_status = "failed"
+              }
+              resource summarize {
+                needs deploy_app
+                reduce "deploy_result" as summary
+              }
+            }
+            on_complete {
+              post "https://hooks.example.com/done"
+              body json "{\\\"status\\\":\\\"ok\\\"}"
+              expect "200"
+            }
+        """))
+
+        cg.cmd_convert(str(src), output_file=str(out))
+
+        ast = cg.parse_cgr(out.read_text(), str(out))
+        wait_res, deploy_res, summarize_res = ast.nodes[0].resources
+        assert wait_res.wait_kind == "file"
+        assert deploy_res.subgraph_path == "./deploy_app.cgr"
+        assert deploy_res.subgraph_vars == {"version": "2.1.0"}
+        assert deploy_res.collect_var == "deploy_output"
+        assert ("deploy_status", "ok") in deploy_res.on_success_set
+        assert ("deploy_status", "failed") in deploy_res.on_failure_set
+        assert summarize_res.reduce_key == "deploy_result"
+        assert summarize_res.reduce_var == "summary"
+        assert ast.on_complete is not None
+        assert ast.on_complete.http_method == "POST"
+        assert cg.cmd_diff(str(src), str(out), json_output=True) == 0
+
+    def test_fmt_preserves_target_each_and_hooks(self, tmp_path):
+        graph = tmp_path / "looped.cgr"
+        graph.write_text(textwrap.dedent("""\
+            set hosts = "web1:10.0.0.1,web2:10.0.0.2"
+            each name, addr in ${hosts}:
+              target "${name}" local:
+                [announce]:
+                  run $ echo ${addr}
+
+            target "final" local, after each:
+              [done]:
+                run $ echo done
+
+            on complete:
+              post "https://hooks.example.com/done"
+              expect 200
+        """))
+
+        cg.cmd_fmt(str(graph))
+
+        formatted = graph.read_text()
+        assert "each name, addr in ${hosts}:" in formatted
+        assert 'target "${name}" local:' in formatted
+        assert 'target "final" local, after each:' in formatted
+        assert "on complete:" in formatted
+        parsed = cg.parse_cgr(formatted, str(graph))
+        resolved = cg.resolve(parsed)
+        assert {"web1", "web2", "final"} <= set(resolved.nodes.keys())
+        assert sorted(resolved.node_ordering["final"]) == ["web1", "web2"]
+        assert parsed.on_complete is not None
+        assert parsed.on_complete.http_method == "POST"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Topological sort (wave computation)
@@ -2332,6 +2462,35 @@ class TestEndToEndApply:
         assert marker.read_text() == "2.1.0"
         assert any(r.resource_id == "local.deploy_app" and r.status == cg.Status.SUCCESS for r in results)
 
+    def test_apply_subgraph_child_state_survives_parent_rerun(self, tmp_path):
+        child = tmp_path / "deploy_app.cgr"
+        counter = tmp_path / "deploy-count.txt"
+        child.write_text(textwrap.dedent(f"""\
+            target "local" local:
+              [increment]:
+                run $ python3 -c 'from pathlib import Path; p = Path(r"{counter}"); n = int(p.read_text()) + 1 if p.exists() else 1; p.write_text(str(n))'
+        """))
+        parent = tmp_path / "parent.cgr"
+        parent.write_text(textwrap.dedent("""\
+            target "local" local:
+              [deploy app] from "./deploy_app.cgr":
+                version = "2.1.0"
+        """))
+
+        graph = cg._load(str(parent), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(parent), max_parallel=1)
+        assert counter.read_text().strip() == "1"
+
+        parent_state = cg.StateFile(cg._state_path(str(parent)))
+        parent_state.drop("local.deploy_app")
+
+        graph = cg._load(str(parent), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(parent), max_parallel=1)
+
+        assert counter.read_text().strip() == "1"
+        child_state = cg.StateFile(cg._state_path(str(child)))
+        assert child_state.get("local.increment").status == "success"
+
     def test_apply_wait_for_webhook(self, tmp_path, monkeypatch):
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
@@ -2365,6 +2524,33 @@ class TestEndToEndApply:
         assert marker.exists()
         assert any(r.resource_id == "local.wait_for_approval" and r.status == cg.Status.SUCCESS for r in results)
 
+    def test_apply_wait_for_file(self, tmp_path):
+        ready = tmp_path / "ready.flag"
+        graph_file = tmp_path / "wait_file.cgr"
+        marker = tmp_path / "done.txt"
+        graph_file.write_text(textwrap.dedent(f"""\
+            target "local" local:
+              [wait for ready]:
+                wait for file "{ready}"
+                timeout 2s
+              [mark done]:
+                first [wait for ready]
+                run $ touch {marker}
+        """))
+
+        def _write_file():
+            time.sleep(0.2)
+            ready.write_text("ok")
+
+        t = threading.Thread(target=_write_file, daemon=True)
+        t.start()
+        graph = cg._load(str(graph_file), raise_on_error=True)
+        results, _ = cg.cmd_apply_stateful(graph, str(graph_file), max_parallel=1)
+        t.join(timeout=1)
+
+        assert marker.exists()
+        assert any(r.resource_id == "local.wait_for_ready" and r.status == cg.Status.SUCCESS for r in results)
+
     def test_apply_output_json(self, tmp_path, monkeypatch, capsys):
         graph_file = tmp_path / "json_apply.cgr"
         graph_file.write_text(textwrap.dedent("""\
@@ -2382,6 +2568,29 @@ class TestEndToEndApply:
         assert payload["file"] == str(graph_file)
         assert payload["results"][0]["status"] == "success"
         assert payload["metrics"]["run"]["wall_ms"] >= 0
+
+    def test_apply_output_json_run_id_uses_isolated_output_file(self, tmp_path, monkeypatch, capsys):
+        graph_file = tmp_path / "json_apply.cgr"
+        graph_file.write_text(textwrap.dedent("""\
+            target "local" local:
+              [step]:
+                run $ echo blue
+                collect "value"
+        """))
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "apply", str(graph_file), "--output", "json", "--run-id", "blue"])
+        with pytest.raises(SystemExit) as exc:
+            cg.main()
+        assert exc.value.code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["outputs"]["local/value"] == "blue"
+        assert not Path(cg._output_path(str(graph_file))).exists()
+        assert Path(cg._output_path(str(graph_file), run_id="blue")).exists()
+
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "report", str(graph_file), "--format", "json", "--run-id", "blue"])
+        cg.main()
+        report_payload = json.loads(capsys.readouterr().out)
+        assert report_payload[0]["stdout"].strip() == "blue"
 
     def test_apply_live_progress_activation_uses_tty_only(self, monkeypatch):
         monkeypatch.setattr(cg.sys.stdout, "isatty", lambda: True, raising=False)
@@ -2607,6 +2816,67 @@ class TestGatherFacts:
         graph = _resolve_cg(src)
         step = list(graph.all_resources.values())[0]
         assert "${os_family}" not in step.run
+
+
+class TestStateless:
+    def test_stateless_flag_parsed(self):
+        src = textwrap.dedent('''\
+            set stateless = true
+            target "local" local:
+              [deploy]:
+                run $ echo hello
+        ''')
+        graph = _resolve_cgr(src)
+        assert graph.stateless is True
+
+    def test_stateless_defaults_false(self):
+        src = textwrap.dedent('''\
+            target "local" local:
+              [deploy]:
+                run $ echo hello
+        ''')
+        graph = _resolve_cgr(src)
+        assert graph.stateless is False
+
+    def test_stateless_false_explicit(self):
+        src = textwrap.dedent('''\
+            set stateless = false
+            target "local" local:
+              [deploy]:
+                run $ echo hello
+        ''')
+        graph = _resolve_cgr(src)
+        assert graph.stateless is False
+
+    def test_stateless_no_state_file_created(self, tmp_path):
+        src = textwrap.dedent('''\
+            set stateless = true
+            target "local" local:
+              [deploy]:
+                run $ echo hello
+        ''')
+        cgr_file = tmp_path / "test.cgr"
+        cgr_file.write_text(src)
+        graph = cg._load(str(cgr_file), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(cgr_file))
+        state_file = tmp_path / "test.cgr.state"
+        assert not state_file.exists(), "stateless graph must not create a .state file"
+
+    def test_stateless_state_path_override_warns(self, tmp_path, capsys):
+        src = textwrap.dedent('''\
+            set stateless = true
+            target "local" local:
+              [deploy]:
+                run $ echo hello
+        ''')
+        cgr_file = tmp_path / "test.cgr"
+        cgr_file.write_text(src)
+        state_file = tmp_path / "explicit.state"
+        graph = cg._load(str(cgr_file), raise_on_error=True)
+        cg.cmd_apply_stateful(graph, str(cgr_file), state_path=str(state_file))
+        out = capsys.readouterr().out
+        assert "overrides" in out and "stateless" in out
+        assert state_file.exists(), "--state FILE must still be written when it overrides stateless"
 
 
 class TestShellCompletion:
@@ -3787,6 +4057,40 @@ class TestHTTPSteps:
         graph = cg.resolve(ast)
         assert graph.all_resources["t.fetch_data"].http_method == "GET"
         assert graph.all_resources["t.process_data"].http_method is None
+
+    def test_cg_parse_wait_subgraph_and_runtime_bindings(self):
+        src = '''
+        node "t" { via local
+          resource wait_ready {
+            wait for file "./ready.flag"
+            timeout 5
+          }
+          resource deploy_app {
+            needs wait_ready
+            from "./deploy_app.cgr"
+            version = "2.1.0"
+            collect "deploy_result" as deploy_output
+            on_success set deploy_status = "ok"
+            on_failure set deploy_status = "failed"
+          }
+          resource summarize {
+            needs deploy_app
+            reduce "deploy_result" as summary
+          }
+        }
+        '''
+        ast = cg.Parser(cg.lex(src), "<test>").parse()
+        wait_res, deploy_res, summarize_res = ast.nodes[0].resources
+        assert wait_res.wait_kind == "file"
+        assert wait_res.wait_target == "./ready.flag"
+        assert deploy_res.subgraph_path == "./deploy_app.cgr"
+        assert deploy_res.subgraph_vars == {"version": "2.1.0"}
+        assert deploy_res.collect_key == "deploy_result"
+        assert deploy_res.collect_var == "deploy_output"
+        assert ("deploy_status", "ok") in deploy_res.on_success_set
+        assert ("deploy_status", "failed") in deploy_res.on_failure_set
+        assert summarize_res.reduce_key == "deploy_result"
+        assert summarize_res.reduce_var == "summary"
 
     # ── on_complete / on_failure hook tests ───────────────────────────────
 
@@ -5814,6 +6118,101 @@ class TestEachVariableLimit:
         """)
         with pytest.raises(cg.ResolveError, match="not a valid integer"):
             _resolve_cgr(src)
+
+
+class TestTopLevelTargetEach:
+    def test_top_level_target_each_resolves_in_cgr(self):
+        src = textwrap.dedent("""\
+            set hosts = "web1:10.0.0.1,web2:10.0.0.2"
+            each name, addr in ${hosts}:
+              target "${name}" local:
+                [announce]:
+                  run $ echo ${addr}
+
+            target "final" local, after each:
+              [done]:
+                run $ echo done
+        """)
+        g = _resolve_cgr(src)
+        assert {"web1", "web2", "final"} <= set(g.nodes.keys())
+        assert sorted(g.node_ordering["final"]) == ["web1", "web2"]
+
+    def test_top_level_target_each_resolves_in_cg(self):
+        src = textwrap.dedent("""\
+            var hosts = "web1:10.0.0.1,web2:10.0.0.2"
+            each name, addr in hosts {
+              node "${name}" {
+                via local
+                resource announce {
+                  run `echo ${addr}`
+                }
+              }
+            }
+            node "final" {
+              via local
+              after each
+              resource done {
+                run `echo done`
+              }
+            }
+        """)
+        g = _resolve_cg(src)
+        assert {"web1", "web2", "final"} <= set(g.nodes.keys())
+        assert sorted(g.node_ordering["final"]) == ["web1", "web2"]
+
+
+class TestStagePhase:
+    def test_stage_resolves_phase_ordering(self):
+        src = textwrap.dedent("""\
+            set servers = "a,b,c"
+            target "t" local:
+              [rollout]:
+                stage "deploy":
+                  phase "canary" 1 from ${servers}:
+                    [ship]:
+                      run $ echo ${server}
+                  phase "rest" rest from ${servers}:
+                    each server, 2 at a time:
+                      [ship]:
+                        run $ echo ${server}
+        """)
+        g = _resolve_cgr(src)
+        ships = {r.short_name: rid for rid, r in g.all_resources.items() if r.short_name.startswith("ship_")}
+        phases = {r.short_name for r in g.all_resources.values() if r.is_barrier and r.short_name.startswith("phase_")}
+        assert set(ships) == {"ship_a", "ship_b", "ship_c"}
+        assert {"phase_canary", "phase_rest"} <= phases
+
+        canary_wave = next(i for i, wave in enumerate(g.waves) if ships["ship_a"] in wave)
+        rest_wave = min(i for i, wave in enumerate(g.waves) if ships["ship_b"] in wave or ships["ship_c"] in wave)
+        assert canary_wave < rest_wave
+
+    def test_stage_parses_in_cg(self):
+        src = textwrap.dedent("""\
+            node "t" {
+              via local
+              resource rollout {
+                stage "deploy" {
+                  phase "canary" 1 from "${servers}" {
+                    resource ship {
+                      run `echo ${server}`
+                    }
+                  }
+                  phase "rest" rest from "${servers}" {
+                    each server, 2 {
+                      resource ship {
+                        run `echo ${server}`
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        """)
+        ast = cg.Parser(cg.lex(src), "<test>").parse()
+        res = ast.nodes[0].resources[0]
+        assert res.stage_name == "deploy"
+        assert len(res.stage_phases) == 2
+        assert res.stage_phases[1].each_limit == 2
 
 
 

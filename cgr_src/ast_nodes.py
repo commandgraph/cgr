@@ -160,6 +160,7 @@ class ASTProgram:
     inventories: list[ASTInventory] = field(default_factory=list)
     secrets: list[ASTSecrets] = field(default_factory=list)
     gather_facts: bool = False
+    stateless: bool = False
     on_complete: ASTResource|None = None   # hook: runs after successful apply
     on_failure: ASTResource|None = None    # hook: runs after failed apply
 

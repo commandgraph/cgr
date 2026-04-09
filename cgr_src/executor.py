@@ -22,6 +22,8 @@ def cmd_plan(graph: Graph, *, verbose=False, include_tags=None, exclude_tags=Non
         print(f"  Tags: {', '.join(cyan(t) for t in sorted(include_tags))}")
     if exclude_tags:
         print(f"  Skip tags: {', '.join(yellow(t) for t in sorted(exclude_tags))}")
+    if graph.stateless:
+        print(f"  Mode: {dim('stateless (no .state file)')}")
     print(bold("─" * 64)); print()
 
     total = sum(len(w) for w in graph.waves)

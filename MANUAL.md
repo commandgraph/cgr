@@ -1683,6 +1683,20 @@ Ignore state for one run without deleting it:
 $ cgr apply webserver.cgr --no-resume
 ```
 
+For graphs that always run fresh (CI pipelines, deployment scripts), declare stateless mode in the graph file itself so `--no-resume` is never needed:
+```
+set stateless = true
+
+target "local" local:
+  [build]:
+    run $ npm run build
+  [deploy]:
+    first [build]
+    run $ ./deploy.sh
+```
+
+A stateless graph never reads or writes a `.state` file. `--report` and `--output json` still capture timing and results in memory. The `--state FILE` flag overrides `set stateless = true` with a warning (CLI wins). Stateless mode does not propagate to sub-graphs — each included graph manages its own state independently.
+
 Remove one step from state so it re-runs next time:
 ```
 $ cgr state drop webserver.cgr "start nginx"
@@ -2018,6 +2032,30 @@ node "web-1" {
 ```
 
 Note: cross-node `needs` references are not supported — each node's resources form an independent DAG. Orchestrate cross-node ordering externally.
+
+### Pattern: CI / deployment pipeline (stateless)
+
+For graphs that run fresh on every push — no crash recovery needed, no leftover state files — declare stateless at the top:
+
+```
+set stateless = true
+
+target "local" local:
+  [test]:
+    run $ npm test
+
+  [build]:
+    first [test]
+    run $ npm run build
+
+  [deploy]:
+    first [build]
+    run $ ./scripts/deploy.sh
+```
+
+`set stateless = true` is equivalent to always passing `--no-resume`. The engine never reads or writes a `.state` file. `--report` and `--output json` still work — timing and results are captured in memory and flushed at the end.
+
+Statelessness does not propagate to sub-graphs included with `from ./other.cgr:`. Each graph manages its own state independently.
 
 ### Pattern: Inline nested for one-off subtrees
 

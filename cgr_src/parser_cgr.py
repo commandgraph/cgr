@@ -74,6 +74,7 @@ def parse_cgr(source: str, filename: str = "") -> ASTProgram:
     inventories: list[ASTInventory] = []
     secrets_list: list[ASTSecrets] = []
     gather_facts = False
+    stateless = False
     pos = 0
 
     def peek():
@@ -96,6 +97,11 @@ def parse_cgr(source: str, filename: str = "") -> ASTProgram:
         # set var = "value" or set var = env("ENV_NAME") or set var = secret "env:VAR" / secret "file:PATH"
         if text.startswith("set "):
             advance()
+            # set stateless = true — disable state file persistence for this graph
+            if re.match(r'set\s+stateless\s*=\s*true\b', text):
+                stateless = True; continue
+            if re.match(r'set\s+stateless\s*=\s*false\b', text):
+                stateless = False; continue
             # secret "env:VAR_NAME" — read from environment variable (redacted in output)
             sec_env_m = re.match(r'set\s+(\w+)\s*=\s*secret\s+"env:([^"]+)"', text)
             if sec_env_m:
@@ -304,7 +310,7 @@ def parse_cgr(source: str, filename: str = "") -> ASTProgram:
 
     return ASTProgram(variables=variables, uses=uses, templates=templates, nodes=nodes,
                       target_each_blocks=target_each_blocks, inventories=inventories,
-                      secrets=secrets_list, gather_facts=gather_facts,
+                      secrets=secrets_list, gather_facts=gather_facts, stateless=stateless,
                       on_complete=on_complete_hook if 'on_complete_hook' in dir() else None,
                       on_failure=on_failure_hook if 'on_failure_hook' in dir() else None)
 
@@ -669,6 +675,9 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
     prov_json_dest: str|None = None; prov_json_ops: list[tuple] = []
     prov_asserts: list[tuple] = []
 
+    if from_target and from_target.endswith((".cgr", ".cg")):
+        subgraph_path = from_target
+
     i = 0
     while i < len(body):
         bln, bindent, btext = body[i]
@@ -988,13 +997,11 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                     env_when[em.group(1)] = em.group(3).strip().strip('"')
             i += 1; continue
 
-        if from_target and from_target.endswith((".cgr", ".cg")):
-            subgraph_path = from_target
+        if subgraph_path:
             assign_m = re.match(r'(\w+)\s*=\s*(.+)$', btext)
             if assign_m:
                 subgraph_vars[assign_m.group(1)] = _parse_cgr_stringish(assign_m.group(2))
                 i += 1; continue
-            raise err(f"Invalid subgraph argument line: {btext}", bln)
 
         if btext.startswith("flag "):
             fm = re.match(r'flag\s+"([^"]*)"(?:\s+when\s+(.+))?$', btext)
@@ -1343,12 +1350,15 @@ def _parse_cgr_verify(desc: str, body: list, ln: int, err) -> ASTResource:
                 run_cmd += "\n" + body[j][2]; j += 1
             i = j; continue
         elif btext.startswith("retry "):
-            m = re.match(r'retry\s+(\d+)x(?:\s+wait\s+(\d+)(s|m)?)?', btext)
+            m = re.match(r'retry\s+(\d+)x(?:\s+(?:wait|every)\s+(\d+)(s|m|h)?)?', btext)
             if m:
                 retries = int(m.group(1))
                 if m.group(2):
                     retry_delay = int(m.group(2))
-                    if m.group(3) == "m": retry_delay *= 60
+                    if m.group(3) == "m":
+                        retry_delay *= 60
+                    elif m.group(3) == "h":
+                        retry_delay *= 3600
             i += 1; continue
         else:
             timeout_prop = _parse_timeout_text(btext)

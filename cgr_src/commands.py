@@ -13,12 +13,16 @@ from cgr_src.state import *
 # ── Report command ─────────────────────────────────────────────────────
 
 def cmd_report(graph_file: str, *, fmt: str = "table", output_file: str|None = None,
-               filter_keys: list[str]|None = None):
+               filter_keys: list[str]|None = None, run_id: str|None = None):
     """Generate a report from collected outputs."""
-    op = _output_path(graph_file)
+    op = _output_path(graph_file, run_id=run_id)
     if not Path(op).exists():
         print(red(f"error: No output file found at {op}"))
-        print(dim(f"  Run 'cgr apply {graph_file}' on a graph with 'collect' clauses first."))
+        hint = f"  Run 'cgr apply {graph_file}'"
+        if run_id:
+            hint += f" --run-id {run_id}"
+        hint += " on a graph with 'collect' clauses first."
+        print(dim(hint))
         sys.exit(1)
 
     of = OutputFile(op)
@@ -105,13 +109,17 @@ def cmd_report(graph_file: str, *, fmt: str = "table", output_file: str|None = N
         print()
 
     print(bold("─" * 64))
-    print(dim(f"  Export: cgr report {graph_file} --format csv|json [-o FILE]"))
+    cmd = f"cgr report {graph_file}"
+    if run_id:
+        cmd += f" --run-id {run_id}"
+    print(dim(f"  Export: {cmd} --format csv|json [-o FILE]"))
     print()
 
 
 def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
-                        *, graph_file: str, state_path: str | None = None) -> dict:
-    sp = state_path or _state_path(graph_file)
+                        *, graph_file: str, state_path: str | None = None,
+                        run_id: str | None = None) -> dict:
+    sp = state_path or _state_path(graph_file, run_id=run_id)
     state = StateFile(sp) if Path(sp).exists() else None
     wave_metrics = []
     run_metric = None
@@ -163,7 +171,7 @@ def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
             "run": run_metric or {"wall_ms": wall_ms},
         },
     }
-    opath = _output_path(graph_file)
+    opath = _output_path(graph_file, run_id=run_id)
     if Path(opath).exists():
         of = OutputFile(opath)
         report["outputs"] = {
@@ -552,6 +560,174 @@ def cmd_why(graph, step_name):
 def _emit_cgr(prog: ASTProgram) -> str:
     """Emit an ASTProgram as .cgr format text."""
     lines = []
+
+    def _dq(value: str | None) -> str:
+        return json.dumps("" if value is None else str(value))
+
+    def _emit_cgr_http_lines(res: ASTResource, indent: int) -> list[str]:
+        pfx = " " * indent
+        body = [f"{pfx}{res.http_method.lower()} {_dq(res.http_url)}"]
+        if res.http_auth:
+            auth_type, auth_value = res.http_auth
+            if auth_type == "bearer":
+                body.append(f"{pfx}auth bearer {_dq(auth_value)}")
+            elif auth_type == "basic":
+                user, _, password = (auth_value or "").partition(":")
+                body.append(f"{pfx}auth basic {_dq(user)} {_dq(password)}")
+            elif auth_type == "header":
+                hname, _, hval = (auth_value or "").partition(":")
+                body.append(f"{pfx}auth header {_dq(hname)} = {_dq(hval)}")
+        for hname, hval in res.http_headers or []:
+            body.append(f"{pfx}header {_dq(hname)} = {_dq(hval)}")
+        if res.http_body is not None:
+            body.append(f"{pfx}body {res.http_body_type or 'text'} {_dq(res.http_body)}")
+        if res.http_expect:
+            body.append(f"{pfx}expect {res.http_expect}")
+        return body
+
+    def _emit_cgr_action_lines(res: ASTResource, indent: int) -> list[str]:
+        pfx = " " * indent
+        if res.script_path:
+            return [f"{pfx}script {_dq(res.script_path)}"]
+        if res.http_method and res.http_url:
+            return _emit_cgr_http_lines(res, indent)
+        if res.wait_kind and res.wait_target:
+            return [f"{pfx}wait for {res.wait_kind} {_dq(res.wait_target)}"]
+        if res.reduce_key:
+            suffix = f" as {res.reduce_var}" if res.reduce_var else ""
+            return [f"{pfx}reduce {_dq(res.reduce_key)}{suffix}"]
+        if res.run:
+            return [f"{pfx}run $ {res.run}"]
+        return []
+
+    def _emit_cgr_resource_body(res: ASTResource, lines: list[str], indent: int) -> None:
+        pfx = " " * indent
+        for dep in res.needs:
+            lines.append(f"{pfx}first {_emit_cgr_dep_ref(dep)}")
+
+        if res.check and res.check.strip().lower() == "false":
+            if res.run:
+                lines.append(f"{pfx}always run $ {res.run}")
+            else:
+                lines.extend(_emit_cgr_action_lines(res, indent))
+        else:
+            if res.check:
+                lines.append(f"{pfx}skip if $ {res.check}")
+            lines.extend(_emit_cgr_action_lines(res, indent))
+
+        if res.subgraph_path:
+            for k, v in res.subgraph_vars.items():
+                lines.append(f"{pfx}{k} = {_dq(v)}")
+
+        if res.when:
+            lines.append(f"{pfx}when {_dq(res.when)}")
+        for k, v in res.env.items():
+            env_when = res.env_when.get(k)
+            suffix = f' when {_dq(env_when)}' if env_when else ""
+            lines.append(f"{pfx}env {k} = {_dq(v)}{suffix}")
+        for flag_text, flag_when in res.flags:
+            suffix = f' when {_dq(flag_when)}' if flag_when else ""
+            lines.append(f"{pfx}flag {_dq(flag_text)}{suffix}")
+        if res.until is not None:
+            lines.append(f"{pfx}until {_dq(res.until)}")
+        if res.collect_key:
+            collect_suffix = ""
+            if res.collect_var:
+                collect_suffix = f" as {res.collect_var}"
+            elif res.collect_format:
+                collect_suffix = f" as {res.collect_format}"
+            lines.append(f"{pfx}collect {_dq(res.collect_key)}{collect_suffix}")
+        if res.tags:
+            lines.append(f"{pfx}tags {', '.join(res.tags)}")
+        for var, value in res.on_success_set or []:
+            lines.append(f"{pfx}on success: set {var} = {_dq(value)}")
+        for var, value in res.on_failure_set or []:
+            lines.append(f"{pfx}on failure: set {var} = {_dq(value)}")
+
+        if res.parallel_block:
+            limit_str = f" {res.parallel_limit} at a time" if res.parallel_limit else ""
+            policy_str = ""
+            if res.parallel_fail_policy == "stop":
+                policy_str = ", if one fails stop all"
+            elif res.parallel_fail_policy == "ignore":
+                policy_str = ", if one fails ignore"
+            lines.append(f"{pfx}parallel{limit_str}{policy_str}:")
+            for child in res.parallel_block:
+                _emit_cgr_resource(child, lines, indent + 2)
+
+        if res.race_block:
+            into_str = f" into {res.race_into}" if res.race_into else ""
+            lines.append(f"{pfx}race{into_str}:")
+            for child in res.race_block:
+                _emit_cgr_resource(child, lines, indent + 2)
+
+        if res.each_var and res.each_body:
+            limit_str = f", {res.each_limit} at a time" if res.each_limit else ""
+            lines.append(f"{pfx}each {res.each_var} in {res.each_list_expr}{limit_str}:")
+            _emit_cgr_resource(res.each_body, lines, indent + 2)
+
+        for child in res.children:
+            _emit_cgr_resource(child, lines, indent + 2)
+
+    def _parse_target_each_prog(te: ASTTargetEach) -> ASTProgram:
+        if te.body_format == "cgr":
+            return parse_cgr(te.body_source, "<emit each>")
+        tokens = list(te.body_tokens) + [Token(TT.EOF, "", te.line, 0)]
+        parser = Parser(tokens, "", "<emit each>")
+        return parser.parse()
+
+    def _emit_cgr_target_each(te: ASTTargetEach, lines: list[str]) -> None:
+        lines.append(f"each {', '.join(te.var_names)} in {te.list_expr}:")
+        if te.body_format == "cgr":
+            body = te.body_source.rstrip()
+            if body:
+                lines.extend(body.splitlines())
+        else:
+            sub_prog = _parse_target_each_prog(te)
+            for node in sub_prog.nodes:
+                _emit_cgr_node(node, lines, indent=2)
+        lines.append("")
+
+    def _emit_cgr_hook(label: str, res: ASTResource, lines: list[str]) -> None:
+        lines.append(f"on {label}:")
+        _emit_cgr_resource_body(res, lines, indent=2)
+        lines.append("")
+
+    def _emit_cgr_node(node: ASTNode, lines: list[str], indent: int = 0) -> None:
+        pfx = " " * indent
+        via = node.via
+        if via.method == "ssh":
+            u = via.props.get("user", "")
+            h = via.props.get("host", "")
+            p = via.props.get("port", "")
+            tgt = f"{u}@{h}" if u else h
+            if p and p != "22":
+                tgt += f":{p}"
+            after_str = ""
+            if node.after_nodes:
+                after_parts = []
+                for an in node.after_nodes:
+                    after_parts.append("each" if an == "__each__" else f'"{an}"')
+                after_str = f", after {', '.join(after_parts)}"
+            lines.append(f'{pfx}target "{node.name}" ssh {tgt}{after_str}:')
+        else:
+            after_str = ""
+            if node.after_nodes:
+                after_parts = []
+                for an in node.after_nodes:
+                    after_parts.append("each" if an == "__each__" else f'"{an}"')
+                after_str = f", after {', '.join(after_parts)}"
+            lines.append(f'{pfx}target "{node.name}" local{after_str}:')
+
+        for res in node.resources:
+            _emit_cgr_resource(res, lines, indent + 2)
+        for inst in node.instantiations:
+            human = getattr(inst, '_cgr_human_name', inst.template_name)
+            lines.append(f'{pfx}  [{human}] from {inst.template_name}:')
+            for k, v in inst.args.items():
+                lines.append(f'{pfx}    {k} = {_dq(v)}')
+            lines.append("")
+        lines.append("")
     # Variables
     for v in prog.variables:
         lines.append(f'set {v.name} = "{v.value}"')
@@ -586,91 +762,16 @@ def _emit_cgr(prog: ASTProgram) -> str:
 
     # Target-level each blocks
     for te in prog.target_each_blocks:
-        vars_part = ", ".join(te.loop_vars) if hasattr(te, 'loop_vars') else te.loop_var
-        limit_str = f", {te.limit} at a time" if hasattr(te, 'limit') and te.limit else ""
-        lines.append(f"each {vars_part} in ${{{te.list_expr}}}{limit_str}:")
-        # Emit the inner node
-        node = te.node
-        via = node.via
-        if via.method == "ssh":
-            u = via.props.get("user", "")
-            h = via.props.get("host", "")
-            p = via.props.get("port", "")
-            tgt = f"{u}@{h}" if u else h
-            if p and p != "22":
-                tgt += f":{p}"
-            after_str = ""
-            if node.after_nodes:
-                after_parts = []
-                for an in node.after_nodes:
-                    if an == "__each__":
-                        after_parts.append("each")
-                    else:
-                        after_parts.append(f'"{an}"')
-                after_str = f", after {', '.join(after_parts)}"
-            lines.append(f'  target "{node.name}" ssh {tgt}{after_str}:')
-        else:
-            after_str = ""
-            if node.after_nodes:
-                after_parts = []
-                for an in node.after_nodes:
-                    if an == "__each__":
-                        after_parts.append("each")
-                    else:
-                        after_parts.append(f'"{an}"')
-                after_str = f", after {', '.join(after_parts)}"
-            lines.append(f'  target "{node.name}" local{after_str}:')
-        for res in node.resources:
-            _emit_cgr_resource(res, lines, indent=4)
-        for inst in node.instantiations:
-            human = getattr(inst, '_cgr_human_name', inst.template_name)
-            lines.append(f"    [{human}] from {inst.template_name}:")
-            for k, v in inst.args.items():
-                lines.append(f'      {k} = "{v}"')
-            lines.append("")
-        lines.append("")
+        _emit_cgr_target_each(te, lines)
 
     # Nodes
     for node in prog.nodes:
-        via = node.via
-        if via.method == "ssh":
-            u = via.props.get("user", "")
-            h = via.props.get("host", "")
-            p = via.props.get("port", "")
-            tgt = f"{u}@{h}" if u else h
-            if p and p != "22":
-                tgt += f":{p}"
-            after_str = ""
-            if node.after_nodes:
-                after_parts = []
-                for an in node.after_nodes:
-                    if an == "__each__":
-                        after_parts.append("each")
-                    else:
-                        after_parts.append(f'"{an}"')
-                after_str = f", after {', '.join(after_parts)}"
-            lines.append(f'target "{node.name}" ssh {tgt}{after_str}:')
-        else:
-            after_str = ""
-            if node.after_nodes:
-                after_parts = []
-                for an in node.after_nodes:
-                    if an == "__each__":
-                        after_parts.append("each")
-                    else:
-                        after_parts.append(f'"{an}"')
-                after_str = f", after {', '.join(after_parts)}"
-            lines.append(f'target "{node.name}" local{after_str}:')
+        _emit_cgr_node(node, lines)
 
-        for res in node.resources:
-            _emit_cgr_resource(res, lines, indent=2)
-        for inst in node.instantiations:
-            human = getattr(inst, '_cgr_human_name', inst.template_name)
-            lines.append(f"  [{human}] from {inst.template_name}:")
-            for k, v in inst.args.items():
-                lines.append(f'    {k} = "{v}"')
-            lines.append("")
-        lines.append("")
+    if prog.on_complete:
+        _emit_cgr_hook("complete", prog.on_complete, lines)
+    if prog.on_failure:
+        _emit_cgr_hook("failure", prog.on_failure, lines)
 
     return "\n".join(lines)
 
@@ -680,10 +781,51 @@ def _emit_cgr_dep_ref(dep: str) -> str:
     return "[" + "/".join(part.replace("_", " ") for part in dep.split(".")) + "]"
 
 
+def _emit_duration_literal(seconds: int) -> str:
+    """Render a duration in the shortest stable unit used by the parsers."""
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def _emit_cgr_retry_clause(res: ASTResource) -> str | None:
+    if res.retries <= 0:
+        return None
+    if res.retry_backoff and (res.retry_backoff_max or res.retry_jitter_pct):
+        clause = f"retry {res.retries}x backoff {_emit_duration_literal(res.retry_delay)}"
+        if res.retry_backoff_max:
+            clause += f"..{_emit_duration_literal(res.retry_backoff_max)}"
+        if res.retry_jitter_pct:
+            clause += f" jitter {res.retry_jitter_pct}%"
+        return clause
+    if res.retry_backoff:
+        if res.retry_delay != 1:
+            return f"retry {res.retries}x wait {_emit_duration_literal(res.retry_delay)} with backoff"
+        return f"retry {res.retries}x with backoff"
+    if res.retry_delay != 5:
+        return f"retry {res.retries}x wait {_emit_duration_literal(res.retry_delay)}"
+    return f"retry {res.retries}x"
+
+
+def _emit_cg_retry_clause(res: ASTResource) -> str | None:
+    if res.retries <= 0:
+        return None
+    parts = [f"retry {res.retries}"]
+    if res.retry_delay != 5 or res.retry_backoff:
+        parts.append(f"delay {_emit_duration_literal(res.retry_delay)}")
+    if res.retry_backoff:
+        parts.append("backoff")
+    return " ".join(parts)
+
+
 def _emit_cgr_resource(res: ASTResource, lines: list, indent: int = 2):
     """Emit a single ASTResource in .cgr format."""
     pfx = " " * indent
     desc = res.description or res.name
+    def _dq(value: str | None) -> str:
+        return json.dumps("" if value is None else str(value))
     header_parts = []
     if res.run_as:
         header_parts.append(f"as {res.run_as}")
@@ -692,8 +834,9 @@ def _emit_cgr_resource(res: ASTResource, lines: list, indent: int = 2):
         if res.timeout_reset_on_output:
             timeout_part += " reset on output"
         header_parts.append(timeout_part)
-    if res.retries > 0:
-        header_parts.append(f"retry {res.retries}x")
+    retry_clause = _emit_cgr_retry_clause(res)
+    if retry_clause:
+        header_parts.append(retry_clause)
     if res.on_fail not in ("stop",):
         header_parts.append(f"if fails {res.on_fail}")
     header = ", ".join(header_parts)
@@ -705,8 +848,25 @@ def _emit_cgr_resource(res: ASTResource, lines: list, indent: int = 2):
         if res.needs:
             refs = " ".join(_emit_cgr_dep_ref(n) for n in res.needs)
             lines.append(f"{pfx}  first {refs}")
+        if res.timeout != 30 or res.timeout_reset_on_output:
+            timeout_line = f"{pfx}  timeout {_emit_duration_literal(res.timeout)}"
+            if res.timeout_reset_on_output:
+                timeout_line += " reset on output"
+            lines.append(timeout_line)
+        retry_clause = _emit_cgr_retry_clause(res)
+        if retry_clause:
+            lines.append(f"{pfx}  {retry_clause}")
         if res.script_path:
-            lines.append(f'{pfx}  script "{res.script_path}"')
+            lines.append(f'{pfx}  script {_dq(res.script_path)}')
+        elif res.http_method and res.http_url:
+            lines.append(f"{pfx}  {res.http_method.lower()} {_dq(res.http_url)}")
+            if res.http_expect:
+                lines.append(f"{pfx}  expect {res.http_expect}")
+        elif res.wait_kind and res.wait_target:
+            lines.append(f"{pfx}  wait for {res.wait_kind} {_dq(res.wait_target)}")
+        elif res.reduce_key:
+            suffix = f" as {res.reduce_var}" if res.reduce_var else ""
+            lines.append(f'{pfx}  reduce {_dq(res.reduce_key)}{suffix}')
         elif res.run:
             lines.append(f"{pfx}  run $ {res.run}")
         lines.append("")
@@ -730,47 +890,108 @@ def _emit_cgr_resource(res: ASTResource, lines: list, indent: int = 2):
                     for child in phase.body:
                         _emit_cgr_resource(child, lines, indent + 6)
         if res.script_path:
-            lines.append(f'{pfx}  script "{res.script_path}"')
+            lines.append(f'{pfx}  script {_dq(res.script_path)}')
         elif res.run:
             lines.append(f"{pfx}  run $ {res.run}")
         lines.append("")
         return
 
-    lines.append(f"{pfx}[{desc}]{header}:")
+    if res.subgraph_path:
+        lines.append(f"{pfx}[{desc}] from {_dq(res.subgraph_path)}{header}:")
+    else:
+        lines.append(f"{pfx}[{desc}]{header}:")
 
+    tmp_lines = []
+    body_pfx = " " * (indent + 2)
     for dep in res.needs:
-        lines.append(f"{pfx}  first {_emit_cgr_dep_ref(dep)}")
-
+        tmp_lines.append(f"{body_pfx}first {_emit_cgr_dep_ref(dep)}")
     if res.check and res.check.strip().lower() == "false":
-        if res.script_path:
-            lines.append(f'{pfx}  script "{res.script_path}"')
-        elif res.run:
-            lines.append(f"{pfx}  always run $ {res.run}")
+        if res.run:
+            tmp_lines.append(f"{body_pfx}always run $ {res.run}")
+        elif res.script_path:
+            tmp_lines.append(f'{body_pfx}script {_dq(res.script_path)}')
+        elif res.http_method and res.http_url:
+            tmp_lines.append(f"{body_pfx}{res.http_method.lower()} {_dq(res.http_url)}")
+            if res.http_auth:
+                auth_type, auth_value = res.http_auth
+                if auth_type == "bearer":
+                    tmp_lines.append(f"{body_pfx}auth bearer {_dq(auth_value)}")
+                elif auth_type == "basic":
+                    user, _, password = (auth_value or "").partition(":")
+                    tmp_lines.append(f"{body_pfx}auth basic {_dq(user)} {_dq(password)}")
+                elif auth_type == "header":
+                    hname, _, hval = (auth_value or "").partition(":")
+                    tmp_lines.append(f"{body_pfx}auth header {_dq(hname)} = {_dq(hval)}")
+            for hname, hval in res.http_headers or []:
+                tmp_lines.append(f"{body_pfx}header {_dq(hname)} = {_dq(hval)}")
+            if res.http_body is not None:
+                tmp_lines.append(f"{body_pfx}body {res.http_body_type or 'text'} {_dq(res.http_body)}")
+            if res.http_expect:
+                tmp_lines.append(f"{body_pfx}expect {res.http_expect}")
+        elif res.wait_kind and res.wait_target:
+            tmp_lines.append(f"{body_pfx}wait for {res.wait_kind} {_dq(res.wait_target)}")
+        elif res.reduce_key:
+            suffix = f" as {res.reduce_var}" if res.reduce_var else ""
+            tmp_lines.append(f'{body_pfx}reduce {_dq(res.reduce_key)}{suffix}')
     else:
         if res.check:
-            lines.append(f"{pfx}  skip if $ {res.check}")
+            tmp_lines.append(f"{body_pfx}skip if $ {res.check}")
         if res.script_path:
-            lines.append(f'{pfx}  script "{res.script_path}"')
+            tmp_lines.append(f'{body_pfx}script {_dq(res.script_path)}')
+        elif res.http_method and res.http_url:
+            tmp_lines.append(f"{body_pfx}{res.http_method.lower()} {_dq(res.http_url)}")
+            if res.http_auth:
+                auth_type, auth_value = res.http_auth
+                if auth_type == "bearer":
+                    tmp_lines.append(f"{body_pfx}auth bearer {_dq(auth_value)}")
+                elif auth_type == "basic":
+                    user, _, password = (auth_value or "").partition(":")
+                    tmp_lines.append(f"{body_pfx}auth basic {_dq(user)} {_dq(password)}")
+                elif auth_type == "header":
+                    hname, _, hval = (auth_value or "").partition(":")
+                    tmp_lines.append(f"{body_pfx}auth header {_dq(hname)} = {_dq(hval)}")
+            for hname, hval in res.http_headers or []:
+                tmp_lines.append(f"{body_pfx}header {_dq(hname)} = {_dq(hval)}")
+            if res.http_body is not None:
+                tmp_lines.append(f"{body_pfx}body {res.http_body_type or 'text'} {_dq(res.http_body)}")
+            if res.http_expect:
+                tmp_lines.append(f"{body_pfx}expect {res.http_expect}")
+        elif res.wait_kind and res.wait_target:
+            tmp_lines.append(f"{body_pfx}wait for {res.wait_kind} {_dq(res.wait_target)}")
+        elif res.reduce_key:
+            suffix = f" as {res.reduce_var}" if res.reduce_var else ""
+            tmp_lines.append(f'{body_pfx}reduce {_dq(res.reduce_key)}{suffix}')
         elif res.run:
-            lines.append(f"{pfx}  run $ {res.run}")
+            tmp_lines.append(f"{body_pfx}run $ {res.run}")
 
+    if res.subgraph_path:
+        for k, v in res.subgraph_vars.items():
+            tmp_lines.append(f"{body_pfx}{k} = {_dq(v)}")
     if res.when:
-        lines.append(f'{pfx}  when "{res.when}"')
+        tmp_lines.append(f"{body_pfx}when {_dq(res.when)}")
     for k, v in res.env.items():
         env_when = res.env_when.get(k)
-        suffix = f' when "{env_when}"' if env_when else ""
-        lines.append(f'{pfx}  env {k} = "{v}"{suffix}')
+        suffix = f' when {_dq(env_when)}' if env_when else ""
+        tmp_lines.append(f"{body_pfx}env {k} = {_dq(v)}{suffix}")
     for flag_text, flag_when in res.flags:
-        suffix = f' when "{flag_when}"' if flag_when else ""
-        lines.append(f'{pfx}  flag "{flag_text}"{suffix}')
+        suffix = f' when {_dq(flag_when)}' if flag_when else ""
+        tmp_lines.append(f"{body_pfx}flag {_dq(flag_text)}{suffix}")
     if res.until is not None:
-        lines.append(f'{pfx}  until "{res.until}"')
+        tmp_lines.append(f"{body_pfx}until {_dq(res.until)}")
     if res.collect_key:
-        lines.append(f'{pfx}  collect "{res.collect_key}"')
+        collect_suffix = ""
+        if res.collect_var:
+            collect_suffix = f" as {res.collect_var}"
+        elif res.collect_format:
+            collect_suffix = f" as {res.collect_format}"
+        tmp_lines.append(f'{body_pfx}collect {_dq(res.collect_key)}{collect_suffix}')
     if res.tags:
-        lines.append(f'{pfx}  tags {", ".join(res.tags)}')
+        tmp_lines.append(f"{body_pfx}tags {', '.join(res.tags)}")
+    for var, value in res.on_success_set or []:
+        tmp_lines.append(f"{body_pfx}on success: set {var} = {_dq(value)}")
+    for var, value in res.on_failure_set or []:
+        tmp_lines.append(f"{body_pfx}on failure: set {var} = {_dq(value)}")
 
-    # Parallel constructs
     if res.parallel_block:
         limit_str = f" {res.parallel_limit} at a time" if res.parallel_limit else ""
         policy_str = ""
@@ -778,23 +999,21 @@ def _emit_cgr_resource(res: ASTResource, lines: list, indent: int = 2):
             policy_str = ", if one fails stop all"
         elif res.parallel_fail_policy == "ignore":
             policy_str = ", if one fails ignore"
-        lines.append(f"{pfx}  parallel{limit_str}{policy_str}:")
+        tmp_lines.append(f"{body_pfx}parallel{limit_str}{policy_str}:")
         for child in res.parallel_block:
-            _emit_cgr_resource(child, lines, indent + 4)
-
+            _emit_cgr_resource(child, tmp_lines, indent + 4)
     if res.race_block:
         into_str = f" into {res.race_into}" if res.race_into else ""
-        lines.append(f"{pfx}  race{into_str}:")
+        tmp_lines.append(f"{body_pfx}race{into_str}:")
         for child in res.race_block:
-            _emit_cgr_resource(child, lines, indent + 4)
-
+            _emit_cgr_resource(child, tmp_lines, indent + 4)
     if res.each_var and res.each_body:
         limit_str = f", {res.each_limit} at a time" if res.each_limit else ""
-        lines.append(f"{pfx}  each {res.each_var} in {res.each_list_expr}{limit_str}:")
-        _emit_cgr_resource(res.each_body, lines, indent + 4)
-
+        tmp_lines.append(f"{body_pfx}each {res.each_var} in {res.each_list_expr}{limit_str}:")
+        _emit_cgr_resource(res.each_body, tmp_lines, indent + 4)
     for child in res.children:
-        _emit_cgr_resource(child, lines, indent + 2)
+        _emit_cgr_resource(child, tmp_lines, indent + 2)
+    lines.extend(tmp_lines)
 
     lines.append("")
 
@@ -802,8 +1021,101 @@ def _emit_cgr_resource(res: ASTResource, lines: list, indent: int = 2):
 def _emit_cg(prog: ASTProgram) -> str:
     """Emit an ASTProgram as .cg format text."""
     lines = []
+
+    def _dq(value: str | None) -> str:
+        return json.dumps("" if value is None else str(value))
+
+    def _emit_cg_http_lines(res: ASTResource, indent: int) -> list[str]:
+        pfx = " " * indent
+        body = [f"{pfx}{res.http_method.lower()} {_dq(res.http_url)}"]
+        if res.http_auth:
+            auth_type, auth_value = res.http_auth
+            if auth_type == "bearer":
+                body.append(f"{pfx}auth bearer {_dq(auth_value)}")
+            elif auth_type == "basic":
+                user, _, password = (auth_value or "").partition(":")
+                body.append(f"{pfx}auth basic {_dq(user)} {_dq(password)}")
+            elif auth_type == "header":
+                hname, _, hval = (auth_value or "").partition(":")
+                body.append(f"{pfx}auth header {_dq(hname)} = {_dq(hval)}")
+        for hname, hval in res.http_headers or []:
+            body.append(f"{pfx}header {_dq(hname)} = {_dq(hval)}")
+        if res.http_body is not None:
+            body.append(f"{pfx}body {res.http_body_type or 'text'} {_dq(res.http_body)}")
+        if res.http_expect:
+            body.append(f"{pfx}expect {_dq(res.http_expect)}")
+        return body
+
+    def _emit_cg_action_lines(res: ASTResource, indent: int) -> list[str]:
+        pfx = " " * indent
+        lines_local: list[str] = []
+        if res.script_path:
+            lines_local.append(f"{pfx}script {_dq(res.script_path)}")
+        elif res.http_method and res.http_url:
+            lines_local.extend(_emit_cg_http_lines(res, indent))
+        elif res.wait_kind and res.wait_target:
+            lines_local.append(f"{pfx}wait for {res.wait_kind} {_dq(res.wait_target)}")
+        elif res.subgraph_path:
+            lines_local.append(f"{pfx}from {_dq(res.subgraph_path)}")
+            for k, v in res.subgraph_vars.items():
+                lines_local.append(f"{pfx}{k} = {_dq(v)}")
+        elif res.reduce_key:
+            suffix = f" as {res.reduce_var}" if res.reduce_var else ""
+            lines_local.append(f'{pfx}reduce {_dq(res.reduce_key)}{suffix}')
+        elif res.run:
+            lines_local.append(f"{pfx}run `{res.run}`")
+        return lines_local
+
+    def _parse_target_each_prog(te: ASTTargetEach) -> ASTProgram:
+        if te.body_format == "cgr":
+            return parse_cgr(te.body_source, "<emit each>")
+        tokens = list(te.body_tokens) + [Token(TT.EOF, "", te.line, 0)]
+        parser = Parser(tokens, "", "<emit each>")
+        return parser.parse()
+
+    def _emit_cg_hook(name: str, res: ASTResource, lines: list[str]) -> None:
+        tmp_lines: list[str] = []
+        _emit_cg_resource(res, tmp_lines, indent=0)
+        lines.append(f"{name} {{")
+        lines.extend(tmp_lines[1:-1])
+        lines.append("}")
+        lines.append("")
+
+    def _emit_cg_target_each(te: ASTTargetEach, lines: list[str]) -> None:
+        list_expr = te.list_expr
+        if list_expr.startswith("${") and list_expr.endswith("}"):
+            list_expr = list_expr[2:-1]
+        lines.append(f"each {', '.join(te.var_names)} in {list_expr} {{")
+        sub_prog = _parse_target_each_prog(te)
+        for node in sub_prog.nodes:
+            _emit_cg_node(node, lines, indent=2)
+        lines.append("}")
+        lines.append("")
+
+    def _emit_cg_node(node: ASTNode, lines: list[str], indent: int = 0) -> None:
+        pfx = " " * indent
+        via = node.via
+        lines.append(f'{pfx}node "{node.name}" {{')
+        if via.method == "ssh":
+            props = " ".join(f'{k} = {_dq(v)}' for k, v in via.props.items())
+            lines.append(f"{pfx}  via ssh {props}".rstrip())
+        else:
+            lines.append(f"{pfx}  via local")
+        if node.after_nodes:
+            for an in node.after_nodes:
+                lines.append(f"{pfx}  after each" if an == "__each__" else f'{pfx}  after "{an}"')
+        lines.append("")
+        for res in node.resources:
+            _emit_cg_resource(res, lines, indent=indent + 2)
+        for inst in node.instantiations:
+            lines.append(f"{pfx}  {inst.template_name} {{")
+            for k, v in inst.args.items():
+                lines.append(f'{pfx}    {k} = {_dq(v)}')
+            lines.append(f"{pfx}  }}")
+        lines.append(f"{pfx}}}")
+        lines.append("")
     for v in prog.variables:
-        lines.append(f'var {v.name} = "{v.value}"')
+        lines.append(f'var {v.name} = {_dq(v.value)}')
     if prog.variables:
         lines.append("")
     for u in prog.uses:
@@ -815,124 +1127,153 @@ def _emit_cg(prog: ASTProgram) -> str:
                 ver = f' >= "{u.version_req}"'
             elif u.version_op == "~>":
                 ver = f' ~> "{u.version_req}"'
-        lines.append(f'use "{u.path}"{ver}')
+        lines.append(f'use {_dq(u.path)}{ver}')
     if prog.uses:
         lines.append("")
     for inv in prog.inventories:
-        lines.append(f'inventory "{inv.path}"')
+        lines.append(f'inventory {_dq(inv.path)}')
     if prog.inventories:
         lines.append("")
     if prog.gather_facts:
         lines.append("gather facts")
         lines.append("")
+    for te in prog.target_each_blocks:
+        _emit_cg_target_each(te, lines)
     for node in prog.nodes:
-        via = node.via
-        if via.method == "ssh":
-            props = " ".join(f'{k} = "{v}"' for k, v in via.props.items())
-            lines.append(f'node "{node.name}" {{')
-            lines.append(f"  via ssh {props}")
-        else:
-            lines.append(f'node "{node.name}" {{')
-            lines.append(f"  via local")
-        if node.after_nodes:
-            for an in node.after_nodes:
-                if an == "__each__":
-                    lines.append(f"  after each")
-                else:
-                    lines.append(f'  after "{an}"')
-        lines.append("")
-        for res in node.resources:
-            _emit_cg_resource(res, lines, indent=2)
-        for inst in node.instantiations:
-            lines.append(f"  {inst.template_name} {{")
-            for k, v in inst.args.items():
-                lines.append(f'    {k} = "{v}"')
-            lines.append("  }")
-        lines.append("}")
-        lines.append("")
+        _emit_cg_node(node, lines)
+    if prog.on_complete:
+        _emit_cg_hook("on_complete", prog.on_complete, lines)
+    if prog.on_failure:
+        _emit_cg_hook("on_failure", prog.on_failure, lines)
     return "\n".join(lines)
 
 
 def _emit_cg_resource(res: ASTResource, lines: list, indent: int = 2):
     """Emit a single ASTResource in .cg format."""
     pfx = " " * indent
+    def _dq(value: str | None) -> str:
+        return json.dumps("" if value is None else str(value))
+    def _emit_cg_http_lines(res: ASTResource, indent: int) -> list[str]:
+        body_pfx = " " * indent
+        body = [f"{body_pfx}{res.http_method.lower()} {_dq(res.http_url)}"]
+        if res.http_auth:
+            auth_type, auth_value = res.http_auth
+            if auth_type == "bearer":
+                body.append(f"{body_pfx}auth bearer {_dq(auth_value)}")
+            elif auth_type == "basic":
+                user, _, password = (auth_value or "").partition(":")
+                body.append(f"{body_pfx}auth basic {_dq(user)} {_dq(password)}")
+            elif auth_type == "header":
+                hname, _, hval = (auth_value or "").partition(":")
+                body.append(f"{body_pfx}auth header {_dq(hname)} = {_dq(hval)}")
+        for hname, hval in res.http_headers or []:
+            body.append(f"{body_pfx}header {_dq(hname)} = {_dq(hval)}")
+        if res.http_body is not None:
+            body.append(f"{body_pfx}body {res.http_body_type or 'text'} {_dq(res.http_body)}")
+        if res.http_expect:
+            body.append(f"{body_pfx}expect {_dq(res.http_expect)}")
+        return body
+    def _emit_cg_resource_body(res: ASTResource, lines: list[str], indent: int) -> None:
+        body_pfx = " " * indent
+        if res.needs:
+            lines.append(f'{body_pfx}needs {", ".join(res.needs)}')
+        if res.check:
+            lines.append(f"{body_pfx}check `{res.check}`")
+        if res.script_path:
+            lines.append(f'{body_pfx}script {_dq(res.script_path)}')
+        elif res.http_method and res.http_url:
+            lines.extend(_emit_cg_http_lines(res, indent))
+        elif res.wait_kind and res.wait_target:
+            lines.append(f"{body_pfx}wait for {res.wait_kind} {_dq(res.wait_target)}")
+        elif res.subgraph_path:
+            lines.append(f'{body_pfx}from {_dq(res.subgraph_path)}')
+            for k, v in res.subgraph_vars.items():
+                lines.append(f'{body_pfx}{k} = {_dq(v)}')
+        elif res.reduce_key:
+            suffix = f" as {res.reduce_var}" if res.reduce_var else ""
+            lines.append(f'{body_pfx}reduce {_dq(res.reduce_key)}{suffix}')
+        elif res.run:
+            lines.append(f"{body_pfx}run `{res.run}`")
+        if res.run_as:
+            lines.append(f"{body_pfx}as {res.run_as}")
+        if res.timeout != 300 or res.timeout_reset_on_output:
+            timeout_line = f"{body_pfx}timeout {res.timeout}"
+            if res.timeout_reset_on_output:
+                timeout_line += " reset on output"
+            lines.append(timeout_line)
+        retry_clause = _emit_cg_retry_clause(res)
+        if retry_clause:
+            lines.append(f"{body_pfx}{retry_clause}")
+        if res.on_fail not in ("stop",):
+            lines.append(f"{body_pfx}on_fail {res.on_fail}")
+        if res.when:
+            lines.append(f'{body_pfx}when {_dq(res.when)}')
+        for k, v in res.env.items():
+            env_when = res.env_when.get(k)
+            suffix = f' when {_dq(env_when)}' if env_when else ""
+            lines.append(f'{body_pfx}env {k} = {_dq(v)}{suffix}')
+        for flag_text, flag_when in res.flags:
+            suffix = f' when {_dq(flag_when)}' if flag_when else ""
+            lines.append(f'{body_pfx}flag {_dq(flag_text)}{suffix}')
+        if res.until is not None:
+            lines.append(f'{body_pfx}until {_dq(res.until)}')
+        if res.collect_key:
+            collect_suffix = ""
+            if res.collect_var:
+                collect_suffix = f" as {res.collect_var}"
+            elif res.collect_format:
+                collect_suffix = f" as {res.collect_format}"
+            lines.append(f'{body_pfx}collect {_dq(res.collect_key)}{collect_suffix}')
+        if res.tags:
+            lines.append(f'{body_pfx}tags {", ".join(res.tags)}')
+        for var, value in res.on_success_set or []:
+            lines.append(f'{body_pfx}on_success set {var} = {_dq(value)}')
+        for var, value in res.on_failure_set or []:
+            lines.append(f'{body_pfx}on_failure set {var} = {_dq(value)}')
+        if res.parallel_block:
+            limit_str = f" {res.parallel_limit}" if res.parallel_limit else ""
+            fp = res.parallel_fail_policy
+            policy_str = f", if_one_fails {fp}" if fp and fp != "wait" else ""
+            lines.append(f"{body_pfx}parallel{limit_str}{policy_str} {{")
+            for child in res.parallel_block:
+                _emit_cg_resource(child, lines, indent + 4)
+            lines.append(f"{body_pfx}}}")
+        if res.race_block:
+            into_str = f' into {_dq(res.race_into)}' if res.race_into else ""
+            lines.append(f"{body_pfx}race{into_str} {{")
+            for child in res.race_block:
+                _emit_cg_resource(child, lines, indent + 4)
+            lines.append(f"{body_pfx}}}")
+        if res.each_var and res.each_body:
+            list_expr = res.each_list_expr
+            limit_str = f", {res.each_limit}" if res.each_limit else ""
+            lines.append(f'{body_pfx}each {res.each_var} in {_dq(list_expr)}{limit_str} {{')
+            _emit_cg_resource(res.each_body, lines, indent + 4)
+            lines.append(f"{body_pfx}}}")
+        if res.stage_name and res.stage_phases:
+            lines.append(f'{body_pfx}stage {_dq(res.stage_name)} {{')
+            for phase in res.stage_phases:
+                lines.append(f'{body_pfx}  phase {_dq(phase.name)} {phase.count_expr} from {_dq(phase.from_list)} {{')
+                if phase.each_limit:
+                    lines.append(f'{body_pfx}    each server, {phase.each_limit} {{')
+                    for child in phase.body:
+                        _emit_cg_resource(child, lines, indent + 8)
+                    lines.append(f"{body_pfx}    }}")
+                else:
+                    for child in phase.body:
+                        _emit_cg_resource(child, lines, indent + 6)
+                lines.append(f"{body_pfx}  }}")
+            lines.append(f"{body_pfx}}}")
+        for child in res.children:
+            _emit_cg_resource(child, lines, indent + 2)
     rtype = "verify" if res.is_verify else "resource"
     if res.is_verify:
         lines.append(f'{pfx}verify "{res.description or res.name}" {{')
     else:
         lines.append(f"{pfx}resource {res.name} {{")
     if res.description and not res.is_verify:
-        lines.append(f'{pfx}  description "{res.description}"')
-    if res.needs:
-        lines.append(f'{pfx}  needs {", ".join(res.needs)}')
-    if res.check:
-        lines.append(f"{pfx}  check `{res.check}`")
-    if res.script_path:
-        lines.append(f'{pfx}  script "{res.script_path}"')
-    if res.run:
-        lines.append(f"{pfx}  run `{res.run}`")
-    if res.run_as:
-        lines.append(f"{pfx}  as {res.run_as}")
-    if res.timeout != 300 or res.timeout_reset_on_output:
-        timeout_line = f"{pfx}  timeout {res.timeout}"
-        if res.timeout_reset_on_output:
-            timeout_line += " reset on output"
-        lines.append(timeout_line)
-    if res.retries > 0:
-        lines.append(f"{pfx}  retry {res.retries}")
-    if res.on_fail not in ("stop",):
-        lines.append(f"{pfx}  on_fail {res.on_fail}")
-    if res.when:
-        lines.append(f'{pfx}  when "{res.when}"')
-    for k, v in res.env.items():
-        env_when = res.env_when.get(k)
-        suffix = f' when "{env_when}"' if env_when else ""
-        lines.append(f'{pfx}  env {k} = "{v}"{suffix}')
-    for flag_text, flag_when in res.flags:
-        suffix = f' when "{flag_when}"' if flag_when else ""
-        lines.append(f'{pfx}  flag "{flag_text}"{suffix}')
-    if res.until is not None:
-        lines.append(f'{pfx}  until "{res.until}"')
-    if res.collect_key:
-        lines.append(f'{pfx}  collect "{res.collect_key}"')
-    if res.tags:
-        lines.append(f'{pfx}  tags {", ".join(res.tags)}')
-    # Parallel constructs
-    if res.parallel_block:
-        limit_str = f" {res.parallel_limit}" if res.parallel_limit else ""
-        fp = res.parallel_fail_policy
-        policy_str = f", if_one_fails {fp}" if fp and fp != "wait" else ""
-        lines.append(f"{pfx}  parallel{limit_str}{policy_str} {{")
-        for child in res.parallel_block:
-            _emit_cg_resource(child, lines, indent + 4)
-        lines.append(f"{pfx}  }}")
-    if res.race_block:
-        into_str = f' into "{res.race_into}"' if res.race_into else ""
-        lines.append(f"{pfx}  race{into_str} {{")
-        for child in res.race_block:
-            _emit_cg_resource(child, lines, indent + 4)
-        lines.append(f"{pfx}  }}")
-    if res.each_var and res.each_body:
-        limit_str = f", {res.each_limit}" if res.each_limit else ""
-        lines.append(f'{pfx}  each {res.each_var} in "{res.each_list_expr}"{limit_str} {{')
-        _emit_cg_resource(res.each_body, lines, indent + 4)
-        lines.append(f"{pfx}  }}")
-    if res.stage_name and res.stage_phases:
-        lines.append(f'{pfx}  stage "{res.stage_name}" {{')
-        for phase in res.stage_phases:
-            lines.append(f'{pfx}    phase "{phase.name}" {phase.count_expr} from "{phase.from_list}" {{')
-            if phase.each_limit:
-                lines.append(f'{pfx}      each server, {phase.each_limit} {{')
-                for child in phase.body:
-                    _emit_cg_resource(child, lines, indent + 8)
-                lines.append(f"{pfx}      }}")
-            else:
-                for child in phase.body:
-                    _emit_cg_resource(child, lines, indent + 6)
-            lines.append(f"{pfx}    }}")
-        lines.append(f"{pfx}  }}")
-    for child in res.children:
-        _emit_cg_resource(child, lines, indent + 2)
+        lines.append(f'{pfx}  description {_dq(res.description)}')
+    _emit_cg_resource_body(res, lines, indent + 2)
     lines.append(f"{pfx}}}")
 
 
@@ -1466,10 +1807,40 @@ def cmd_diff(file_a, file_b, repo_dir=None, extra_vars=None, inventory_files=Non
     changed = []; deps_added = []; deps_removed = []; moved = []
     for key in common:
         ra, rb = a_map[key], b_map[key]
-        if ra.run != rb.run or ra.check != rb.check:
-            diffs = []
-            if ra.run != rb.run: diffs.append("command")
-            if ra.check != rb.check: diffs.append("check")
+        diffs = []
+        if ra.run != rb.run: diffs.append("command")
+        if ra.check != rb.check: diffs.append("check")
+        if ra.script_path != rb.script_path: diffs.append("script")
+        if ra.run_as != rb.run_as: diffs.append("run_as")
+        if (ra.http_method, ra.http_url, tuple(ra.http_headers), ra.http_body,
+            ra.http_body_type, ra.http_auth, ra.http_expect) != (
+            rb.http_method, rb.http_url, tuple(rb.http_headers), rb.http_body,
+            rb.http_body_type, rb.http_auth, rb.http_expect):
+            diffs.append("http")
+        if (ra.wait_kind, ra.wait_target) != (rb.wait_kind, rb.wait_target):
+            diffs.append("wait")
+        if (ra.subgraph_path, tuple(sorted((ra.subgraph_vars or {}).items()))) != (
+            rb.subgraph_path, tuple(sorted((rb.subgraph_vars or {}).items()))):
+            diffs.append("subgraph")
+        if (ra.collect_key, ra.collect_format, ra.collect_var) != (
+            rb.collect_key, rb.collect_format, rb.collect_var):
+            diffs.append("collect")
+        if (ra.reduce_key, ra.reduce_var) != (rb.reduce_key, rb.reduce_var):
+            diffs.append("reduce")
+        if (tuple(ra.on_success_set), tuple(ra.on_failure_set)) != (
+            tuple(rb.on_success_set), tuple(rb.on_failure_set)):
+            diffs.append("bindings")
+        if ra.when != rb.when: diffs.append("when")
+        if ra.env != rb.env or ra.env_when != rb.env_when: diffs.append("env")
+        if tuple(ra.flags) != tuple(rb.flags): diffs.append("flags")
+        if ra.until != rb.until: diffs.append("until")
+        if (ra.timeout, ra.timeout_reset_on_output) != (rb.timeout, rb.timeout_reset_on_output):
+            diffs.append("timeout")
+        if (ra.retries, ra.retry_delay, ra.retry_backoff, ra.retry_backoff_max, ra.retry_jitter_pct) != (
+            rb.retries, rb.retry_delay, rb.retry_backoff, rb.retry_backoff_max, rb.retry_jitter_pct):
+            diffs.append("retry")
+        if tuple(ra.tags) != tuple(rb.tags): diffs.append("tags")
+        if diffs:
             changed.append((key, diffs))
         # Dependency changes
         a_deps = {a_rid_to_key.get(dep, dep) for dep in ra.needs}
@@ -1643,7 +2014,7 @@ def cmd_test_template(repo_dir: str|None = None, template_path: str|None = None,
                     print(f"  {red('✗')} {name}: zero resources after expansion")
                 continue
 
-            # Phase 4: Check all resources have run or http_method
+            # Phase 4: Check all resources have an executable action or descendants
             for rid, res in collector.items():
                 if res.is_barrier:
                     continue
@@ -1656,11 +2027,16 @@ def cmd_test_template(repo_dir: str|None = None, template_path: str|None = None,
                     res.prov_block_dest or res.prov_ini_dest or
                     res.prov_json_dest or res.prov_asserts
                 )
-                if not res.run and not res.script_path and not res.http_method and not has_provisioning and not has_descendants:
-                    errors.append((name, f"Resource '{res.short_name}' has no run command or HTTP method"))
+                has_action = bool(
+                    res.run or res.script_path or res.http_method or
+                    res.wait_kind or res.subgraph_path or res.reduce_key or
+                    has_provisioning
+                )
+                if not has_action and not has_descendants:
+                    errors.append((name, f"Resource '{res.short_name}' has no executable action"))
                     failed += 1
                     if verbose:
-                        print(f"  {red('✗')} {name}: resource '{res.short_name}' missing run/HTTP")
+                        print(f"  {red('✗')} {name}: resource '{res.short_name}' missing executable action")
                     break
             else:
                 passed += 1
