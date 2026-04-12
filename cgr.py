@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 3709ef755a0cb55c
+# Built from source hash: 8b0c9a4b51ebf17a
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -5786,6 +5786,11 @@ class _LiveApplyProgress:
         self._running: dict[str, tuple[str, float, float, int | None, bool]] = {}
         self._stdout_buffers: dict[str, str] = {}
         self._stdout_meta: dict[str, tuple[str, set[str]]] = {}
+        self._stdout_cr_pending: dict[str, bool] = {}
+        self._stdout_cr_line: dict[str, bool] = {}
+        self._stdout_deferred_cr_line: dict[str, str] = {}
+        self._stdout_cursor: dict[str, int] = {}
+        self._stdout_live_preview: dict[str, str] = {}
 
     def start(self):
         if not self.enabled or self._thread is not None:
@@ -5823,6 +5828,11 @@ class _LiveApplyProgress:
             self._running[rid] = (short_name, now, now, timeout, timeout_reset_on_output)
             self._stdout_buffers[rid] = ""
             self._stdout_meta[rid] = ("", set())
+            self._stdout_cr_pending[rid] = False
+            self._stdout_cr_line[rid] = False
+            self._stdout_deferred_cr_line[rid] = ""
+            self._stdout_cursor[rid] = 0
+            self._stdout_live_preview[rid] = ""
 
     def note_activity(self, rid: str):
         if not self.enabled:
@@ -5842,6 +5852,11 @@ class _LiveApplyProgress:
             self._running.pop(rid, None)
             self._stdout_buffers.pop(rid, None)
             self._stdout_meta.pop(rid, None)
+            self._stdout_cr_pending.pop(rid, None)
+            self._stdout_cr_line.pop(rid, None)
+            self._stdout_deferred_cr_line.pop(rid, None)
+            self._stdout_cursor.pop(rid, None)
+            self._stdout_live_preview.pop(rid, None)
 
     def before_print(self):
         self.clear()
@@ -5853,13 +5868,35 @@ class _LiveApplyProgress:
             current = self._running.get(rid)
             if current is not None:
                 self._running[rid] = (current[0], current[1], time.monotonic(), current[3], current[4])
+            sensitive_set = set(sensitive or set())
+            self._stdout_meta[rid] = (indent, sensitive_set)
             buf = self._stdout_buffers.get(rid, "")
-            buf += text.replace("\r\n", "\n").replace("\r", "\n")
-            self._stdout_meta[rid] = (indent, set(sensitive or set()))
-            parts = buf.split("\n")
-            self._stdout_buffers[rid] = parts.pop()
-            for line in parts:
-                self._emit_stdout_line(short_name, line, indent=indent, sensitive=sensitive)
+            cursor = self._stdout_cursor.get(rid, len(buf))
+            text = text.replace("\r\n", "\n")
+            for ch in text:
+                if ch == "\n":
+                    if buf:
+                        self._stdout_live_preview[rid] = _redact(buf.rstrip(), sensitive_set)
+                        self._emit_stdout_line(short_name, buf, indent=indent, sensitive=sensitive_set)
+                    buf = ""
+                    cursor = 0
+                elif ch == "\r":
+                    cursor = 0
+                    if buf:
+                        self._stdout_live_preview[rid] = _redact(buf.rstrip(), sensitive_set)
+                else:
+                    if cursor < len(buf):
+                        buf = buf[:cursor] + ch + buf[cursor + 1:]
+                    else:
+                        buf += ch
+                    cursor += 1
+            if buf:
+                self._stdout_live_preview[rid] = _redact(buf.rstrip(), sensitive_set)
+            else:
+                self._stdout_live_preview[rid] = ""
+            self._stdout_buffers[rid] = buf
+            self._stdout_cursor[rid] = cursor
+            self._stdout_deferred_cr_line[rid] = buf
 
     def _write(self, text: str):
         self.stream.write(text)
@@ -5875,21 +5912,39 @@ class _LiveApplyProgress:
     def _flush_stdout_buffer(self, rid: str):
         buf = self._stdout_buffers.get(rid, "")
         if not buf:
+            buf = self._stdout_deferred_cr_line.get(rid, "")
+        if not buf:
             return
         short_name = self._running.get(rid, (rid, 0.0, 0.0, None, False))[0]
         indent, sensitive = self._stdout_meta.get(rid, ("", set()))
         self._emit_stdout_line(short_name, buf, indent=indent, sensitive=sensitive)
         self._stdout_buffers[rid] = ""
+        self._stdout_deferred_cr_line[rid] = ""
+        self._stdout_cr_line[rid] = False
+
+    def _terminal_columns(self) -> int:
+        try:
+            return max(20, os.get_terminal_size(self.stream.fileno()).columns)
+        except Exception:
+            return 120
+
+    def _truncate_visible(self, text: str, width: int) -> str:
+        if len(_strip_ansi(text)) <= width:
+            return text
+        if width <= 1:
+            return ""
+        return _strip_ansi(text)[:max(0, width - 3)].rstrip() + "..."
 
     def _render(self) -> str:
         spinner = "|/-\\"[self._spin % 4]
         if not self._running:
             label = self._wave_label or "Preparing apply"
             return f"\r\033[2K  {blue(spinner)} {dim(label + '...')}"
-        items = list(self._running.values())
+        running_items = list(self._running.items())
+        items = [item for _, item in running_items]
         now = time.monotonic()
         shown_parts = []
-        for name, _, last_activity_at, timeout, reset_on_output in items[:2]:
+        for _, (name, _, last_activity_at, timeout, reset_on_output) in running_items[:2]:
             part = name
             if timeout:
                 if reset_on_output:
@@ -5903,7 +5958,15 @@ class _LiveApplyProgress:
             shown += f" +{len(items) - 2} more"
         elapsed = int(max(now - started_at for _, started_at, _, _, _ in items))
         label = self._wave_label or "Apply"
-        return f"\r\033[2K  {blue(spinner)} {dim(f'{label}: running {shown} ({elapsed}s)')}"
+        preview = ""
+        for rid, (name, _, _, _, _) in running_items:
+            latest = self._stdout_live_preview.get(rid, "").strip()
+            if latest:
+                preview = f" | {name}: {latest}"
+                break
+        label_text = f"{label}: running {shown} ({elapsed}s){preview}"
+        label_text = self._truncate_visible(label_text, self._terminal_columns() - 4)
+        return f"\r\033[2K  {blue(spinner)} {dim(label_text)}"
 
     def _run(self):
         while not self._stop.wait(self.interval):

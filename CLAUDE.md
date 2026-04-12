@@ -74,7 +74,7 @@ python3 cgr.py apply build.cgr
 python3 -m pytest test_commandgraph.py -x -q
 python3 -m pytest test_modularization.py -x -q
 
-# Validate all example files
+# Validate root feature-exercise example files
 cgr validate nginx_setup.cg && cgr validate nginx_setup.cgr
 cgr validate webserver.cg --repo ./repo && cgr validate webserver.cgr --repo ./repo
 cgr validate parallel_test.cgr && cgr validate multinode_test.cgr && cgr validate multinode_test.cg
@@ -94,6 +94,6 @@ testing-ssh/run-ssh-demos.sh  # 5 SSH demos
 - For composition, prefer sub-graph steps when the user wants another graph executed as one unit rather than flattened child resources.
 - When touching state code, account for both resource entries and `_wave` / `_run` metric records.
 - When touching apply output, keep `--report FILE.json` and `--output json` consistent by deriving both from the same result data when possible.
-- Test with all example files after any change.
+- Test with the root feature-exercise graphs after any change.
 - Templates can be `.cgr` or `.cg` — all 44 stdlib are `.cgr`. Repo loader prefers `.cgr`.
 - Reference `MANUAL.md` for syntax details, `.claude/docs/design_doc_*.md` for design rationale.

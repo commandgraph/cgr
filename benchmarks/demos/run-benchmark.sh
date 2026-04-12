@@ -15,6 +15,10 @@ if [ -z "$TARGET_HOSTS" ]; then
     echo -e "${RED}TARGET_HOSTS not set${RESET}"; exit 1
 fi
 
+BENCH_OUTPUT_DIR="${BENCH_OUTPUT_DIR:-/workspace}"
+BENCH_KEEP_GRAPHS="${BENCH_KEEP_GRAPHS:-0}"
+mkdir -p "$BENCH_OUTPUT_DIR"
+
 IFS=',' read -ra HOSTS <<< "$TARGET_HOSTS"
 NUM_HOSTS=${#HOSTS[@]}
 
@@ -123,13 +127,13 @@ run_scenario() {
 
 section "Generating and validating scenarios"
 
-generate_each_scenario /workspace/bench-seq.cgr 1 "Sequential (1 at a time)"
-generate_each_scenario /workspace/bench-par2.cgr 2 "Parallel (2 at a time)"
-generate_each_scenario /workspace/bench-par4.cgr 4 "Parallel (4 at a time)"
-generate_each_scenario /workspace/bench-parN.cgr "$NUM_HOSTS" "Parallel (all at once)"
-generate_staged_scenario /workspace/bench-staged.cgr
+generate_each_scenario "${BENCH_OUTPUT_DIR}/bench-seq.cgr" 1 "Sequential (1 at a time)"
+generate_each_scenario "${BENCH_OUTPUT_DIR}/bench-par2.cgr" 2 "Parallel (2 at a time)"
+generate_each_scenario "${BENCH_OUTPUT_DIR}/bench-par4.cgr" 4 "Parallel (4 at a time)"
+generate_each_scenario "${BENCH_OUTPUT_DIR}/bench-parN.cgr" "$NUM_HOSTS" "Parallel (all at once)"
+generate_staged_scenario "${BENCH_OUTPUT_DIR}/bench-staged.cgr"
 
-for f in /workspace/bench-*.cgr; do
+for f in "${BENCH_OUTPUT_DIR}"/bench-*.cgr; do
     name=$(basename "$f" .cgr)
     if cgr validate "$f" >/dev/null 2>&1; then
         success "$name validated"
@@ -145,28 +149,28 @@ echo ""
 
 echo -e "  ${BOLD}▶ Scenario 1/5: Sequential${RESET}"
 narrate "Each host deploys one after the other. This is the baseline."
-run_scenario "Sequential (1 at a time)" /workspace/bench-seq.cgr
+run_scenario "Sequential (1 at a time)" "${BENCH_OUTPUT_DIR}/bench-seq.cgr"
 SEQ_TIME=$LAST_SECONDS
 echo ""
 
 echo -e "  ${BOLD}▶ Scenario 2/5: Parallel (2 at a time)${RESET}"
 narrate "Sliding window of 2 concurrent SSH sessions."
-run_scenario "Parallel (2 at a time)" /workspace/bench-par2.cgr
+run_scenario "Parallel (2 at a time)" "${BENCH_OUTPUT_DIR}/bench-par2.cgr"
 echo ""
 
 echo -e "  ${BOLD}▶ Scenario 3/5: Parallel (4 at a time)${RESET}"
 narrate "Sliding window of 4 concurrent SSH sessions."
-run_scenario "Parallel (4 at a time)" /workspace/bench-par4.cgr
+run_scenario "Parallel (4 at a time)" "${BENCH_OUTPUT_DIR}/bench-par4.cgr"
 echo ""
 
 echo -e "  ${BOLD}▶ Scenario 4/5: Parallel (all ${NUM_HOSTS} at once)${RESET}"
 narrate "All hosts deploy simultaneously."
-run_scenario "Parallel (all at once)" /workspace/bench-parN.cgr
+run_scenario "Parallel (all at once)" "${BENCH_OUTPUT_DIR}/bench-parN.cgr"
 echo ""
 
 echo -e "  ${BOLD}▶ Scenario 5/5: Staged rollout${RESET}"
 narrate "1 canary -> verify -> half the fleet -> rest of the fleet"
-run_scenario "Staged (1->half->rest)" /workspace/bench-staged.cgr
+run_scenario "Staged (1->half->rest)" "${BENCH_OUTPUT_DIR}/bench-staged.cgr"
 echo ""
 
 # ── Results table ────────────────────────────────────────────────────
@@ -213,4 +217,8 @@ echo ""
 success "Benchmark complete."
 
 clean_targets
-rm -f /workspace/bench-*.cgr /workspace/.state/bench-*.cgr.state
+if [ "$BENCH_KEEP_GRAPHS" != "1" ]; then
+    rm -f "${BENCH_OUTPUT_DIR}"/bench-*.cgr
+fi
+rm -f "${BENCH_OUTPUT_DIR}"/bench-*.cgr.report.json
+rm -f /workspace/.state/bench-*.cgr.state

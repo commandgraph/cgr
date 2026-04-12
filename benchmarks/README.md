@@ -5,7 +5,7 @@ Spawns N containers as deployment targets, then runs the same workload with diff
 
 ## Requirements
 
-- Podman (or Docker as fallback)
+- Podman recommended
 - ~500MB disk for container images
 - Approximately 1 minute for the default 8-target run
 
@@ -14,9 +14,12 @@ Spawns N containers as deployment targets, then runs the same workload with diff
 ```bash
 ./run-benchmark.sh          # 8 targets (default)
 ./run-benchmark.sh 12       # 12 targets
+./run-benchmark.sh auto     # podman only; auto-size target count from host capacity
 ./run-benchmark.sh shell    # interactive shell with targets running
 ./run-benchmark.sh teardown # clean up everything
 ```
+
+`auto` / `max` mode prefers the highest target count the current host can sustain for this benchmark. It calculates an initial ceiling from live CPU and memory availability, then probes podman target startup until it finds the highest count that comes up cleanly over SSH.
 
 ## What it measures
 
@@ -84,9 +87,11 @@ The speedup is sub-linear because:
 
 The control container generates `.cgr` graph files dynamically based on the target count, then runs `cgr apply` for each scenario. State files are cleared between runs so every step executes fresh.
 
-## Team
+Generated graphs are preserved under `benchmarks/generated/latest/` and in a timestamped run directory, so you can inspect them directly:
 
-Benchmark designed by:
-- **Marcus Chen (SRE)** — infrastructure and benchmark harness
-- **Priya Kapoor (Systems SRE)** — `each`/`stage` scenario design
-- **Dr. Elena Voss (CS)** — measurement methodology, workload calibration
+```bash
+python3 cgr.py serve benchmarks/generated/latest/bench-parN.cgr
+python3 cgr.py visualize benchmarks/generated/latest/bench-parN.cgr -o benchmarks/generated/latest/bench-parN.html
+```
+
+The generated directory also includes a small `README.md` with the exact paths for that run.

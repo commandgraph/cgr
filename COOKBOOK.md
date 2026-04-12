@@ -534,6 +534,79 @@ cgr apply infra.cgr --tags security --skip-tags audit  # Security, but not the a
 
 ---
 
+## Recipe 11: Full Production Rollout
+
+**When to use:** End-to-end release workflow — provision, configure, register, roll out with a canary gate, then wait for human approval before verifying the fleet.
+**Concepts:** `stage`/`phase`, `wait for webhook`, HTTP steps, auth tokens, `each`, `verify`.
+
+This is the kind of workflow most teams express today as a fragile combination of pipeline stages, shell scripts, approval toggles, and manual operator steps. Encoding it in one graph gives you a consistent execution model with crash recovery at every point.
+
+```
+--- Production rollout with gates ---
+
+set env = "prod"
+set deploy_id = "release-2026-04-11"
+
+target "control" local:
+
+  [provision infra]:
+    run    $ terraform apply -auto-approve -var="env=${env}"
+    timeout 15m
+
+  [run base playbook]:
+    first [provision infra]
+    run    $ ansible-playbook -i inventory/${env} playbooks/base.yml
+    timeout 20m
+
+  [run app playbook]:
+    first [run base playbook]
+    run    $ ansible-playbook -i inventory/${env} playbooks/app.yml --tags deploy
+    timeout 15m
+
+  [register deploy]:
+    first [run app playbook]
+    post "https://deploy-api.example.net/releases"
+    auth bearer "${DEPLOY_API_TOKEN}"
+    body json '{"environment":"${env}","deploy_id":"${deploy_id}"}'
+    expect 200..299
+
+  [roll out]:
+    first [register deploy]
+    stage "production":
+      phase "canary" 1 from "web-1,web-2,web-3,web-4":
+        [deploy ${server}]:
+          run $ ssh ${server} '/opt/myapp/activate.sh'
+
+        verify "canary healthy":
+          run $ curl -sf http://${server}:8080/health
+          retry 10x wait 3s
+
+      phase "rest" remaining from "web-1,web-2,web-3,web-4":
+        each server, 2 at a time:
+          [deploy ${server}]:
+            run $ ssh ${server} '/opt/myapp/activate.sh'
+
+  [wait for approval]:
+    first [roll out]
+    wait for webhook "/approve/${deploy_id}"
+    timeout 2h
+
+  verify "fleet healthy":
+    first [wait for approval]
+    run $ ansible -i inventory/${env} all -m shell -a 'systemctl is-active myapp'
+```
+
+**How it works:**
+- Terraform, Ansible, and the API registration run sequentially with explicit ordering
+- `[roll out]` deploys to one canary server first — if the verify fails, the rest of the fleet is never touched
+- `wait for webhook` pauses execution until `POST /approve/release-2026-04-11` is received (or times out after 2h)
+- If anything fails mid-run, `cgr apply` resumes from the failed step — no rerunning Terraform if it already completed
+- `auth bearer` tokens are automatically redacted from all output
+
+**Customization:** Override the environment with `--set env=staging`. Change the concurrency of the fleet rollout by editing `2 at a time`. Add `collect "activation"` to any step to capture its stdout in `cgr report`.
+
+---
+
 ## Feature Reference
 
 Quick lookup: which feature solves your problem?

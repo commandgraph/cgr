@@ -7,7 +7,7 @@ Write a plain-text file that reads like English (or use an agent on your behalf!
 One Python file with zero dependencies. No agents on your servers. No daemon. No database.
 
 ```python
---- Deploy my app ---
+--- Install nginx and basic app ---
 
 target "web" ssh deploy@10.0.1.5:
 
@@ -69,6 +69,12 @@ target "local" local:
     first [wait for approval]
     run $ echo approved
 ```
+
+---
+
+> **Ansible configures it. CommandGraph runs the operational story around it.**
+
+Hardware gets racked. Ansible configures it. But the workflow in between -- waiting for hosts to come up, running playbooks in the right order, verifying the result, gating the next step on a health check -- usually lives in runbooks, chat threads, and operator memory. That is the gap CommandGraph fills.
 
 ---
 
@@ -137,28 +143,37 @@ Inside that shell, `cgr` is already on `PATH`, examples live in `/opt/cgr/exampl
 
 ---
 
-## Why not Ansible / Puppet / Chef / Salt?
+## The case for CommandGraph
 
-CommandGraph is not trying to replace those tools. It solves a narrower problem: declare dependencies between operational steps, then let the engine plan order, maximize parallelism, and resume exactly from failure. Traditional config-management tools are still good at configuration management; CommandGraph is good at orchestration across shell commands, remote steps, API calls, wait gates, and sub-graphs.
+Most teams don't struggle because they lack tools. They struggle because the workflow *across* those tools is brittle.
+
+Some of these symptoms may sound familiar:
+
+- Hardware is racked, but the handoff to Ansible lives in a runbook nobody reads until something breaks
+- One failed health check means rerunning broad chunks of work — no trustworthy resume point
+- Canary logic is implied by convention, not encoded in the workflow
+- Operators must remember which steps are safe to retry and which are not
+- Incident reviews have logs, but not a clean execution graph or machine-readable run record
+
+CommandGraph turns that glue layer into something explicit, resumable, and inspectable. It is not a replacement for Ansible — it is the orchestration layer around it.
 
 ### Running Ansible playbooks from CommandGraph
 
-Already have Ansible playbooks? Run them as steps inside a CommandGraph. This lets you sequence playbooks alongside shell commands, API calls, and other tools -- with crash recovery, dependency ordering, and parallel execution that Ansible alone can't express:
+Already have Ansible playbooks? Run them as steps inside a CommandGraph. The graph picks up right after hardware is racked -- waiting for hosts to respond, running playbooks in order, verifying the result -- with crash recovery, dependency ordering, and parallel execution that Ansible alone can't express:
 
 ```python
---- Provision and configure with Ansible ---
+--- Configure freshly racked servers with Ansible ---
 
 set env = "staging"
 
 target "control" local:
 
-  [provision infra]:
-    run    $ terraform apply -auto-approve -var="env=${env}"
-    timeout 10m
+  [wait for hosts reachable]:
+    run    $ ansible -i inventory/${env} all -m ping
+    retry 10x wait 30s
 
   [run base playbook]:
-    first [provision infra]
-    skip if $ ansible -i inventory/${env} all -m ping | grep -q SUCCESS
+    first [wait for hosts reachable]
     run    $ ansible-playbook -i inventory/${env} playbooks/base.yml
     timeout 15m, retry 1x wait 30s
 
@@ -178,7 +193,9 @@ target "control" local:
     run $ ansible -i inventory/${env} all -m shell -a 'systemctl is-active myapp'
 ```
 
-Terraform provisions, Ansible configures, CommandGraph orchestrates -- with resume from any failure point. You can also use Ansible inventory files directly with `inventory "hosts.ini"` (see [Ansible inventory compatibility](#ansible-inventory-compatibility)).
+The hardware team racks the servers. CommandGraph picks up from there -- waiting, configuring, verifying -- so the handoff is encoded in the graph rather than a chat message. You can also use Ansible inventory files directly with `inventory "hosts.ini"` (see [Ansible inventory compatibility](#ansible-inventory-compatibility)).
+
+For a complete end-to-end production example -- canary rollout, API registration, and human approval gate in a single graph -- see [Cookbook Recipe 11: Full Production Rollout](COOKBOOK.md#recipe-11-full-production-rollout).
 
 ---
 
@@ -197,6 +214,8 @@ Steps with no dependency between them run in the same wave simultaneously. Steps
 ## Crash recovery that actually works
 
 Every completed step is written to a `.state` file atomically. Crash mid-run, fix the problem, run again. Completed steps skip from state without even SSHing to the server.
+
+Unlike rerunning an entire pipeline and hoping earlier steps are harmless, CommandGraph knows exactly what succeeded. Fix the problem and rerun -- the engine continues from the failed point, not from the top.
 
 Need isolated journals for concurrent parameterized runs? Use `cgr apply FILE --run-id canary` to salt the default state path, or `cgr apply FILE --state /path/to/run.state` to pin an explicit journal.
 
@@ -287,6 +306,8 @@ Point a target at an SSH host and every command runs remotely. State stays on yo
 <p align="center">
   <img src="docs/img/ssh-execution.svg" alt="SSH execution: state local, commands remote" width="700"/>
 </p>
+
+There is no agent to distribute, no daemon to babysit, and no extra control plane to keep alive. For organizations cautious about adding resident components to hosts, this matters.
 
 Multiple targets in one file run in parallel. Steps with `as root` are automatically wrapped in `sudo` on the remote side.
 
@@ -527,20 +548,29 @@ each name, addr in ${webservers}:
 
 ---
 
-### Maintainer note
+## Where CommandGraph fits best
 
-The release artifact is a single `cgr.py`. Development now happens in `cgr_src/`, with `cgr_dev.py` as the thin dev entrypoint. For maintainers, rebuild after changing source modules, `ide.html`, or `visualize_template.py`:
+CommandGraph is especially well-suited for:
 
-```bash
-python3 cgr_dev.py version
-python3 cgr_dev.py plan build.cgr
-python3 cgr_dev.py apply build.cgr
-python3 cgr_dev.py apply build.cgr --no-resume
-```
+- staged application deploys across fleets with canary verification
+- maintenance workflows that sequence SSH, Ansible, API calls, and approval gates
+- operational runbooks that currently live as a mix of CI config and tribal knowledge
+- audits and inventory collection across many hosts
+- recovery-prone processes where restarting from scratch is expensive
+- any workflow that benefits from "run this in parallel, verify, then continue"
 
-`build.cgr` is the canonical rebuild path. `build_helpers.full_build()` uses the same assembly logic, but it is a lower-level helper, not the normal maintainer workflow.
+## Getting started in your organization
 
-Use [MODULE_MAP.md](MODULE_MAP.md) as the quick reference for where parser, resolver, executor, state, IDE, and CLI changes now live.
+Don't start with a platform migration. Start with one painful workflow:
+
+- a release process that needs canary promotion and human approval gates
+- a node maintenance runbook you're tired of executing step by step
+- a provisioning-plus-configure-plus-verify sequence that spans three tools today
+- a fleet audit that currently requires too many moving parts
+
+Use CommandGraph as the orchestration layer around the tools you already have. That is where it becomes persuasive quickly.
+
+For a complete end-to-end reference -- Ansible, canary rollout, API registration, and approval gate in a single graph -- see [Cookbook Recipe 11: Full Production Rollout](COOKBOOK.md#recipe-11-full-production-rollout).
 
 ---
 
@@ -585,6 +615,22 @@ cgr apply deploy.cgr   # only the drifted step re-runs
 
 ---
 
+## Design principles
+
+**Files are the interface.** A `.cgr` file is a complete, portable, version-controllable description of your infrastructure. No web UI required, no database, no daemon.
+
+**Idempotent by default.** Every step has a `skip if` check. Run it 10 times, get the same result.
+
+**Crash-safe.** State is append-only with `fsync` after each write. A power failure loses at most one line.
+
+**Zero dependencies.** One Python file, stdlib only. Copy it to an air-gapped server and it works.
+
+**Human-readable.** The syntax reads like English: "First install nginx. Skip if already installed. Run apt-get install." No YAML indentation wars. No JSON escaping. No Jinja2 templating bugs.
+
+**Graphs, not lists.** You declare dependencies. The engine computes execution order and maximizes parallelism. Reorder your file however you want -- the result is the same.
+
+---
+
 ## Testing
 
 ```bash
@@ -602,25 +648,21 @@ cd testing-ssh/ && ./run-ssh-demos.sh          # 5 SSH demos
 |----------|----------|-------------|
 | [QUICKSTART.md](QUICKSTART.md) | New users | Zero to running in 5 minutes |
 | [TUTORIAL.md](TUTORIAL.md) | Beginners | 9 guided lessons, ~1 hour |
-| [COOKBOOK.md](COOKBOOK.md) | Operators | 10 real-world recipes |
+| [COOKBOOK.md](COOKBOOK.md) | Operators | 11 real-world recipes, including a full production rollout |
 | [MANUAL.md](MANUAL.md) | Reference | Complete syntax for `.cgr` and `.cg` |
 | [COMMANDGRAPH_SPEC.md](COMMANDGRAPH_SPEC.md) | Code generators | Formal PEG grammar |
-| [AGENTS.md](AGENTS.md) | Contributors | Architecture and internals |
+| [AGENTS.md](AGENTS.md) | Contributors | Architecture, internals, and build workflow |
 
 ---
 
-## Design principles
+### Maintainer note
 
-**Files are the interface.** A `.cgr` file is a complete, portable, version-controllable description of your infrastructure. No web UI required, no database, no daemon.
+The release artifact is a single `cgr.py`. Development happens in `cgr_src/`, with `cgr_dev.py` as the thin dev entrypoint. Rebuild after changing source modules, `ide.html`, or `visualize_template.py`:
 
-**Idempotent by default.** Every step has a `skip if` check. Run it 10 times, get the same result.
+```bash
+python3 cgr_dev.py apply build.cgr
+```
 
-**Crash-safe.** State is append-only with `fsync` after each write. A power failure loses at most one line.
-
-**Zero dependencies.** One Python file, stdlib only. Copy it to an air-gapped server and it works.
-
-**Human-readable.** The syntax reads like English: "First install nginx. Skip if already installed. Run apt-get install." No YAML indentation wars. No JSON escaping. No Jinja2 templating bugs.
-
-**Graphs, not lists.** You declare dependencies. The engine computes execution order and maximizes parallelism. Reorder your file however you want -- the result is the same.
+See [AGENTS.md](AGENTS.md) for the full build workflow and [MODULE_MAP.md](MODULE_MAP.md) for the quick reference on where parser, resolver, executor, state, IDE, and CLI changes live.
 
 ---

@@ -1731,7 +1731,7 @@ class TestExecution:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestExampleFiles:
-    """Validate that all shipped example files parse and resolve."""
+    """Validate the root feature-exercise example files parse and resolve."""
 
     @pytest.fixture
     def project_dir(self):
@@ -1748,11 +1748,6 @@ class TestExampleFiles:
         assert len(graph.all_resources) > 0
         assert len(graph.waves) > 0
         return graph
-
-    def test_hello_cgr(self, project_dir):
-        f = project_dir / "hello.cgr"
-        if f.exists():
-            self._validate(f)
 
     def test_nginx_setup_cgr(self, project_dir):
         graph = self._validate(project_dir / "nginx_setup.cgr")
@@ -2621,6 +2616,82 @@ class TestEndToEndApply:
         assert "step" in out
         assert "idle timeout 30s, counter 30s" in out
         assert "idle timeout 30s, counter 26s" in render
+
+    def test_live_progress_carriage_return_stdout_flushes_latest_repaint(self, monkeypatch):
+        fake_now = [100.0]
+        monkeypatch.setattr(cg.time, "monotonic", lambda: fake_now[0])
+        stream = io.StringIO()
+        progress = cg._LiveApplyProgress(enabled=True, stream=stream, interval=999)
+
+        progress.set_wave(1, 1, 1)
+        progress.step_started("local.step", "step", 30, True)
+        progress.stream_stdout("local.step", "step", "fetching 10%\rfetching 50%\rfetching 100%\n")
+        progress.step_finished("local.step")
+
+        out = stream.getvalue()
+        assert "fetching 100%" in out
+        assert "fetching 10%" not in out
+        assert "fetching 50%" not in out
+
+    def test_live_progress_flushes_final_carriage_return_line(self, monkeypatch):
+        fake_now = [100.0]
+        monkeypatch.setattr(cg.time, "monotonic", lambda: fake_now[0])
+        stream = io.StringIO()
+        progress = cg._LiveApplyProgress(enabled=True, stream=stream, interval=999)
+
+        progress.set_wave(1, 1, 1)
+        progress.step_started("local.step", "step", 30, True)
+        progress.stream_stdout("local.step", "step", "done\r")
+        progress.step_finished("local.step")
+
+        assert "done" in stream.getvalue()
+
+    def test_live_progress_crlf_repaint_frames_replay_committed_lines(self, monkeypatch):
+        fake_now = [100.0]
+        monkeypatch.setattr(cg.time, "monotonic", lambda: fake_now[0])
+        stream = io.StringIO()
+        progress = cg._LiveApplyProgress(enabled=True, stream=stream, interval=999)
+
+        progress.set_wave(1, 1, 1)
+        progress.step_started("local.step", "step", 30, True)
+        progress.stream_stdout("local.step", "step", "\rframe 1\n\rframe 2\n\rframe 3\n")
+        progress.step_finished("local.step")
+
+        out = stream.getvalue()
+        assert "frame 3" in out
+        assert "│ out   step | \n" not in out
+        assert "frame 1" in out
+        assert "frame 2" in out
+
+    def test_live_progress_shows_latest_repaint_in_spinner_line(self, monkeypatch):
+        fake_now = [100.0]
+        monkeypatch.setattr(cg.time, "monotonic", lambda: fake_now[0])
+        stream = io.StringIO()
+        progress = cg._LiveApplyProgress(enabled=True, stream=stream, interval=999)
+
+        progress.set_wave(1, 1, 1)
+        progress.step_started("local.step", "step", 30, True)
+        progress.stream_stdout("local.step", "step", "frame 1\rframe 2")
+        render = progress._render()
+
+        assert "frame 2" in render
+        assert "frame 1" not in render
+        assert "│ out" not in stream.getvalue()
+
+    def test_live_progress_flushes_deferred_repaint_before_normal_line(self, monkeypatch):
+        fake_now = [100.0]
+        monkeypatch.setattr(cg.time, "monotonic", lambda: fake_now[0])
+        stream = io.StringIO()
+        progress = cg._LiveApplyProgress(enabled=True, stream=stream, interval=999)
+
+        progress.set_wave(1, 1, 1)
+        progress.step_started("local.step", "step", 30, True)
+        progress.stream_stdout("local.step", "step", "\rdownload complete\nnext line\n")
+        progress.step_finished("local.step")
+
+        out = stream.getvalue()
+        assert "download complete" in out
+        assert "next line" in out
 
     def test_state_records_wave_and_run_metrics(self, tmp_path):
         graph_file = tmp_path / "metrics.cgr"

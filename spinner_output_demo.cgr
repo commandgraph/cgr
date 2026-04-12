@@ -1,0 +1,14 @@
+# Demonstrates stdout that behaves like an interactive terminal:
+# carriage-return spinner updates, single-line progress rewrites,
+# normal committed output, and stdin-fed processing.
+#
+# Run:
+#   python3 cgr_dev.py apply spinner_output_demo.cgr --no-resume
+
+target "local" local:
+  [spinner and progress stdout]:
+    run $ python3 -c 'import sys,time; frames="|/-\\"; print("starting spinner demo"); [(sys.stdout.write("\rspinner %s tick %03d" % (frames[i % len(frames)], i)), sys.stdout.flush(), time.sleep(0.02)) for i in range(80)]; sys.stdout.write("\nspinner complete\n"); [(sys.stdout.write("\rprogress [%s%s] %3d%%" % ("#" * (i // 5), "." * (20 - i // 5), i)), sys.stdout.flush(), time.sleep(0.015)) for i in range(101)]; sys.stdout.write("\nprogress complete\n"); [print("committed stdout line %02d" % i) for i in range(20)]'
+
+  [stdin driven single line updates]:
+    first [spinner and progress stdout]
+    run $ printf 'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\niota\nkappa\n' | python3 -c 'import sys,time; rows=[line.strip() for line in sys.stdin if line.strip()]; print("read %d stdin rows" % len(rows)); [(sys.stdout.write("\rprocessing stdin row %02d/%02d: %s" % (i, len(rows), row)), sys.stdout.flush(), time.sleep(0.04)) for i,row in enumerate(rows, 1)]; sys.stdout.write("\nstdin processing complete\n"); [print("stdin replay %02d: %s" % (i, row.upper())) for i,row in enumerate(rows, 1)]'

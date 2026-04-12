@@ -68,7 +68,7 @@ python3 -c "import py_compile; py_compile.compile('cgr.py', doraise=True)"
 # Pytest suite
 python3 -m pytest test_commandgraph.py -x -q
 
-# Validate all example files
+# Validate root feature-exercise example files
 cgr validate nginx_setup.cg && cgr validate nginx_setup.cgr
 cgr validate webserver.cg --repo ./repo && cgr validate webserver.cgr --repo ./repo
 cgr validate parallel_test.cgr && cgr validate multinode_test.cgr && cgr validate multinode_test.cg
@@ -90,6 +90,6 @@ testing-ssh/run-ssh-demos.sh  # 5 SSH demos
 - If you touch apply output, keep `--output json` and `--report FILE.json` aligned by deriving both from the same execution/result data when possible.
 - If you touch state handling, inspect both resource-entry behavior and `_wave` / `_run` metric behavior.
 - If you touch sub-graph inclusion, preserve the contract that the child graph runs as a unit rather than as flattened parent resources.
-- Test against the example graphs after changes, not just unit tests.
+- Test against the root feature-exercise graphs after changes, not just unit tests.
 - Templates may exist in either `.cgr` or `.cg`, but the stdlib in `repo/` is `.cgr`, and the repo loader prefers `.cgr`.
 - Be cautious with state semantics, dependency resolution, and desugaring changes. Small regressions in those areas can silently break resume behavior or execution ordering.
