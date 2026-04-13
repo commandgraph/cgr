@@ -72,7 +72,7 @@ target "local" local:
 
 ---
 
-## CommandGraph runs the operational story gap
+## CommandGraph fills the operational story gap
 
 Hardware gets racked. Ansible configures it. But the workflow in between -- waiting for hosts to come up, running playbooks in the right order, verifying the result, gating the next step on a health check -- usually lives in runbooks, chat threads, and operator memory. That is the gap CommandGraph fills.
 
