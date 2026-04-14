@@ -1,0 +1,21 @@
+--- Level two sub-graph. Invoked by subgraph-level-one.cgr. ---
+
+set chain_root = "/workspace/subgraph/nested"
+set service    = "app"
+set release    = "0.0.0"
+
+target "local" local:
+
+  [write level two marker]:
+    skip if $ test -f ${chain_root}/${service}/level-2/done.txt
+    run    $ mkdir -p ${chain_root}/${service}/level-2 && printf 'level=2\nservice=%s\nrelease=%s\n' "${service}" "${release}" > ${chain_root}/${service}/level-2/done.txt
+
+  [run level three] from ./subgraph-level-three.cgr:
+    first [write level two marker]
+    chain_root = "${chain_root}"
+    service    = "${service}"
+    release    = "${release}"
+
+  verify "level two completed":
+    first [run level three]
+    run $ test -f ${chain_root}/${service}/level-2/done.txt

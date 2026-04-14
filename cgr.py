@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 8b0c9a4b51ebf17a
+# Built from source hash: 7552dd5cc357d5e1
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -225,6 +225,7 @@ class ASTResource:
     flags: list[tuple[str, str|None]] = field(default_factory=list)  # [(flag_text, when_expr|None)]
     env_when: dict[str, str] = field(default_factory=dict)  # KEY -> when_expr
     until: str|None = None
+    cgr_phase_name: str|None = None  # set when step is inside a phase "name" when "COND": block
 
 @dataclass
 class ASTPhase:
@@ -1396,6 +1397,115 @@ def _parse_cgr_template_child_instantiation(
     )
 
 
+def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
+    """Parse a list of body lines (from a target or a phase block) into resources + instantiations.
+
+    phase_name / phase_when: if set, inject cgr_phase_name and when into every parsed resource.
+    Raises an error if a nested phase "..." when "...": block is found inside a phase block.
+    """
+    resources: list[ASTResource] = []
+    instantiations: list[ASTInstantiation] = []
+    i = 0
+
+    while i < len(body_lines):
+        bln, bindent, btext = body_lines[i]
+
+        # phase "name" when "COND":  — conditional group block (not nestable)
+        phase_m = re.match(r'phase\s+"([^"]+)"\s+when\s+"([^"]+)":\s*$', btext)
+        if phase_m:
+            if phase_name is not None:
+                raise err(f"phase blocks cannot be nested (inside phase '{phase_name}')", bln, btext)
+            pname = phase_m.group(1)
+            pwhen = phase_m.group(2)
+            phase_body = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                phase_body.append(body_lines[j]); j += 1
+            sub_resources, sub_insts = _parse_target_body_items(phase_body, err,
+                                                                 phase_name=pname, phase_when=pwhen)
+            resources.extend(sub_resources)
+            instantiations.extend(sub_insts)
+            i = j; continue
+
+        # [step name] ... :  or  [step name]: run $ ...
+        step_spec = _parse_cgr_step_line(btext)
+        if step_spec:
+            step_name, step_header, inline_step = step_spec
+            # Collect body lines for this step
+            step_body = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                step_body.append(body_lines[j]); j += 1
+            if inline_step is not None:
+                step_body = [(bln, bindent + 2, inline_step)] + step_body
+
+            # Check if it's a template step (has "from")
+            from_m = re.search(r'from\s+([\w/]+)', step_header)
+            if from_m:
+                # Template instantiation
+                tpl_path = from_m.group(1)
+                tpl_alias = tpl_path.split("/")[-1]
+                args = {}
+                for sln, sind, stxt in step_body:
+                    am = re.match(r'(\w+)\s*=\s*"([^"]*)"', stxt)
+                    if am: args[am.group(1)] = am.group(2)
+                    else:
+                        am = re.match(r'(\w+)\s*=\s*(\S+)', stxt)
+                        if am: args[am.group(1)] = am.group(2)
+                inst = ASTInstantiation(template_name=tpl_alias, args=args, line=bln)
+                inst._cgr_human_name = step_name
+                instantiations.append(inst)
+            else:
+                # Inline resource — inject phase attributes
+                res = _parse_cgr_step(step_name, step_header, step_body, bln, err)
+                if phase_name is not None:
+                    res.cgr_phase_name = phase_name
+                    if res.when is None:
+                        res.when = phase_when
+                resources.append(res)
+            i = j; continue
+
+        # Common typo: step header missing trailing colon.
+        if re.match(r'\[[^\]]+\]', btext):
+            raise err("Invalid step header. Expected '[step name]:'", bln, btext)
+
+        # verify "description":
+        verify_m = re.match(r'verify\s+"([^"]+)":\s*$', btext)
+        if verify_m:
+            vdesc = verify_m.group(1)
+            vbody = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                vbody.append(body_lines[j]); j += 1
+            res = _parse_cgr_verify(vdesc, vbody, bln, err)
+            if phase_name is not None:
+                res.cgr_phase_name = phase_name
+                if res.when is None:
+                    res.when = phase_when
+            resources.append(res)
+            i = j; continue
+
+        # stage "name": at target level — wraps in a synthetic step
+        stage_tm = re.match(r'stage\s+"([^"]+)"\s*:\s*$', btext)
+        if stage_tm:
+            stage_body = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                stage_body.append(body_lines[j]); j += 1
+            sname = stage_tm.group(1)
+            res = _parse_cgr_step(sname, "", [(bln, bindent, btext)] + stage_body, bln, err)
+            if phase_name is not None:
+                res.cgr_phase_name = phase_name
+                if res.when is None:
+                    res.when = phase_when
+            resources.append(res)
+            i = j; continue
+
+        i += 1  # skip unrecognised lines
+
+    return resources, instantiations
+
+
 def _parse_cgr_target(lines, start_pos, err) -> ASTNode:
     """Parse a target block and all its steps."""
     ln, base_indent, text = lines[start_pos]
@@ -1451,81 +1561,7 @@ def _parse_cgr_target(lines, start_pos, err) -> ASTNode:
     while p < len(lines) and lines[p][1] > base_indent:
         body_lines.append(lines[p]); p += 1
 
-    # Parse steps and verify blocks from body
-    resources: list[ASTResource] = []
-    instantiations: list[ASTInstantiation] = []
-    i = 0
-
-    while i < len(body_lines):
-        bln, bindent, btext = body_lines[i]
-
-        # [step name] ... :  or  [step name]: run $ ...
-        step_spec = _parse_cgr_step_line(btext)
-        if step_spec:
-            step_name, step_header, inline_step = step_spec
-            # Collect body lines for this step
-            step_body = []
-            j = i + 1
-            while j < len(body_lines) and body_lines[j][1] > bindent:
-                step_body.append(body_lines[j]); j += 1
-            if inline_step is not None:
-                step_body = [(bln, bindent + 2, inline_step)] + step_body
-
-            # Check if it's a template step (has "from")
-            from_m = re.search(r'from\s+([\w/]+)', step_header)
-            if from_m:
-                # Template instantiation
-                tpl_path = from_m.group(1)
-                # Find the template alias (last segment of path)
-                tpl_alias = tpl_path.split("/")[-1]
-                args = {}
-                for sln, sind, stxt in step_body:
-                    am = re.match(r'(\w+)\s*=\s*"([^"]*)"', stxt)
-                    if am: args[am.group(1)] = am.group(2)
-                    else:
-                        am = re.match(r'(\w+)\s*=\s*(\S+)', stxt)
-                        if am: args[am.group(1)] = am.group(2)
-                # Create an instantiation with the human name as mapping
-                inst = ASTInstantiation(template_name=tpl_alias, args=args, line=bln)
-                inst._cgr_human_name = step_name  # stash for resolver
-                instantiations.append(inst)
-            else:
-                # Inline resource
-                res = _parse_cgr_step(step_name, step_header, step_body, bln, err)
-                resources.append(res)
-            i = j; continue
-
-        # Common typo: step header missing trailing colon.
-        if re.match(r'\[[^\]]+\]', btext):
-            raise err("Invalid step header. Expected '[step name]:'", bln, btext)
-
-        # verify "description":
-        verify_m = re.match(r'verify\s+"([^"]+)":\s*$', btext)
-        if verify_m:
-            vdesc = verify_m.group(1)
-            vbody = []
-            j = i + 1
-            while j < len(body_lines) and body_lines[j][1] > bindent:
-                vbody.append(body_lines[j]); j += 1
-            res = _parse_cgr_verify(vdesc, vbody, bln, err)
-            resources.append(res)
-            i = j; continue
-
-        # stage "name": at target level — wraps in a synthetic step
-        stage_tm = re.match(r'stage\s+"([^"]+)"\s*:\s*$', btext)
-        if stage_tm:
-            stage_body = []
-            j = i + 1
-            while j < len(body_lines) and body_lines[j][1] > bindent:
-                stage_body.append(body_lines[j]); j += 1
-            # Parse as a step named after the stage
-            sname = stage_tm.group(1)
-            res = _parse_cgr_step(sname, "", [(bln, bindent, btext)] + stage_body, bln, err)
-            resources.append(res)
-            i = j; continue
-
-        i += 1  # skip unrecognised lines
-
+    resources, instantiations = _parse_target_body_items(body_lines, err)
     return ASTNode(name=name, via=via, resources=resources, groups=[],
                    instantiations=instantiations, line=ln,
                    after_nodes=after_nodes)
@@ -1566,6 +1602,7 @@ _CGR_CONTINUATION_STOPWORDS = (
     "block ", "ini ", "json ", "assert ",
     "on success:", "on success :", "on failure:", "on failure :",
     "reduce ",
+    "run:", "always run:", "skip if:",
 )
 _CGR_STEP_RE = re.compile(r'\[[^\]]+\].*:\s*$')
 
@@ -1702,6 +1739,17 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                 needs.append(_parse_cgr_dep_ref(ref))
             i += 1; continue
 
+        # skip if:  (multiline block form — lines joined with ' && ')
+        if re.match(r'skip if\s*:\s*$', btext):
+            j = i + 1
+            cond_lines = []
+            while j < len(body) and body[j][1] > bindent and not _is_cgr_keyword(body[j][2]):
+                cond_lines.append(body[j][2]); j += 1
+            if not cond_lines:
+                raise err(f"Step [{name}] has an empty 'skip if:' block", ln)
+            check = " && ".join(cond_lines)
+            i = j; continue
+
         # skip if $ command  (supports multi-line continuation via indentation)
         if btext.startswith("skip if "):
             cmd = btext[8:].strip()
@@ -1710,6 +1758,17 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
             j = i + 1
             while j < len(body) and body[j][1] > bindent and not _is_cgr_keyword(body[j][2]):
                 check += "\n" + body[j][2]; j += 1
+            i = j; continue
+
+        # always run:  (multiline block form — lines joined with ' && ', fail-fast)
+        if re.match(r'always run\s*:\s*$', btext):
+            j = i + 1
+            cmd_lines = []
+            while j < len(body) and body[j][1] > bindent and not _is_cgr_keyword(body[j][2]):
+                cmd_lines.append(body[j][2]); j += 1
+            if not cmd_lines:
+                raise err(f"Step [{name}] has an empty 'always run:' block", ln)
+            run_cmd = " && ".join(cmd_lines); always_run = True
             i = j; continue
 
         # always run $ command
@@ -1780,6 +1839,17 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
             wait_kind = "file"
             wait_target = wait_file_m.group(2)
             i += 1; continue
+
+        # run:  (multiline block form — lines joined with ' && ', fail-fast)
+        if re.match(r'run\s*:\s*$', btext):
+            j = i + 1
+            cmd_lines = []
+            while j < len(body) and body[j][1] > bindent and not _is_cgr_keyword(body[j][2]):
+                cmd_lines.append(body[j][2]); j += 1
+            if not cmd_lines:
+                raise err(f"Step [{name}] has an empty 'run:' block", ln)
+            run_cmd = " && ".join(cmd_lines)
+            i = j; continue
 
         # run $ command
         if btext.startswith("run "):
@@ -2794,6 +2864,7 @@ class Resource:
     flags: list[str] = field(default_factory=list)
     env_when: dict[str, str] = field(default_factory=dict)
     until: str|None = None
+    cgr_phase_name: str|None = None  # name of the phase "..." when "...": block this resource belongs to
 
 @dataclass
 class HostNode:
@@ -3403,6 +3474,7 @@ def _flatten_ast_resource(
         collect_var=ast_res.collect_var,
         reduce_key=ast_res.reduce_key, reduce_var=ast_res.reduce_var,
         flags=resolved_flags, env_when=dict(ast_res.env_when), until=ast_res.until,
+        cgr_phase_name=ast_res.cgr_phase_name,
     )
     collector[rid] = res
     dedup_hashes[ihash] = rid
@@ -3962,10 +4034,16 @@ def cmd_plan(graph: Graph, *, verbose=False, include_tags=None, exclude_tags=Non
     total = sum(len(w) for w in graph.waves)
     n_check = n_run = n_verify = n_tag_skip = 0
 
+    current_phase: str|None = object()  # sentinel — never matches a real phase name
     for wi, wave in enumerate(graph.waves):
         print(dim(f"  ── Wave {wi+1} ({len(wave)} resources) ──"))
         for rid in wave:
             res = graph.all_resources[rid]
+            # Print phase header on first appearance or phase transition
+            if res.cgr_phase_name != current_phase:
+                current_phase = res.cgr_phase_name
+                if current_phase is not None:
+                    print(f"    {cyan('Phase:')} {bold(current_phase)}")
             if _should_skip_tags(res, include_tags, exclude_tags):
                 n_tag_skip += 1
                 tag_str = ", ".join(res.tags) if res.tags else "untagged"
@@ -4122,6 +4200,15 @@ def _terminate_proc_tree(proc, sig=signal.SIGTERM):
             pass
 
 
+def _command_reads_tty(cmd) -> bool:
+    if not isinstance(cmd, str):
+        return False
+    return bool(
+        "/dev/tty" in cmd
+        or re.search(r"(^|[;&|({]\s*)read\s+(-[A-Za-z]*\s+)?", cmd)
+    )
+
+
 def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unregister_proc=None, cancel_check=None):
     actual = cmd
     if node.via_method == "ssh":
@@ -4157,14 +4244,21 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
             elif isinstance(full, list):
                 full = [x.replace("sudo -u", "sudo -S -u") if "sudo" in x else x for x in full]
             stdin_data = (_become_pass + "\n").encode()
-        use_pty = bool(on_output)
+        interactive_tty = (
+            node.via_method != "ssh"
+            and stdin_data is None
+            and _command_reads_tty(full)
+            and sys.stdin and sys.stdin.isatty()
+            and sys.stdout and sys.stdout.isatty()
+        )
+        use_pty = bool(on_output) or interactive_tty
         if (not use_pty and node.via_method != "ssh" and stdin_data is None
                 and isinstance(full, str) and "ssh-copy-id" in full and sys.stdin and sys.stdin.isatty()):
             use_pty = True
         if use_pty:
             master_fd, slave_fd = pty.openpty()
             echo_pty = on_output is None
-            passthrough_stdin = echo_pty
+            passthrough_stdin = echo_pty or interactive_tty
             def _pty_preexec():
                 os.setsid()
                 fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
@@ -5610,6 +5704,15 @@ def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False, webh
             def _run_with_start(rid):
                 nonlocal started
                 res = graph.all_resources[rid]
+                node = graph.nodes[res.node_name]
+                runtime_res = _runtime_resource_view(res, graph.variables)
+                command_needs_terminal = (
+                    live_progress.enabled
+                    and node.via_method != "ssh"
+                    and _command_reads_tty(_effective_run_cmd(runtime_res, graph.graph_file))
+                    and sys.stdin and sys.stdin.isatty()
+                    and sys.stdout and sys.stdout.isatty()
+                )
                 if live_progress.enabled:
                     live_progress.step_started(rid, res.short_name, res.timeout, res.timeout_reset_on_output)
                 elif emit_start_updates:
@@ -5617,23 +5720,29 @@ def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False, webh
                         started += 1
                         _print_exec_start(started, total, res, graph, inline=inline_updates)
                 on_output = None
-                if live_progress.enabled:
+                if live_progress.enabled and not command_needs_terminal:
                     sensitive = graph.sensitive_values if hasattr(graph, "sensitive_values") else set()
                     def on_output(stream_name, text, _rid=rid, _name=res.short_name, _s=sensitive):
                         if text:
                             live_progress.note_activity(_rid)
                         if stream_name == "stdout":
                             live_progress.stream_stdout(_rid, _name, text, sensitive=_s)
-                return exec_resource(
-                    res,
-                    graph.nodes[res.node_name],
-                    dry_run=dry_run,
-                    variables=graph.variables,
-                    graph_file=graph.graph_file,
-                    accumulated_collected=runtime_collected,
-                    on_output=on_output,
-                    webhook_server=webhook_server,
-                )
+                if command_needs_terminal:
+                    live_progress.suspend()
+                try:
+                    return exec_resource(
+                        res,
+                        node,
+                        dry_run=dry_run,
+                        variables=graph.variables,
+                        graph_file=graph.graph_file,
+                        accumulated_collected=runtime_collected,
+                        on_output=on_output,
+                        webhook_server=webhook_server,
+                    )
+                finally:
+                    if command_needs_terminal:
+                        live_progress.resume()
             with ThreadPoolExecutor(max_workers=min(max_parallel,len(wave))) as pool:
                 futs={pool.submit(_run_with_start, rid):rid for rid in wave}
                 for f in as_completed(futs):
@@ -5791,6 +5900,7 @@ class _LiveApplyProgress:
         self._stdout_deferred_cr_line: dict[str, str] = {}
         self._stdout_cursor: dict[str, int] = {}
         self._stdout_live_preview: dict[str, str] = {}
+        self._suspended = False
 
     def start(self):
         if not self.enabled or self._thread is not None:
@@ -5811,6 +5921,19 @@ class _LiveApplyProgress:
             return
         with self._lock:
             self._write("\r\033[2K")
+
+    def suspend(self):
+        if not self.enabled:
+            return
+        with self._lock:
+            self._suspended = True
+            self._write("\r\033[2K")
+
+    def resume(self):
+        if not self.enabled:
+            return
+        with self._lock:
+            self._suspended = False
 
     def set_wave(self, current: int, total: int, to_run: int):
         if not self.enabled:
@@ -5971,6 +6094,8 @@ class _LiveApplyProgress:
     def _run(self):
         while not self._stop.wait(self.interval):
             with self._lock:
+                if self._suspended:
+                    continue
                 self._spin += 1
                 self._write(self._render())
 
@@ -6685,6 +6810,15 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                     def _run_with_start(rid, *, cancel_check=None, register_proc=None, unregister_proc=None):
                         nonlocal started
                         res = graph.all_resources[rid]
+                        node = graph.nodes[res.node_name]
+                        runtime_res = _runtime_resource_view(res, graph.variables)
+                        command_needs_terminal = (
+                            live_progress.enabled
+                            and node.via_method != "ssh"
+                            and _command_reads_tty(_effective_run_cmd(runtime_res, graph_file))
+                            and sys.stdin and sys.stdin.isatty()
+                            and sys.stdout and sys.stdout.isatty()
+                        )
                         if live_progress.enabled:
                             live_progress.step_started(rid, res.short_name, res.timeout, res.timeout_reset_on_output)
                         elif emit_start_updates:
@@ -6692,27 +6826,33 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                                 started += 1
                                 _print_exec_start(started, total, res, graph, indent=gi, inline=inline_updates)
                         on_output = None
-                        if live_progress.enabled:
+                        if live_progress.enabled and not command_needs_terminal:
                             sensitive = graph.sensitive_values if hasattr(graph, "sensitive_values") else set()
                             def on_output(stream_name, text, _rid=rid, _name=res.short_name, _gi=gi, _s=sensitive):
                                 if text:
                                     live_progress.note_activity(_rid)
                                 if stream_name == "stdout":
                                     live_progress.stream_stdout(_rid, _name, text, indent=_gi, sensitive=_s)
-                        return exec_resource(
-                            res,
-                            graph.nodes[res.node_name],
-                            dry_run=dry_run,
-                            blast_radius=blast_radius,
-                            variables=graph.variables,
-                            accumulated_collected=runtime_collected,
-                            on_output=on_output,
-                            cancel_check=cancel_check,
-                            register_proc=register_proc,
-                            unregister_proc=unregister_proc,
-                            graph_file=graph_file,
-                            webhook_server=webhook_server,
-                        )
+                        if command_needs_terminal:
+                            live_progress.suspend()
+                        try:
+                            return exec_resource(
+                                res,
+                                node,
+                                dry_run=dry_run,
+                                blast_radius=blast_radius,
+                                variables=graph.variables,
+                                accumulated_collected=runtime_collected,
+                                on_output=on_output,
+                                cancel_check=cancel_check,
+                                register_proc=register_proc,
+                                unregister_proc=unregister_proc,
+                                graph_file=graph_file,
+                                webhook_server=webhook_server,
+                            )
+                        finally:
+                            if command_needs_terminal:
+                                live_progress.resume()
 
                     if is_race:
                         # Race mode: first success wins, all others become cancelled

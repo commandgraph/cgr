@@ -1,6 +1,6 @@
 --- Run Python Tests ---
 
-set repo_dir = "/home/coder/commandgraph"
+set repo_dir = "."
 
 using apt/install_package
 

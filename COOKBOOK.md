@@ -607,6 +607,134 @@ target "control" local:
 
 ---
 
+## Recipe 6: Install/Rollback with Phase Blocks
+
+**When to use:** Your graph has two or more modes — install, rollback, upgrade — and you want to group steps by mode without repeating `when "action == '...'"` on every step.
+**Concepts:** `phase "name" when "COND":` blocks, `--set` overrides, `set stateless = true`.
+
+```
+--- Service install/rollback ---
+set stateless = true
+set action = "install"
+
+set service_name = "myapp"
+set install_dir  = "/opt/${service_name}"
+set backup_dir   = "/var/backups/${service_name}"
+
+target "local" local:
+
+  phase "install" when "action == 'install'":
+
+    [create directories] as root:
+      skip if:
+        test -d ${install_dir}
+        test -d ${backup_dir}
+      run:
+        mkdir -p ${install_dir}
+        mkdir -p ${backup_dir}
+        chown ${service_name}:${service_name} ${install_dir} || true
+
+    [deploy binary] as root:
+      first [create directories]
+      skip if $ test -f ${install_dir}/bin/${service_name}
+      run    $ cp ./dist/${service_name} ${install_dir}/bin/${service_name}
+
+    [write service file] as root:
+      first [deploy binary]
+      content > /etc/systemd/system/${service_name}.service:
+        [Unit]
+        Description=${service_name}
+        After=network.target
+
+        [Service]
+        ExecStart=${install_dir}/bin/${service_name}
+        Restart=on-failure
+        User=${service_name}
+
+        [Install]
+        WantedBy=multi-user.target
+
+    [start service] as root:
+      first [write service file]
+      run:
+        systemctl daemon-reload
+        systemctl enable ${service_name}
+        systemctl restart ${service_name}
+
+    verify "service is running":
+      first [start service]
+      run   $ systemctl is-active ${service_name}
+      retry 3x wait 2s
+
+  phase "rollback" when "action == 'rollback'":
+
+    [stop service] as root, if fails ignore:
+      always run:
+        systemctl stop ${service_name}
+        systemctl disable ${service_name}
+
+    [remove files] as root:
+      first [stop service]
+      always run:
+        rm -f /etc/systemd/system/${service_name}.service
+        rm -rf ${install_dir}
+        systemctl daemon-reload
+
+    [rollback complete]:
+      first [remove files]
+      always run $ printf 'Rollback complete.\n'
+```
+
+**How it works:**
+- `phase "install" when "action == 'install'":` groups all install steps. Every step in the block gets `when "action == 'install'"` injected automatically.
+- `phase "rollback" when "action == 'rollback'":` groups rollback steps — they are completely skipped during an install run.
+- `set stateless = true` means the graph has no state file, so a previous install run can't cause rollback steps to be skipped on the next run.
+- `run:` multiline blocks join lines with `&&` — if any line fails, the rest do not run.
+- `skip if:` multiline blocks join conditions with `&&` — all must exit 0 to skip.
+
+**Usage:**
+```bash
+sudo cgr apply service.cgr --set action=install
+sudo cgr apply service.cgr --set action=rollback
+```
+
+---
+
+## Patterns (continued)
+
+### Multiline commands without shell glue
+
+Long one-liners are hard to review and error-prone to edit. Use `run:` to split them across lines:
+
+```
+[setup nginx cert] as root:
+  skip if:
+    test -s /etc/nginx/certs/server.key
+    test -s /etc/nginx/certs/server.crt
+  run:
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+      -keyout /etc/nginx/certs/server.key \
+      -out /etc/nginx/certs/server.crt \
+      -subj "/CN=$(hostname).local"
+    chmod 600 /etc/nginx/certs/server.key
+```
+
+Lines are joined with `&&` — if `openssl` fails, `chmod` does not run. To continue past a failure, append `|| true` to that line.
+
+### `always run:` for service restarts
+
+```
+[reload services] as root:
+  always run:
+    systemctl daemon-reload
+    systemctl restart nginx
+    systemctl restart myapp
+```
+
+Each restart runs regardless of `skip if` because the block uses `always run:`.
+
+---
+
 ## Feature Reference
 
 Quick lookup: which feature solves your problem?
@@ -615,6 +743,7 @@ Quick lookup: which feature solves your problem?
 |-------------|---------|--------|------|
 | Run steps in order | Dependencies | `first [step name]` | MANUAL.md |
 | Skip already-done work | Idempotency | `skip if $ command` | MANUAL.md |
+| Multi-line idempotency checks | Multiline skip | `skip if:` block | MANUAL.md |
 | Parameterize graphs | Variables | `set key = "val"` / `--set` | MANUAL.md |
 | Reuse step patterns | Templates | `using path/template` | MANUAL.md |
 | Run on remote hosts | SSH targets | `target "x" ssh user@host:` | MANUAL.md |
@@ -622,6 +751,8 @@ Quick lookup: which feature solves your problem?
 | Pick fastest option | Race | `race:` | MANUAL.md |
 | Deploy to N hosts | Each + inventory | `each var in ${list}:` | MANUAL.md |
 | Phased rollout | Stages | `stage "name":` / `phase` | MANUAL.md |
+| Install/rollback modes | Phase blocks | `phase "name" when "COND":` | MANUAL.md |
+| Multi-line commands | Multiline run | `run:` block | MANUAL.md |
 | Conditional steps | When | `when VAR == "val"` | MANUAL.md |
 | Subset execution | Tags | `tags x, y` / `--tags` | MANUAL.md |
 | Collect output | Reporting | `collect "key"` / `cgr report` | MANUAL.md |

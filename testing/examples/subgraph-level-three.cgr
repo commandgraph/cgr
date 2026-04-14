@@ -1,0 +1,15 @@
+--- Level three sub-graph. Final leaf in the nested chain. ---
+
+set chain_root = "/workspace/subgraph/nested"
+set service    = "app"
+set release    = "0.0.0"
+
+target "local" local:
+
+  [write level three marker]:
+    skip if $ test -f ${chain_root}/${service}/level-3/done.txt
+    run    $ mkdir -p ${chain_root}/${service}/level-3 && printf 'level=3\nservice=%s\nrelease=%s\n' "${service}" "${release}" > ${chain_root}/${service}/level-3/done.txt
+
+  verify "level three completed":
+    first [write level three marker]
+    run $ grep -qx 'level=3' ${chain_root}/${service}/level-3/done.txt

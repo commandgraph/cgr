@@ -406,6 +406,115 @@ def _parse_cgr_template_child_instantiation(
     )
 
 
+def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
+    """Parse a list of body lines (from a target or a phase block) into resources + instantiations.
+
+    phase_name / phase_when: if set, inject cgr_phase_name and when into every parsed resource.
+    Raises an error if a nested phase "..." when "...": block is found inside a phase block.
+    """
+    resources: list[ASTResource] = []
+    instantiations: list[ASTInstantiation] = []
+    i = 0
+
+    while i < len(body_lines):
+        bln, bindent, btext = body_lines[i]
+
+        # phase "name" when "COND":  — conditional group block (not nestable)
+        phase_m = re.match(r'phase\s+"([^"]+)"\s+when\s+"([^"]+)":\s*$', btext)
+        if phase_m:
+            if phase_name is not None:
+                raise err(f"phase blocks cannot be nested (inside phase '{phase_name}')", bln, btext)
+            pname = phase_m.group(1)
+            pwhen = phase_m.group(2)
+            phase_body = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                phase_body.append(body_lines[j]); j += 1
+            sub_resources, sub_insts = _parse_target_body_items(phase_body, err,
+                                                                 phase_name=pname, phase_when=pwhen)
+            resources.extend(sub_resources)
+            instantiations.extend(sub_insts)
+            i = j; continue
+
+        # [step name] ... :  or  [step name]: run $ ...
+        step_spec = _parse_cgr_step_line(btext)
+        if step_spec:
+            step_name, step_header, inline_step = step_spec
+            # Collect body lines for this step
+            step_body = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                step_body.append(body_lines[j]); j += 1
+            if inline_step is not None:
+                step_body = [(bln, bindent + 2, inline_step)] + step_body
+
+            # Check if it's a template step (has "from")
+            from_m = re.search(r'from\s+([\w/]+)', step_header)
+            if from_m:
+                # Template instantiation
+                tpl_path = from_m.group(1)
+                tpl_alias = tpl_path.split("/")[-1]
+                args = {}
+                for sln, sind, stxt in step_body:
+                    am = re.match(r'(\w+)\s*=\s*"([^"]*)"', stxt)
+                    if am: args[am.group(1)] = am.group(2)
+                    else:
+                        am = re.match(r'(\w+)\s*=\s*(\S+)', stxt)
+                        if am: args[am.group(1)] = am.group(2)
+                inst = ASTInstantiation(template_name=tpl_alias, args=args, line=bln)
+                inst._cgr_human_name = step_name
+                instantiations.append(inst)
+            else:
+                # Inline resource — inject phase attributes
+                res = _parse_cgr_step(step_name, step_header, step_body, bln, err)
+                if phase_name is not None:
+                    res.cgr_phase_name = phase_name
+                    if res.when is None:
+                        res.when = phase_when
+                resources.append(res)
+            i = j; continue
+
+        # Common typo: step header missing trailing colon.
+        if re.match(r'\[[^\]]+\]', btext):
+            raise err("Invalid step header. Expected '[step name]:'", bln, btext)
+
+        # verify "description":
+        verify_m = re.match(r'verify\s+"([^"]+)":\s*$', btext)
+        if verify_m:
+            vdesc = verify_m.group(1)
+            vbody = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                vbody.append(body_lines[j]); j += 1
+            res = _parse_cgr_verify(vdesc, vbody, bln, err)
+            if phase_name is not None:
+                res.cgr_phase_name = phase_name
+                if res.when is None:
+                    res.when = phase_when
+            resources.append(res)
+            i = j; continue
+
+        # stage "name": at target level — wraps in a synthetic step
+        stage_tm = re.match(r'stage\s+"([^"]+)"\s*:\s*$', btext)
+        if stage_tm:
+            stage_body = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                stage_body.append(body_lines[j]); j += 1
+            sname = stage_tm.group(1)
+            res = _parse_cgr_step(sname, "", [(bln, bindent, btext)] + stage_body, bln, err)
+            if phase_name is not None:
+                res.cgr_phase_name = phase_name
+                if res.when is None:
+                    res.when = phase_when
+            resources.append(res)
+            i = j; continue
+
+        i += 1  # skip unrecognised lines
+
+    return resources, instantiations
+
+
 def _parse_cgr_target(lines, start_pos, err) -> ASTNode:
     """Parse a target block and all its steps."""
     ln, base_indent, text = lines[start_pos]
@@ -461,81 +570,7 @@ def _parse_cgr_target(lines, start_pos, err) -> ASTNode:
     while p < len(lines) and lines[p][1] > base_indent:
         body_lines.append(lines[p]); p += 1
 
-    # Parse steps and verify blocks from body
-    resources: list[ASTResource] = []
-    instantiations: list[ASTInstantiation] = []
-    i = 0
-
-    while i < len(body_lines):
-        bln, bindent, btext = body_lines[i]
-
-        # [step name] ... :  or  [step name]: run $ ...
-        step_spec = _parse_cgr_step_line(btext)
-        if step_spec:
-            step_name, step_header, inline_step = step_spec
-            # Collect body lines for this step
-            step_body = []
-            j = i + 1
-            while j < len(body_lines) and body_lines[j][1] > bindent:
-                step_body.append(body_lines[j]); j += 1
-            if inline_step is not None:
-                step_body = [(bln, bindent + 2, inline_step)] + step_body
-
-            # Check if it's a template step (has "from")
-            from_m = re.search(r'from\s+([\w/]+)', step_header)
-            if from_m:
-                # Template instantiation
-                tpl_path = from_m.group(1)
-                # Find the template alias (last segment of path)
-                tpl_alias = tpl_path.split("/")[-1]
-                args = {}
-                for sln, sind, stxt in step_body:
-                    am = re.match(r'(\w+)\s*=\s*"([^"]*)"', stxt)
-                    if am: args[am.group(1)] = am.group(2)
-                    else:
-                        am = re.match(r'(\w+)\s*=\s*(\S+)', stxt)
-                        if am: args[am.group(1)] = am.group(2)
-                # Create an instantiation with the human name as mapping
-                inst = ASTInstantiation(template_name=tpl_alias, args=args, line=bln)
-                inst._cgr_human_name = step_name  # stash for resolver
-                instantiations.append(inst)
-            else:
-                # Inline resource
-                res = _parse_cgr_step(step_name, step_header, step_body, bln, err)
-                resources.append(res)
-            i = j; continue
-
-        # Common typo: step header missing trailing colon.
-        if re.match(r'\[[^\]]+\]', btext):
-            raise err("Invalid step header. Expected '[step name]:'", bln, btext)
-
-        # verify "description":
-        verify_m = re.match(r'verify\s+"([^"]+)":\s*$', btext)
-        if verify_m:
-            vdesc = verify_m.group(1)
-            vbody = []
-            j = i + 1
-            while j < len(body_lines) and body_lines[j][1] > bindent:
-                vbody.append(body_lines[j]); j += 1
-            res = _parse_cgr_verify(vdesc, vbody, bln, err)
-            resources.append(res)
-            i = j; continue
-
-        # stage "name": at target level — wraps in a synthetic step
-        stage_tm = re.match(r'stage\s+"([^"]+)"\s*:\s*$', btext)
-        if stage_tm:
-            stage_body = []
-            j = i + 1
-            while j < len(body_lines) and body_lines[j][1] > bindent:
-                stage_body.append(body_lines[j]); j += 1
-            # Parse as a step named after the stage
-            sname = stage_tm.group(1)
-            res = _parse_cgr_step(sname, "", [(bln, bindent, btext)] + stage_body, bln, err)
-            resources.append(res)
-            i = j; continue
-
-        i += 1  # skip unrecognised lines
-
+    resources, instantiations = _parse_target_body_items(body_lines, err)
     return ASTNode(name=name, via=via, resources=resources, groups=[],
                    instantiations=instantiations, line=ln,
                    after_nodes=after_nodes)
@@ -576,6 +611,7 @@ _CGR_CONTINUATION_STOPWORDS = (
     "block ", "ini ", "json ", "assert ",
     "on success:", "on success :", "on failure:", "on failure :",
     "reduce ",
+    "run:", "always run:", "skip if:",
 )
 _CGR_STEP_RE = re.compile(r'\[[^\]]+\].*:\s*$')
 
@@ -712,6 +748,17 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                 needs.append(_parse_cgr_dep_ref(ref))
             i += 1; continue
 
+        # skip if:  (multiline block form — lines joined with ' && ')
+        if re.match(r'skip if\s*:\s*$', btext):
+            j = i + 1
+            cond_lines = []
+            while j < len(body) and body[j][1] > bindent and not _is_cgr_keyword(body[j][2]):
+                cond_lines.append(body[j][2]); j += 1
+            if not cond_lines:
+                raise err(f"Step [{name}] has an empty 'skip if:' block", ln)
+            check = " && ".join(cond_lines)
+            i = j; continue
+
         # skip if $ command  (supports multi-line continuation via indentation)
         if btext.startswith("skip if "):
             cmd = btext[8:].strip()
@@ -720,6 +767,17 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
             j = i + 1
             while j < len(body) and body[j][1] > bindent and not _is_cgr_keyword(body[j][2]):
                 check += "\n" + body[j][2]; j += 1
+            i = j; continue
+
+        # always run:  (multiline block form — lines joined with ' && ', fail-fast)
+        if re.match(r'always run\s*:\s*$', btext):
+            j = i + 1
+            cmd_lines = []
+            while j < len(body) and body[j][1] > bindent and not _is_cgr_keyword(body[j][2]):
+                cmd_lines.append(body[j][2]); j += 1
+            if not cmd_lines:
+                raise err(f"Step [{name}] has an empty 'always run:' block", ln)
+            run_cmd = " && ".join(cmd_lines); always_run = True
             i = j; continue
 
         # always run $ command
@@ -790,6 +848,17 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
             wait_kind = "file"
             wait_target = wait_file_m.group(2)
             i += 1; continue
+
+        # run:  (multiline block form — lines joined with ' && ', fail-fast)
+        if re.match(r'run\s*:\s*$', btext):
+            j = i + 1
+            cmd_lines = []
+            while j < len(body) and body[j][1] > bindent and not _is_cgr_keyword(body[j][2]):
+                cmd_lines.append(body[j][2]); j += 1
+            if not cmd_lines:
+                raise err(f"Step [{name}] has an empty 'run:' block", ln)
+            run_cmd = " && ".join(cmd_lines)
+            i = j; continue
 
         # run $ command
         if btext.startswith("run "):

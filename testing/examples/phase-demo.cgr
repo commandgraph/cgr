@@ -1,0 +1,103 @@
+--- Phase blocks, multiline run:, and multiline skip if: demo ---
+
+# Demonstrates:
+#   - phase "name" when "COND": conditional group blocks
+#   - run: multiline block form (lines joined with &&)
+#   - always run: multiline form
+#   - skip if: multiline form
+#
+# Usage:
+#   cgr validate testing/examples/phase-demo.cgr
+#   cgr apply   testing/examples/phase-demo.cgr --set action=install
+#   cgr apply   testing/examples/phase-demo.cgr --set action=rollback
+
+set stateless = true
+set action = "install"
+
+set app_dir  = "/tmp/phase-demo-app"
+set log_dir  = "/tmp/phase-demo-app/logs"
+set conf_dir = "/tmp/phase-demo-app/conf"
+set run_dir  = "/tmp/phase-demo-app/run"
+set backup   = "/tmp/phase-demo-app-backup"
+
+target "local" local:
+
+  # ─── Install phase ──────────────────────────────────────────────────────────
+  #
+  # All steps inside this block automatically get:
+  #   when "action == 'install'"
+  # No need to repeat it on each step.
+
+  phase "install" when "action == 'install'":
+
+    [create app directories]:
+      skip if:
+        test -d ${app_dir}
+        test -d ${log_dir}
+        test -d ${conf_dir}
+        test -d ${run_dir}
+      run:
+        mkdir -p ${app_dir}
+        mkdir -p ${log_dir}
+        mkdir -p ${conf_dir}
+        mkdir -p ${run_dir}
+
+    [write app config]:
+      first [create app directories]
+      skip if $ test -f ${conf_dir}/app.conf
+      content > ${conf_dir}/app.conf:
+        # Phase demo application config
+        log_dir = ${log_dir}
+        run_dir = ${run_dir}
+        debug   = false
+
+    [write startup script]:
+      first [create app directories]
+      skip if $ test -f ${app_dir}/start.sh
+      content > ${app_dir}/start.sh:
+        #!/bin/sh
+        echo "Starting phase-demo app"
+        date > ${run_dir}/started_at
+        echo "App started." >> ${log_dir}/app.log
+      run    $ chmod +x ${app_dir}/start.sh
+
+    [run app]:
+      first [write app config], [write startup script]
+      skip if $ test -f ${run_dir}/started_at
+      run    $ ${app_dir}/start.sh
+
+    verify "app is running":
+      first [run app]
+      run   $ test -f ${run_dir}/started_at
+      retry 3x wait 1s
+
+    [show install result]:
+      first [run app]
+      always run:
+        echo "Install complete."
+        echo "  App dir: ${app_dir}"
+        echo "  Log dir: ${log_dir}"
+        cat ${run_dir}/started_at 2>/dev/null || echo "  (start time unavailable)"
+
+  # ─── Rollback phase ─────────────────────────────────────────────────────────
+  #
+  # These steps run only when action == 'rollback'.
+  # During an install run they are completely skipped.
+
+  phase "rollback" when "action == 'rollback'":
+
+    [backup before removal]:
+      skip if $ test ! -d ${app_dir}
+      run:
+        mkdir -p ${backup}
+        cp -r ${app_dir} ${backup}/app 2>/dev/null || true
+
+    [remove app]:
+      first [backup before removal]
+      always run $ rm -rf ${app_dir}
+
+    [rollback complete]:
+      first [remove app]
+      always run:
+        echo "Rollback complete."
+        echo "  Backup saved at: ${backup}"

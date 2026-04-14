@@ -1701,6 +1701,11 @@ class TestExecution:
         assert result.status == cg.Status.SUCCESS
         assert calls == []
 
+    def test_command_reads_tty_detection(self):
+        assert cg._command_reads_tty("read -rp 'Username: ' user < /dev/tty")
+        assert cg._command_reads_tty("printf prompt; read password")
+        assert not cg._command_reads_tty("printf 'alpha\\n' | wc -l")
+
     def test_exec_resource_cancel_check_terminates_process(self, tmp_path):
         marker = tmp_path / "cancelled.txt"
         cmd = (
@@ -4416,6 +4421,303 @@ class TestMultiLineContinuation:
         g = _resolve_cgr(src)
         assert g.all_resources["t.parent"].run == "echo parent"
         assert g.all_resources["t.parent.child"].run == "echo child"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase blocks, multiline run:, multiline skip if:
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestPhaseBlocks:
+    """Tests for phase "name" when "COND": grouping blocks."""
+
+    def test_phase_injects_when(self):
+        """All steps inside a phase block get the phase when condition."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [step a]:
+                  run $ echo a
+                [step b]:
+                  run $ echo b
+        """)
+        g = _resolve_cgr(src)
+        assert g.all_resources["t.step_a"].when == "action == 'install'"
+        assert g.all_resources["t.step_b"].when == "action == 'install'"
+
+    def test_phase_sets_cgr_phase_name(self):
+        """Resources inside a phase have cgr_phase_name set correctly."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [step a]:
+                  run $ echo a
+        """)
+        g = _resolve_cgr(src)
+        assert g.all_resources["t.step_a"].cgr_phase_name == "install"
+
+    def test_phase_does_not_override_existing_when(self):
+        """A step with its own when clause keeps it; phase when is not injected."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [step a]:
+                  when "debug == 'true'"
+                  run $ echo a
+        """)
+        g = _resolve_cgr(src)
+        # The step's own when is preserved; phase when is not overridden
+        assert g.all_resources["t.step_a"].when == "debug == 'true'"
+
+    def test_two_phases_independent(self):
+        """Install and rollback phases produce independent resources with correct when."""
+        src = textwrap.dedent("""\
+            set action = "install"
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [step a]:
+                  run $ echo install
+              phase "rollback" when "action == 'rollback'":
+                [step b]:
+                  run $ echo rollback
+        """)
+        g = _resolve_cgr(src)
+        assert g.all_resources["t.step_a"].when == "action == 'install'"
+        assert g.all_resources["t.step_a"].cgr_phase_name == "install"
+        assert g.all_resources["t.step_b"].when == "action == 'rollback'"
+        assert g.all_resources["t.step_b"].cgr_phase_name == "rollback"
+
+    def test_phase_nesting_raises_error(self):
+        """A phase block inside another phase block raises a parse error."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              phase "outer" when "x == '1'":
+                phase "inner" when "y == '2'":
+                  [step]:
+                    run $ echo hi
+        """)
+        with pytest.raises(Exception, match="nested"):
+            _resolve_cgr(src)
+
+    def test_phase_with_verify(self):
+        """verify blocks inside a phase get the phase when and cgr_phase_name."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [step]:
+                  run $ echo hi
+                verify "check it":
+                  run $ echo ok
+        """)
+        ast = cg.parse_cgr(src)
+        resources = ast.nodes[0].resources
+        verify_res = next(r for r in resources if r.is_verify)
+        assert verify_res.cgr_phase_name == "install"
+        assert verify_res.when == "action == 'install'"
+
+    def test_phase_resources_are_flat_in_graph(self):
+        """Phase blocks are transparent to the resolver — resources appear flat."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [step a]:
+                  run $ echo a
+                [step b]:
+                  first [step a]
+                  run $ echo b
+        """)
+        g = _resolve_cgr(src)
+        assert "t.step_a" in g.all_resources
+        assert "t.step_b" in g.all_resources
+        assert "t.step_a" in g.all_resources["t.step_b"].needs
+
+    def test_phase_stateless_compatible(self):
+        """Phase blocks work correctly with set stateless = true."""
+        src = textwrap.dedent("""\
+            set stateless = true
+            set action = "install"
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [do it]:
+                  run $ echo ok
+        """)
+        g = _resolve_cgr(src)
+        assert g.stateless is True
+        assert g.all_resources["t.do_it"].cgr_phase_name == "install"
+
+    def test_phase_mixed_with_unphased_steps(self):
+        """Steps outside a phase block have cgr_phase_name == None."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [always runs]:
+                run $ echo always
+
+              phase "install" when "action == 'install'":
+                [install step]:
+                  run $ echo install
+        """)
+        g = _resolve_cgr(src)
+        assert g.all_resources["t.always_runs"].cgr_phase_name is None
+        assert g.all_resources["t.install_step"].cgr_phase_name == "install"
+
+
+class TestMultilineRunBlock:
+    """Tests for run: and always run: multiline block forms."""
+
+    def test_run_block_joins_with_and(self):
+        """run: block joins lines with ' && '."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                run:
+                  mkdir -p /foo
+                  cp bar /foo
+                  chmod 755 /foo
+        """)
+        g = _resolve_cgr(src)
+        res = g.all_resources["t.step"]
+        assert res.run == "mkdir -p /foo && cp bar /foo && chmod 755 /foo"
+
+    def test_run_block_single_line(self):
+        """run: block with one line produces that line verbatim (no &&)."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                run:
+                  echo hello
+        """)
+        g = _resolve_cgr(src)
+        assert g.all_resources["t.step"].run == "echo hello"
+
+    def test_always_run_block(self):
+        """always run: block sets always_run and joins with ' && '."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                always run:
+                  systemctl daemon-reload
+                  systemctl restart nginx
+        """)
+        ast = cg.parse_cgr(src)
+        res = ast.nodes[0].resources[0]
+        assert res.run == "systemctl daemon-reload && systemctl restart nginx"
+        # always_run is encoded as check == "false" in the resolver
+        g = _resolve_cgr(src)
+        assert g.all_resources["t.step"].check == "false"
+
+    def test_run_block_stops_at_keyword(self):
+        """run: block stops collecting lines when a CGR keyword is encountered."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                run:
+                  echo one
+                  echo two
+                timeout 45s
+        """)
+        g = _resolve_cgr(src)
+        res = g.all_resources["t.step"]
+        assert res.run == "echo one && echo two"
+        assert res.timeout == 45
+
+    def test_run_block_empty_raises(self):
+        """An empty run: block raises a parse error."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                run:
+        """)
+        with pytest.raises(Exception):
+            cg.parse_cgr(src)
+
+    def test_run_block_inside_phase(self):
+        """run: block works correctly inside a phase block."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [setup]:
+                  run:
+                    mkdir -p /opt/app
+                    chown app:app /opt/app
+        """)
+        g = _resolve_cgr(src)
+        res = g.all_resources["t.setup"]
+        assert res.run == "mkdir -p /opt/app && chown app:app /opt/app"
+        assert res.cgr_phase_name == "install"
+
+
+class TestMultilineSkipIfBlock:
+    """Tests for skip if: multiline block form."""
+
+    def test_skip_if_block_joins_with_and(self):
+        """skip if: block joins lines with ' && '."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                skip if:
+                  test -d /opt/app
+                  test -f /opt/app/config.yaml
+                run $ echo already done
+        """)
+        g = _resolve_cgr(src)
+        res = g.all_resources["t.step"]
+        assert res.check == "test -d /opt/app && test -f /opt/app/config.yaml"
+
+    def test_skip_if_block_single_line(self):
+        """skip if: block with one condition works."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                skip if:
+                  test -f /etc/done
+                run $ echo ok
+        """)
+        g = _resolve_cgr(src)
+        assert g.all_resources["t.step"].check == "test -f /etc/done"
+
+    def test_skip_if_block_stops_at_keyword(self):
+        """skip if: block stops at the next CGR keyword."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                skip if:
+                  test -f /foo
+                  test -f /bar
+                run $ echo hi
+                timeout 30s
+        """)
+        g = _resolve_cgr(src)
+        res = g.all_resources["t.step"]
+        assert res.check == "test -f /foo && test -f /bar"
+        assert res.run == "echo hi"
+        assert res.timeout == 30
+
+    def test_skip_if_block_empty_raises(self):
+        """An empty skip if: block raises a parse error."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                skip if:
+                run $ echo hi
+        """)
+        with pytest.raises(Exception):
+            cg.parse_cgr(src)
+
+    def test_skip_if_block_inside_phase(self):
+        """skip if: works inside a phase block."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              phase "install" when "action == 'install'":
+                [install pkg]:
+                  skip if:
+                    dpkg -s nginx >/dev/null 2>&1
+                    dpkg -s curl >/dev/null 2>&1
+                  run $ apt install -y nginx curl
+        """)
+        g = _resolve_cgr(src)
+        res = g.all_resources["t.install_pkg"]
+        assert "dpkg -s nginx" in res.check
+        assert "dpkg -s curl" in res.check
+        assert res.cgr_phase_name == "install"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

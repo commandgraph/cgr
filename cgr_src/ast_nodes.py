@@ -89,6 +89,7 @@ class ASTResource:
     flags: list[tuple[str, str|None]] = field(default_factory=list)  # [(flag_text, when_expr|None)]
     env_when: dict[str, str] = field(default_factory=dict)  # KEY -> when_expr
     until: str|None = None
+    cgr_phase_name: str|None = None  # set when step is inside a phase "name" when "COND": block
 
 @dataclass
 class ASTPhase:

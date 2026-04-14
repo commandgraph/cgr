@@ -162,8 +162,11 @@ verify "HTTPS on example.com":
 |---------|---------|
 | `first [name], [name]` | These steps must complete before this one runs. |
 | `skip if $ command` | If the command exits 0, this step is skipped (already done). |
+| `skip if:` | Multiline form: each indented line is a check command, joined with `&&`. All must exit 0 to skip. |
 | `run $ command` | The shell command to execute. |
+| `run:` | Multiline form: each indented line is a command, joined with `&&`. Fails fast on any non-zero exit. |
 | `always run $ command` | Run unconditionally (even if a `skip if` would match). |
+| `always run:` | Multiline unconditional form, same `&&` join semantics as `run:`. |
 | `collect "key"` | Capture stdout under the named key for reporting (`cgr report`). |
 | `collect "key" as varname` | Capture stdout AND bind it to a runtime variable for use by later steps. |
 | `on success: set var = "val"` | Set a runtime variable when this step succeeds. |
@@ -1814,6 +1817,96 @@ Set variables based on whether a step succeeded or failed, without relying on st
 ```
 
 Multiple `on success` / `on failure` clauses are allowed per step.
+
+### `phase "name" when "COND":` — conditional group blocks
+
+When a graph has two or more modes (install vs. rollback, upgrade vs. downgrade), repeating `when "action == 'install'"` on every step is noise. A `phase` block applies the condition to every step inside it:
+
+```
+set action = "install"
+
+target "local" local:
+
+  phase "install" when "action == 'install'":
+
+    [install packages]:
+      skip if $ dpkg -s nginx >/dev/null 2>&1
+      run    $ apt install -y nginx
+
+    [start service]:
+      first [install packages]
+      run $ systemctl enable --now nginx
+
+  phase "rollback" when "action == 'rollback'":
+
+    [stop service]:
+      always run $ systemctl stop nginx
+
+    [remove packages]:
+      first [stop service]
+      always run $ apt remove -y nginx
+```
+
+**Semantics:**
+- Every step inside the phase inherits `when "COND"` unless it already has its own `when` clause. The step's own `when` always takes priority.
+- `cgr plan` shows a **Phase:** label before the first step of each phase to make the structure clear.
+- Phase blocks flatten into the normal resource graph — they are invisible to the state journal and the resolver. Resume, dedup, and all other invariants are unaffected.
+- Phases do **not** nest. A `phase` inside a `phase` is a parse error.
+- Override the action at runtime: `cgr apply FILE --set action=rollback`
+
+**Multiline `run:` inside a phase:**
+
+```
+phase "install" when "action == 'install'":
+
+  [configure wayvnc] as root, if fails ignore:
+    skip if:
+      test ! -f /etc/wayvnc/config
+      grep -q '^enable_auth=false' /etc/wayvnc/config
+    run:
+      sed -i 's/enable_auth=true/enable_auth=false/' /etc/wayvnc/config
+      systemctl restart wayvnc || true
+```
+
+### Multiline `run:` and `skip if:` blocks
+
+Long shell one-liners can be split into indented blocks. Lines are joined with `&&` — if any line exits non-zero, the remaining lines do not run (fail-fast).
+
+**`run:` block:**
+```
+[setup directories] as root:
+  run:
+    mkdir -p /opt/app/logs
+    chown app:app /opt/app
+    chmod 750 /opt/app/logs
+```
+Equivalent to: `run $ mkdir -p /opt/app/logs && chown app:app /opt/app && chmod 750 /opt/app/logs`
+
+To continue past a failure on one line, append `|| true`:
+```
+run:
+  cp /etc/wayvnc/config /tmp/config.bak || true
+  sed -i 's/enable_auth=true/enable_auth=false/' /etc/wayvnc/config
+```
+
+**`always run:` block:**
+```
+[restart services] as root:
+  always run:
+    systemctl daemon-reload
+    systemctl restart nginx
+    systemctl restart novnc
+```
+
+**`skip if:` block:**
+```
+[create cert] as root:
+  skip if:
+    test -s /etc/nginx/certs/vnc.key
+    test -s /etc/nginx/certs/vnc.crt
+  run $ openssl req -x509 ...
+```
+All conditions must exit 0 for the step to be skipped — equivalent to joining with `&&`.
 
 ### `when` with runtime variables
 

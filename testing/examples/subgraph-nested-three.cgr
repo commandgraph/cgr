@@ -1,0 +1,23 @@
+--- Three-level nested sub-graph inclusion demo ---
+--- Top graph -> level one -> level two -> level three. ---
+--- Each included graph runs as one parent step and keeps its own state. ---
+
+set chain_root = "/workspace/subgraph/nested"
+set service    = "payments"
+set release    = "2026.04"
+
+target "local" local:
+
+  [prepare nested workspace]:
+    skip if $ test -d ${chain_root}
+    run    $ mkdir -p ${chain_root}
+
+  [run level one] from ./subgraph-level-one.cgr:
+    first [prepare nested workspace]
+    chain_root = "${chain_root}"
+    service    = "${service}"
+    release    = "${release}"
+
+  verify "nested subgraphs reached level three":
+    first [run level one]
+    run $ test -f ${chain_root}/${service}/level-3/done.txt

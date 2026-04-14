@@ -29,10 +29,16 @@ def cmd_plan(graph: Graph, *, verbose=False, include_tags=None, exclude_tags=Non
     total = sum(len(w) for w in graph.waves)
     n_check = n_run = n_verify = n_tag_skip = 0
 
+    current_phase: str|None = object()  # sentinel — never matches a real phase name
     for wi, wave in enumerate(graph.waves):
         print(dim(f"  ── Wave {wi+1} ({len(wave)} resources) ──"))
         for rid in wave:
             res = graph.all_resources[rid]
+            # Print phase header on first appearance or phase transition
+            if res.cgr_phase_name != current_phase:
+                current_phase = res.cgr_phase_name
+                if current_phase is not None:
+                    print(f"    {cyan('Phase:')} {bold(current_phase)}")
             if _should_skip_tags(res, include_tags, exclude_tags):
                 n_tag_skip += 1
                 tag_str = ", ".join(res.tags) if res.tags else "untagged"
@@ -189,6 +195,15 @@ def _terminate_proc_tree(proc, sig=signal.SIGTERM):
             pass
 
 
+def _command_reads_tty(cmd) -> bool:
+    if not isinstance(cmd, str):
+        return False
+    return bool(
+        "/dev/tty" in cmd
+        or re.search(r"(^|[;&|({]\s*)read\s+(-[A-Za-z]*\s+)?", cmd)
+    )
+
+
 def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unregister_proc=None, cancel_check=None):
     actual = cmd
     if node.via_method == "ssh":
@@ -224,14 +239,21 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
             elif isinstance(full, list):
                 full = [x.replace("sudo -u", "sudo -S -u") if "sudo" in x else x for x in full]
             stdin_data = (_become_pass + "\n").encode()
-        use_pty = bool(on_output)
+        interactive_tty = (
+            node.via_method != "ssh"
+            and stdin_data is None
+            and _command_reads_tty(full)
+            and sys.stdin and sys.stdin.isatty()
+            and sys.stdout and sys.stdout.isatty()
+        )
+        use_pty = bool(on_output) or interactive_tty
         if (not use_pty and node.via_method != "ssh" and stdin_data is None
                 and isinstance(full, str) and "ssh-copy-id" in full and sys.stdin and sys.stdin.isatty()):
             use_pty = True
         if use_pty:
             master_fd, slave_fd = pty.openpty()
             echo_pty = on_output is None
-            passthrough_stdin = echo_pty
+            passthrough_stdin = echo_pty or interactive_tty
             def _pty_preexec():
                 os.setsid()
                 fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
@@ -1677,6 +1699,15 @@ def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False, webh
             def _run_with_start(rid):
                 nonlocal started
                 res = graph.all_resources[rid]
+                node = graph.nodes[res.node_name]
+                runtime_res = _runtime_resource_view(res, graph.variables)
+                command_needs_terminal = (
+                    live_progress.enabled
+                    and node.via_method != "ssh"
+                    and _command_reads_tty(_effective_run_cmd(runtime_res, graph.graph_file))
+                    and sys.stdin and sys.stdin.isatty()
+                    and sys.stdout and sys.stdout.isatty()
+                )
                 if live_progress.enabled:
                     live_progress.step_started(rid, res.short_name, res.timeout, res.timeout_reset_on_output)
                 elif emit_start_updates:
@@ -1684,23 +1715,29 @@ def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False, webh
                         started += 1
                         _print_exec_start(started, total, res, graph, inline=inline_updates)
                 on_output = None
-                if live_progress.enabled:
+                if live_progress.enabled and not command_needs_terminal:
                     sensitive = graph.sensitive_values if hasattr(graph, "sensitive_values") else set()
                     def on_output(stream_name, text, _rid=rid, _name=res.short_name, _s=sensitive):
                         if text:
                             live_progress.note_activity(_rid)
                         if stream_name == "stdout":
                             live_progress.stream_stdout(_rid, _name, text, sensitive=_s)
-                return exec_resource(
-                    res,
-                    graph.nodes[res.node_name],
-                    dry_run=dry_run,
-                    variables=graph.variables,
-                    graph_file=graph.graph_file,
-                    accumulated_collected=runtime_collected,
-                    on_output=on_output,
-                    webhook_server=webhook_server,
-                )
+                if command_needs_terminal:
+                    live_progress.suspend()
+                try:
+                    return exec_resource(
+                        res,
+                        node,
+                        dry_run=dry_run,
+                        variables=graph.variables,
+                        graph_file=graph.graph_file,
+                        accumulated_collected=runtime_collected,
+                        on_output=on_output,
+                        webhook_server=webhook_server,
+                    )
+                finally:
+                    if command_needs_terminal:
+                        live_progress.resume()
             with ThreadPoolExecutor(max_workers=min(max_parallel,len(wave))) as pool:
                 futs={pool.submit(_run_with_start, rid):rid for rid in wave}
                 for f in as_completed(futs):
@@ -1858,6 +1895,7 @@ class _LiveApplyProgress:
         self._stdout_deferred_cr_line: dict[str, str] = {}
         self._stdout_cursor: dict[str, int] = {}
         self._stdout_live_preview: dict[str, str] = {}
+        self._suspended = False
 
     def start(self):
         if not self.enabled or self._thread is not None:
@@ -1878,6 +1916,19 @@ class _LiveApplyProgress:
             return
         with self._lock:
             self._write("\r\033[2K")
+
+    def suspend(self):
+        if not self.enabled:
+            return
+        with self._lock:
+            self._suspended = True
+            self._write("\r\033[2K")
+
+    def resume(self):
+        if not self.enabled:
+            return
+        with self._lock:
+            self._suspended = False
 
     def set_wave(self, current: int, total: int, to_run: int):
         if not self.enabled:
@@ -2038,6 +2089,8 @@ class _LiveApplyProgress:
     def _run(self):
         while not self._stop.wait(self.interval):
             with self._lock:
+                if self._suspended:
+                    continue
                 self._spin += 1
                 self._write(self._render())
 

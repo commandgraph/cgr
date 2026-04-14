@@ -267,6 +267,7 @@ class Resource:
     flags: list[str] = field(default_factory=list)
     env_when: dict[str, str] = field(default_factory=dict)
     until: str|None = None
+    cgr_phase_name: str|None = None  # name of the phase "..." when "...": block this resource belongs to
 
 @dataclass
 class HostNode:
@@ -876,6 +877,7 @@ def _flatten_ast_resource(
         collect_var=ast_res.collect_var,
         reduce_key=ast_res.reduce_key, reduce_var=ast_res.reduce_var,
         flags=resolved_flags, env_when=dict(ast_res.env_when), until=ast_res.until,
+        cgr_phase_name=ast_res.cgr_phase_name,
     )
     collector[rid] = res
     dedup_hashes[ihash] = rid

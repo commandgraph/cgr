@@ -697,6 +697,15 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                     def _run_with_start(rid, *, cancel_check=None, register_proc=None, unregister_proc=None):
                         nonlocal started
                         res = graph.all_resources[rid]
+                        node = graph.nodes[res.node_name]
+                        runtime_res = _runtime_resource_view(res, graph.variables)
+                        command_needs_terminal = (
+                            live_progress.enabled
+                            and node.via_method != "ssh"
+                            and _command_reads_tty(_effective_run_cmd(runtime_res, graph_file))
+                            and sys.stdin and sys.stdin.isatty()
+                            and sys.stdout and sys.stdout.isatty()
+                        )
                         if live_progress.enabled:
                             live_progress.step_started(rid, res.short_name, res.timeout, res.timeout_reset_on_output)
                         elif emit_start_updates:
@@ -704,27 +713,33 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                                 started += 1
                                 _print_exec_start(started, total, res, graph, indent=gi, inline=inline_updates)
                         on_output = None
-                        if live_progress.enabled:
+                        if live_progress.enabled and not command_needs_terminal:
                             sensitive = graph.sensitive_values if hasattr(graph, "sensitive_values") else set()
                             def on_output(stream_name, text, _rid=rid, _name=res.short_name, _gi=gi, _s=sensitive):
                                 if text:
                                     live_progress.note_activity(_rid)
                                 if stream_name == "stdout":
                                     live_progress.stream_stdout(_rid, _name, text, indent=_gi, sensitive=_s)
-                        return exec_resource(
-                            res,
-                            graph.nodes[res.node_name],
-                            dry_run=dry_run,
-                            blast_radius=blast_radius,
-                            variables=graph.variables,
-                            accumulated_collected=runtime_collected,
-                            on_output=on_output,
-                            cancel_check=cancel_check,
-                            register_proc=register_proc,
-                            unregister_proc=unregister_proc,
-                            graph_file=graph_file,
-                            webhook_server=webhook_server,
-                        )
+                        if command_needs_terminal:
+                            live_progress.suspend()
+                        try:
+                            return exec_resource(
+                                res,
+                                node,
+                                dry_run=dry_run,
+                                blast_radius=blast_radius,
+                                variables=graph.variables,
+                                accumulated_collected=runtime_collected,
+                                on_output=on_output,
+                                cancel_check=cancel_check,
+                                register_proc=register_proc,
+                                unregister_proc=unregister_proc,
+                                graph_file=graph_file,
+                                webhook_server=webhook_server,
+                            )
+                        finally:
+                            if command_needs_terminal:
+                                live_progress.resume()
 
                     if is_race:
                         # Race mode: first success wins, all others become cancelled
