@@ -474,6 +474,10 @@ def main():
     sub.add_parser("doctor",help="Check environment for common issues")
     sub.add_parser("version",help="Show version information")
 
+    # ── How ──────────────────────────────────────────────────────────
+    shw=sub.add_parser("how",help="Show documentation and variables for a graph file")
+    shw.add_argument("file",nargs="?",default=None,help="Graph file (.cgr or .cg)")
+
     # ── Shell completion generator ──────────────────────────────────────
     scmp=sub.add_parser("completion",help="Generate shell completion script")
     scmp.add_argument("shell",choices=["bash","zsh","fish"],help="Shell type")
@@ -497,7 +501,7 @@ def main():
         cmd_init(args.file); return
 
     # ── Auto-detect graph file if not provided ────────────────────────
-    if hasattr(args, "file") and args.file is None and args.command not in ("serve", "init", "repo", "completion", "version", "doctor", "test"):
+    if hasattr(args, "file") and args.file is None and args.command not in ("serve", "init", "repo", "completion", "version", "doctor", "test", "how"):
         args.file = _auto_detect_graph()
 
     if args.command=="convert":
@@ -515,6 +519,9 @@ def main():
 
     if args.command=="fmt":
         cmd_fmt(args.file); return
+
+    if args.command=="how":
+        cmd_how(args.file); return
 
     if args.command=="secrets":
         cmd_secrets(args.action, args.file, key=args.key, value=args.value, vault_args=args); return

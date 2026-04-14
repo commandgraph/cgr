@@ -67,10 +67,28 @@ print_banner() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CGR_SRC="${SCRIPT_DIR}/cgr.py"
 REPO_SRC="${SCRIPT_DIR}/repo"
+ACTION="install"
 
-if [ ! -f "$CGR_SRC" ]; then
-    fatal "cgr.py not found in ${SCRIPT_DIR}. Run this script from the CommandGraph repository root."
-fi
+# ── Arguments ─────────────────────────────────────────────────────────────────
+
+usage() {
+    cat <<EOF
+Usage: ./install.sh [install|uninstall]
+
+Commands:
+  install      Install cgr. This is the default.
+  uninstall    Remove an installed cgr binary and optionally the stdlib repo.
+EOF
+}
+
+parse_args() {
+    case "${1:-install}" in
+        install|--install) ACTION="install";;
+        uninstall|--uninstall|remove|--remove) ACTION="uninstall";;
+        -h|--help|help) usage; exit 0;;
+        *) usage >&2; exit 2;;
+    esac
+}
 
 # ── Python check ──────────────────────────────────────────────────────────────
 
@@ -81,7 +99,7 @@ find_python() {
             ver=$("$candidate" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null)
             local major minor
             major="${ver%%.*}"; minor="${ver##*.}"
-            if [ "$major" -ge 3 ] && [ "$minor" -ge 8 ] 2>/dev/null; then
+            if { [ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 8 ]; }; } 2>/dev/null; then
                 echo "$candidate"
                 return 0
             fi
@@ -95,6 +113,54 @@ find_python() {
 get_cgr_version() {
     local py="${1:-python3}"
     "$py" "$CGR_SRC" version 2>/dev/null | head -1 | awk '{print $NF}' || echo "unknown"
+}
+
+get_installed_cgr_version() {
+    local path="$1"
+    local line
+    if [ -x "$path" ] && line=$("$path" version 2>/dev/null | head -1); then
+        printf '%s' "$line" | awk '{print $NF}'
+        return 0
+    fi
+    if line=$("$PYTHON" "$path" version 2>/dev/null | head -1); then
+        printf '%s' "$line" | awk '{print $NF}'
+        return 0
+    fi
+    printf 'unknown'
+}
+
+add_path_cgr_candidate() {
+    local path="$1"
+    [ -n "$path" ] || return 0
+    [ "$path" != "$CGR_SRC" ] || return 0
+    [ -x "$path" ] || return 0
+
+    local item
+    for item in "${CGR_PATH_CANDIDATES[@]:-}"; do
+        [ "$item" != "$path" ] || return 0
+    done
+    CGR_PATH_CANDIDATES+=("$path")
+}
+
+find_path_cgrs() {
+    CGR_PATH_CANDIDATES=()
+
+    local old_ifs="$IFS"
+    local dir
+    IFS=:
+    for dir in $PATH; do
+        [ -n "$dir" ] || dir="."
+        add_path_cgr_candidate "${dir}/cgr"
+    done
+    IFS="$old_ifs"
+}
+
+needs_sudo_for_path() {
+    local path="$1"
+    if [ -w "$path" ] || [ -w "$(dirname "$path")" ]; then
+        return 1
+    fi
+    return 0
 }
 
 # ── Menu rendering ────────────────────────────────────────────────────────────
@@ -143,6 +209,54 @@ confirm() {
 }
 
 # ── Install location choice ───────────────────────────────────────────────────
+
+detect_existing_installations() {
+    find_path_cgrs
+
+    if [ "${#CGR_PATH_CANDIDATES[@]}" -eq 0 ]; then
+        dim "No existing cgr command found in PATH"
+        return 0
+    fi
+
+    section "Existing cgr installations"
+    hr
+    local i=1 path ver marker
+    for path in "${CGR_PATH_CANDIDATES[@]}"; do
+        ver=$(get_installed_cgr_version "$path")
+        marker=""
+        if [ "$i" -eq 1 ]; then
+            marker=" ${_DIM}(PATH first)${_RESET}"
+        fi
+        info "${path}  ${_DIM}(version ${ver})${_RESET}${marker}"
+        i=$((i + 1))
+    done
+    if [ "${#CGR_PATH_CANDIDATES[@]}" -gt 1 ]; then
+        warn "Multiple cgr commands are visible in PATH. Your shell will run the first one above."
+    fi
+    hr
+}
+
+choose_install_action() {
+    UPGRADE_EXISTING=0
+    detect_existing_installations
+
+    if [ "${#CGR_PATH_CANDIDATES[@]}" -gt 0 ]; then
+        local first="${CGR_PATH_CANDIDATES[0]}"
+        nl
+        if confirm "Upgrade PATH-first cgr at ${first} to CommandGraph ${CGR_VER}?" "y"; then
+            INSTALL_DIR="$(dirname "$first")"
+            if needs_sudo_for_path "$first"; then
+                NEED_SUDO=1
+            else
+                NEED_SUDO=0
+            fi
+            UPGRADE_EXISTING=1
+            return 0
+        fi
+    fi
+
+    choose_install_dir
+}
 
 choose_install_dir() {
     local user_bin="${HOME}/.local/bin"
@@ -208,7 +322,11 @@ print_summary() {
     nl
     section "Installation plan"
     hr
-    info "cgr binary   →  ${_BOLD}${INSTALL_DIR}/cgr${_RESET}"
+    if [ "${UPGRADE_EXISTING:-0}" = "1" ]; then
+        info "Upgrade      →  ${_BOLD}${INSTALL_DIR}/cgr${_RESET}"
+    else
+        info "cgr binary   →  ${_BOLD}${INSTALL_DIR}/cgr${_RESET}"
+    fi
     info "Source file  →  ${_DIM}${CGR_SRC}${_RESET}"
     info "Python       →  ${_DIM}${PYTHON} (${PYTHON_VER})${_RESET}"
     info "cgr version  →  ${_DIM}${CGR_VER}${_RESET}"
@@ -253,6 +371,10 @@ do_install() {
     fi
     ok "Installed  ${_BOLD}${dest}${_RESET}"
 
+    if [ "${UPGRADE_EXISTING:-0}" = "1" ]; then
+        ok "Upgraded PATH-first cgr to CommandGraph ${CGR_VER}"
+    fi
+
     # Install repo templates if requested
     if [ "$INSTALL_REPO" = "1" ] && [ -d "$REPO_SRC" ]; then
         mkdir -p "$REPO_DEST"
@@ -266,6 +388,155 @@ do_install() {
         count=$(find "$REPO_DEST" -name '*.cgr' | wc -l | tr -d ' ')
         ok "Installed  ${_BOLD}${REPO_DEST}${_RESET}  ${_DIM}(${count} templates)${_RESET}"
     fi
+}
+
+# ── Uninstall helpers ────────────────────────────────────────────────────────
+
+add_candidate() {
+    local path="$1"
+    [ -n "$path" ] || return 0
+    [ "$path" != "$CGR_SRC" ] || return 0
+    [ -e "$path" ] || return 0
+
+    local item
+    for item in "${UNINSTALL_CANDIDATES[@]:-}"; do
+        [ "$item" != "$path" ] || return 0
+    done
+    UNINSTALL_CANDIDATES+=("$path")
+}
+
+find_uninstall_candidates() {
+    UNINSTALL_CANDIDATES=()
+
+    find_path_cgrs
+    local path
+    for path in "${CGR_PATH_CANDIDATES[@]}"; do
+        add_candidate "$path"
+    done
+    add_candidate "${HOME}/.local/bin/cgr"
+    add_candidate "/usr/local/bin/cgr"
+}
+
+choose_uninstall_target() {
+    find_uninstall_candidates
+
+    if [ "${#UNINSTALL_CANDIDATES[@]}" -gt 0 ]; then
+        print_menu "Which cgr should be uninstalled?" "${UNINSTALL_CANDIDATES[@]}" "Custom path…"
+        pick $((${#UNINSTALL_CANDIDATES[@]} + 1))
+        if [ "$REPLY" -le "${#UNINSTALL_CANDIDATES[@]}" ]; then
+            UNINSTALL_TARGET="${UNINSTALL_CANDIDATES[$((REPLY - 1))]}"
+        else
+            ask "Enter path to cgr:"
+            read -r UNINSTALL_TARGET
+            UNINSTALL_TARGET="${UNINSTALL_TARGET/#\~/$HOME}"
+        fi
+    else
+        warn "No cgr binary was found in PATH, ~/.local/bin, or /usr/local/bin."
+        ask "Enter path to cgr:"
+        read -r UNINSTALL_TARGET
+        UNINSTALL_TARGET="${UNINSTALL_TARGET/#\~/$HOME}"
+    fi
+
+    if [ -z "$UNINSTALL_TARGET" ]; then
+        fatal "No uninstall target selected."
+    fi
+    if [ ! -e "$UNINSTALL_TARGET" ]; then
+        fatal "${UNINSTALL_TARGET} does not exist."
+    fi
+    if [ "$UNINSTALL_TARGET" = "$CGR_SRC" ]; then
+        fatal "Refusing to remove source file ${CGR_SRC}."
+    fi
+
+    if needs_sudo_for_path "$UNINSTALL_TARGET"; then
+        NEED_SUDO=1
+    else
+        NEED_SUDO=0
+    fi
+    INSTALL_DIR="$(dirname "$UNINSTALL_TARGET")"
+}
+
+choose_uninstall_repo() {
+    REMOVE_REPO=0
+    REPO_DEST="${HOME}/.cgr/repo"
+
+    if [ -d "$REPO_DEST" ]; then
+        nl
+        if confirm "Remove stdlib template repository at ${REPO_DEST}?" "n"; then
+            REMOVE_REPO=1
+        fi
+    fi
+}
+
+print_uninstall_summary() {
+    nl
+    section "Uninstall plan"
+    hr
+    info "cgr binary   →  ${_BOLD}${UNINSTALL_TARGET}${_RESET}"
+    if [ "$REMOVE_REPO" = "1" ]; then
+        info "Repo         →  ${_BOLD}${REPO_DEST}${_RESET}"
+    else
+        dim "Repo cleanup skipped"
+    fi
+    dim "PATH entries added by this installer will be removed when found."
+    if [ "$NEED_SUDO" = "1" ]; then
+        warn "sudo required to remove ${UNINSTALL_TARGET}"
+    fi
+    hr
+}
+
+remove_installer_path_entries() {
+    local rc_files=(
+        "${HOME}/.bashrc"
+        "${HOME}/.zshrc"
+        "${HOME}/.profile"
+        "${HOME}/.config/fish/config.fish"
+    )
+    local rc tmp removed=0
+    local path_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
+
+    for rc in "${rc_files[@]}"; do
+        [ -f "$rc" ] || continue
+        if grep -Fq "$path_line" "$rc"; then
+            tmp="${rc}.cgr-uninstall.$$"
+            awk -v path_line="$path_line" '
+                $0 == "# Added by CommandGraph installer" {
+                    getline next_line
+                    if (next_line == path_line) {
+                        next
+                    }
+                    print
+                    print next_line
+                    next
+                }
+                $0 != path_line { print }
+            ' "$rc" > "$tmp"
+            mv "$tmp" "$rc"
+            ok "Removed PATH entry from ${rc}"
+            removed=1
+        fi
+    done
+
+    if [ "$removed" = "0" ]; then
+        dim "No installer-added PATH entries found"
+    fi
+}
+
+do_uninstall() {
+    section "Uninstalling"
+
+    if [ "$NEED_SUDO" = "1" ]; then
+        sudo rm -f "$UNINSTALL_TARGET"
+    else
+        rm -f "$UNINSTALL_TARGET"
+    fi
+    ok "Removed ${_BOLD}${UNINSTALL_TARGET}${_RESET}"
+
+    if [ "$REMOVE_REPO" = "1" ]; then
+        rm -rf "$REPO_DEST"
+        ok "Removed ${_BOLD}${REPO_DEST}${_RESET}"
+    fi
+
+    remove_installer_path_entries
 }
 
 # ── PATH check ────────────────────────────────────────────────────────────────
@@ -361,35 +632,57 @@ trap 'nl; warn "Installation cancelled."; exit 1' INT TERM
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
 
+parse_args "$@"
 print_banner
 
-# Python pre-flight
-section "Pre-flight checks"
-
-if ! PYTHON=$(find_python); then
-    fatal "Python 3.8 or later is required but was not found. Install Python 3 and try again."
+if [ "$ACTION" = "install" ] && [ ! -f "$CGR_SRC" ]; then
+    fatal "cgr.py not found in ${SCRIPT_DIR}. Run this script from the CommandGraph repository root."
 fi
 
-PYTHON_VER=$("$PYTHON" -c "import sys; print('.'.join(map(str, sys.version_info[:3])))")
-CGR_VER=$(get_cgr_version "$PYTHON")
+if [ "$ACTION" = "install" ]; then
+    # Python pre-flight
+    section "Pre-flight checks"
 
-ok "Python  ${_DIM}${PYTHON}  ${PYTHON_VER}${_RESET}"
-ok "Source  ${_DIM}${CGR_SRC}${_RESET}"
-ok "Version ${_DIM}${CGR_VER}${_RESET}"
+    if ! PYTHON=$(find_python); then
+        fatal "Python 3.8 or later is required but was not found. Install Python 3 and try again."
+    fi
 
-# Gather choices
-choose_install_dir
-choose_repo_dir
-print_summary
+    PYTHON_VER=$("$PYTHON" -c "import sys; print('.'.join(map(str, sys.version_info[:3])))")
+    CGR_VER=$(get_cgr_version "$PYTHON")
 
-nl
-if ! confirm "Proceed with installation?" "y"; then
+    ok "Python  ${_DIM}${PYTHON}  ${PYTHON_VER}${_RESET}"
+    ok "Source  ${_DIM}${CGR_SRC}${_RESET}"
+    ok "Version ${_DIM}${CGR_VER}${_RESET}"
+
+    # Gather choices
+    choose_install_action
+    choose_repo_dir
+    print_summary
+
     nl
-    info "Installation cancelled."
-    exit 0
-fi
+    if ! confirm "Proceed with installation?" "y"; then
+        nl
+        info "Installation cancelled."
+        exit 0
+    fi
 
-do_install
-check_path
-verify_install
-print_hints
+    do_install
+    check_path
+    verify_install
+    print_hints
+else
+    choose_uninstall_target
+    choose_uninstall_repo
+    print_uninstall_summary
+
+    nl
+    if ! confirm "Proceed with uninstall?" "n"; then
+        nl
+        info "Uninstall cancelled."
+        exit 0
+    fi
+
+    do_uninstall
+    nl
+    ok "Uninstall complete."
+fi

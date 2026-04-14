@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: fa73ee5233e1cc9f
+# Built from source hash: 328ef7ffa86290da
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -7465,6 +7465,97 @@ def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
     return report
 
 
+# ── How command ───────────────────────────────────────────────────────
+
+def _extract_file_header(source: str) -> tuple[str|None, str]:
+    """Return (title, doc_body) from the leading --- / # comment block."""
+    title = None
+    doc_lines: list[str] = []
+    for raw in source.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            if doc_lines or title:
+                doc_lines.append("")
+            continue
+        if stripped.startswith("---") and stripped.endswith("---") and title is None and not doc_lines:
+            title = stripped[3:-3].strip()
+            continue
+        if stripped.startswith("#"):
+            body = stripped[1:]
+            if body and body[0] in (" ", "\t"):
+                body = body[1:]
+            doc_lines.append(body)
+            continue
+        break  # first non-comment, non-blank line ends the header
+    while doc_lines and not doc_lines[-1]:
+        doc_lines.pop()
+    while doc_lines and not doc_lines[0]:
+        doc_lines.pop(0)
+    return title, "\n".join(doc_lines)
+
+
+def _extract_set_vars(source: str) -> list[tuple[str, str]]:
+    """Return [(name, raw_expr)] for top-level set declarations, preserving env() etc. un-evaluated."""
+    result: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw in source.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("#"):
+            continue
+        m = re.match(r'^set\s+(\w+)\s*=\s*(.+)', stripped)
+        if m:
+            name, expr = m.group(1), m.group(2).strip()
+            if name == "stateless" or name in seen:
+                continue
+            result.append((name, expr))
+            seen.add(name)
+    return result
+
+
+def cmd_how(filepath: str):
+    """Show header documentation and configurable variables for a graph file."""
+    path = Path(filepath)
+    if not path.exists():
+        print(red(f"error: file not found: {filepath}")); sys.exit(1)
+
+    source = path.read_text()
+    title, doc_body = _extract_file_header(source)
+    raw_vars = _extract_set_vars(source)
+
+    # Best-effort parse to flag secrets
+    secret_names: set[str] = set()
+    try:
+        ast = parse_cg(source, filepath) if filepath.endswith(".cg") else parse_cgr(source, filepath)
+        secret_names = {v.name for v in ast.variables if v.is_secret}
+    except Exception:
+        pass
+
+    print()
+
+    if title:
+        width = min(len(title), 60)
+        print(f"  {bold(title)}")
+        print(f"  {dim('─' * width)}")
+        print()
+
+    if doc_body:
+        for line in doc_body.splitlines():
+            print(f"  {line}" if line else "")
+        print()
+    elif not title:
+        print(f"  {dim('(no documentation header)')}")
+        print()
+
+    if raw_vars:
+        print(f"  {bold('Defaults')}  {dim('(override with --set NAME=VALUE)')}")
+        print()
+        max_len = max(len(n) for n, _ in raw_vars)
+        for name, expr in raw_vars:
+            secret_tag = f"  {dim('[secret]')}" if name in secret_names else ""
+            print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {expr}{secret_tag}")
+        print()
+
+
 # ── Check command (live drift detection without prior run) ─────────────
 
 def cmd_check(graph, *, max_parallel=4, verbose=False, json_output=False):
@@ -9359,7 +9450,7 @@ def cmd_doctor():
     # Python version
     ver = sys.version.split()[0]
     major, minor = sys.version_info[:2]
-    ok = major >= 3 and minor >= 9
+    ok = (major, minor) >= (3, 9)
     checks.append((ok, f"Python {ver}", "Requires 3.9+" if not ok else ""))
 
     # SSH client
@@ -12381,6 +12472,10 @@ def main():
     sub.add_parser("doctor",help="Check environment for common issues")
     sub.add_parser("version",help="Show version information")
 
+    # ── How ──────────────────────────────────────────────────────────
+    shw=sub.add_parser("how",help="Show documentation and variables for a graph file")
+    shw.add_argument("file",nargs="?",default=None,help="Graph file (.cgr or .cg)")
+
     # ── Shell completion generator ──────────────────────────────────────
     scmp=sub.add_parser("completion",help="Generate shell completion script")
     scmp.add_argument("shell",choices=["bash","zsh","fish"],help="Shell type")
@@ -12404,7 +12499,7 @@ def main():
         cmd_init(args.file); return
 
     # ── Auto-detect graph file if not provided ────────────────────────
-    if hasattr(args, "file") and args.file is None and args.command not in ("serve", "init", "repo", "completion", "version", "doctor", "test"):
+    if hasattr(args, "file") and args.file is None and args.command not in ("serve", "init", "repo", "completion", "version", "doctor", "test", "how"):
         args.file = _auto_detect_graph()
 
     if args.command=="convert":
@@ -12422,6 +12517,9 @@ def main():
 
     if args.command=="fmt":
         cmd_fmt(args.file); return
+
+    if args.command=="how":
+        cmd_how(args.file); return
 
     if args.command=="secrets":
         cmd_secrets(args.action, args.file, key=args.key, value=args.value, vault_args=args); return

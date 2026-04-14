@@ -252,6 +252,47 @@ When reading `[install nginx]`, the dependency keyword should answer "what does 
 
 `first [update cache]` reads as a natural instruction: "first, make sure the cache is updated." It's unambiguous about direction, and it matches how ops people actually talk: "first update the cache, then install the package."
 
+### File documentation headers
+
+A `.cgr` file can carry a documentation header that `cgr how FILE` renders for users and agents discovering the file for the first time. The header lives before any `set` or `target` declarations and consists of two optional parts:
+
+**Title line** — a `--- text ---` line on the very first content line:
+
+```
+--- deploy web application ---
+```
+
+**Comment block** — contiguous `#` lines immediately following the title (or at the top if there is no title):
+
+```
+--- authorize SSH key ---
+#
+# Copies your local public key to each host using ssh-copy-id.
+#
+# Usage:
+#   cgr apply authorize_ssh_key.cgr --set hosts="web01,web02,db01"
+#   cgr apply authorize_ssh_key.cgr --set hosts="host1" --set ssh_port=2222
+#
+# Variables:
+#   hosts     — comma-separated list of hostnames or IPs (required)
+#   ssh_user  — remote user (default: $USER from environment)
+#   ssh_port  — SSH port (default: 22)
+
+set hosts    = "192.168.1.10,192.168.1.11"
+set ssh_user = env("USER", "ubuntu")
+set ssh_port = "22"
+```
+
+`cgr how` renders the header and then a **Defaults** table showing each `set` declaration with its raw expression (`env("USER", "ubuntu")` rather than the evaluated value), so users can see exactly what to override.
+
+Conventions for the comment block:
+- Start with a one-line summary sentence.
+- Add a `Usage:` block with copy-pasteable `cgr apply` examples.
+- Add a `Variables:` block listing each user-facing `set` variable with a short description and whether it is required or has a default.
+- For graphs with manual resume steps, add a `Resuming after interruption:` block with `cgr state set` examples.
+
+The parser strips the header before building the AST; it has no effect on execution.
+
 ---
 
 ## Parallel constructs (.cgr format)
@@ -2024,6 +2065,7 @@ This makes the HTML file a self-contained pitch: send someone `webserver.html`, 
 | `doctor` | Check environment: Python version, SSH client, sudo, template repo, Vault passphrase, graph files in CWD. |
 | `secrets` | Manage encrypted `.secrets` files for offline secret storage. |
 | `ping FILE` | Verify SSH connectivity to all targets defined in the graph. |
+| `how FILE` | Show the file's documentation header and a **Defaults** table of all `set` declarations with their raw expressions. Works without resolving the graph. |
 | `explain FILE STEP` | Show the full dependency chain for a step. |
 | `why FILE STEP` | Show what steps depend on a step (reverse of explain). |
 | `check FILE` | Re-run all check clauses against the live system and report drift. |
@@ -2256,7 +2298,7 @@ If you are an AI agent tasked with creating a CommandGraph dependency graph, fol
 
 3. **Identify the goal.** What end state must be true on which host(s)?
 
-4. **Check the repo.** Run or simulate `cgr repo index --repo ./repo`. Reuse existing templates wherever possible. Do not reinvent `apt-get install` — use `apt/install_package`.
+4. **Check the repo.** Run or simulate `cgr repo index --repo ./repo`. Reuse existing templates wherever possible. Do not reinvent `apt-get install` — use `apt/install_package`. To understand an existing `.cgr` file's interface before running it, use `cgr how FILE` — it prints the documentation header and a table of all `set` variables with their default expressions.
 
 5. **Decompose backwards.** Start from the end state and work backwards to roots. Draw the tree mentally or in comments.
 
