@@ -9,7 +9,9 @@ target "production" ssh ${deploy_user}@${target_host}:
 
   [prepare release dir] as root:
     skip if $ test -d /opt/releases/${version}
-    run    $ mkdir -p /opt/releases/${version} && chown deploy:deploy /opt/releases/${version}
+    run:
+      mkdir -p /opt/releases/${version}
+      chown deploy:deploy /opt/releases/${version}
 
   [build all services]:
     first [prepare release dir]
@@ -17,15 +19,21 @@ target "production" ssh ${deploy_user}@${target_host}:
     parallel:
       [build api]:
         skip if $ test -f /opt/releases/${version}/api
-        run    $ echo "api binary v${version}" > /opt/releases/${version}/api && chmod +x /opt/releases/${version}/api
+        run:
+          echo "api binary v${version}" > /opt/releases/${version}/api
+          chmod +x /opt/releases/${version}/api
 
       [build worker]:
         skip if $ test -f /opt/releases/${version}/worker
-        run    $ echo "worker binary v${version}" > /opt/releases/${version}/worker && chmod +x /opt/releases/${version}/worker
+        run:
+          echo "worker binary v${version}" > /opt/releases/${version}/worker
+          chmod +x /opt/releases/${version}/worker
 
       [build scheduler]:
         skip if $ test -f /opt/releases/${version}/scheduler
-        run    $ echo "scheduler binary v${version}" > /opt/releases/${version}/scheduler && chmod +x /opt/releases/${version}/scheduler
+        run:
+          echo "scheduler binary v${version}" > /opt/releases/${version}/scheduler
+          chmod +x /opt/releases/${version}/scheduler
 
   [install services]:
     first [build all services]
@@ -33,12 +41,13 @@ target "production" ssh ${deploy_user}@${target_host}:
     each app in ${apps}, 2 at a time:
       [install ${app}] as root:
         skip if $ test -L /usr/local/bin/${app}
-        run    $ ln -sf /opt/releases/${version}/${app} /usr/local/bin/${app}
+        run $ ln -sf /opt/releases/${version}/${app} /usr/local/bin/${app}
 
   [write master config] as root:
     first [install services]
     skip if $ test -f /etc/platform.conf
-    run    $ printf 'version=${version}\nservices=${apps}\nhost=%s\n' "$(hostname)" > /etc/platform.conf
+    run:
+      printf 'version=${version}\nservices=${apps}\nhost=%s\n' "$(hostname)" > /etc/platform.conf
 
   verify "all services installed":
     first [write master config]

@@ -7,26 +7,34 @@ target "webserver" ssh ${deploy_user}@${target_host}:
 
   [create config dir] as root:
     skip if $ test -d /etc/myservice
-    run    $ mkdir -p /etc/myservice
+    run $ mkdir -p /etc/myservice
 
   [write main config] as root:
     first [create config dir]
     skip if $ test -f /etc/myservice/main.conf
-    run    $ printf 'listen=0.0.0.0:8080\nworkers=4\n' > /etc/myservice/main.conf
+    content > /etc/myservice/main.conf:
+      listen=0.0.0.0:8080
+      workers=4
 
   [write tls config] as root:
     first [create config dir]
     skip if $ test -f /etc/myservice/tls.conf
-    run    $ printf 'cert=/etc/ssl/cert.pem\nkey=/etc/ssl/key.pem\n' > /etc/myservice/tls.conf
+    content > /etc/myservice/tls.conf:
+      cert=/etc/ssl/cert.pem
+      key=/etc/ssl/key.pem
 
   [write log config] as root:
     first [create config dir]
     skip if $ test -f /etc/myservice/logging.conf
-    run    $ printf 'level=info\nfile=/var/log/myservice.log\n' > /etc/myservice/logging.conf
+    content > /etc/myservice/logging.conf:
+      level=info
+      file=/var/log/myservice.log
 
   [create data dir] as root:
     skip if $ test -d /var/lib/myservice
-    run    $ mkdir -p /var/lib/myservice && chown deploy:deploy /var/lib/myservice
+    run:
+      mkdir -p /var/lib/myservice
+      chown deploy:deploy /var/lib/myservice
 
   verify "configuration complete":
     first [write main config], [write tls config], [write log config], [create data dir]

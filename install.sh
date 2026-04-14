@@ -7,16 +7,17 @@ set -euo pipefail
 # ── Terminal capability detection ─────────────────────────────────────────────
 
 if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] && [ "${NO_COLOR:-}" = "" ]; then
-    _RED='\033[0;31m'
-    _GREEN='\033[0;32m'
-    _YELLOW='\033[1;33m'
-    _BLUE='\033[0;34m'
-    _CYAN='\033[0;36m'
-    _MAGENTA='\033[0;35m'
-    _WHITE='\033[1;37m'
-    _BOLD='\033[1m'
-    _DIM='\033[2m'
-    _RESET='\033[0m'
+    _ESC="$(printf '\033')"
+    _RED="${_ESC}[0;31m"
+    _GREEN="${_ESC}[0;32m"
+    _YELLOW="${_ESC}[1;33m"
+    _BLUE="${_ESC}[0;34m"
+    _CYAN="${_ESC}[0;36m"
+    _MAGENTA="${_ESC}[0;35m"
+    _WHITE="${_ESC}[1;37m"
+    _BOLD="${_ESC}[1m"
+    _DIM="${_ESC}[2m"
+    _RESET="${_ESC}[0m"
 else
     _RED='' _GREEN='' _YELLOW='' _BLUE='' _CYAN='' _MAGENTA=''
     _WHITE='' _BOLD='' _DIM='' _RESET=''

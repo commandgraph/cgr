@@ -703,6 +703,7 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
     reduce_var: str|None = None
     flags: list[tuple[str, str|None]] = []
     until: str|None = None
+    interactive: bool = False
     # Provisioning fields (Phase 2)
     prov_block_dest: str|None = None; prov_block_marker: str|None = None
     prov_block_inline: str|None = None; prov_block_from: str|None = None
@@ -1331,6 +1332,11 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
             tags.extend(t.strip() for t in tags_m.group(1).split(",") if t.strip())
             i += 1; continue
 
+        # interactive  — force PTY + stdin forwarding
+        if btext.strip() == "interactive":
+            interactive = True
+            i += 1; continue
+
         # description "text" (for templates)
         desc_m = re.match(r'description\s+"([^"]*)"', btext)
         if desc_m:
@@ -1391,7 +1397,8 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         retry_backoff_max=retry_backoff_max, retry_jitter_pct=retry_jitter_pct,
         on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
         collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var,
-        flags=list(flags), env_when=dict(env_when), until=until)
+        flags=list(flags), env_when=dict(env_when), until=until,
+        interactive=interactive)
 
 
 def _parse_cgr_verify(desc: str, body: list, ln: int, err) -> ASTResource:

@@ -1704,7 +1704,29 @@ class TestExecution:
     def test_command_reads_tty_detection(self):
         assert cg._command_reads_tty("read -rp 'Username: ' user < /dev/tty")
         assert cg._command_reads_tty("printf prompt; read password")
+        assert cg._command_reads_tty("ssh-copy-id -i ~/.ssh/id_ed25519.pub user@example")
         assert not cg._command_reads_tty("printf 'alpha\\n' | wc -l")
+
+    def test_interactive_attribute_parsed(self):
+        src = textwrap.dedent('''\
+            target "local" local:
+              [prompt user]:
+                run $ passwd testuser
+                interactive
+        ''')
+        ast = cg.parse_cgr(src)
+        r = ast.nodes[0].resources[0]
+        assert r.interactive is True
+
+    def test_interactive_attribute_defaults_false(self):
+        src = textwrap.dedent('''\
+            target "local" local:
+              [do thing]:
+                run $ echo hello
+        ''')
+        ast = cg.parse_cgr(src)
+        r = ast.nodes[0].resources[0]
+        assert r.interactive is False
 
     def test_exec_resource_cancel_check_terminates_process(self, tmp_path):
         marker = tmp_path / "cancelled.txt"

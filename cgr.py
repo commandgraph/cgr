@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 7552dd5cc357d5e1
+# Built from source hash: fa73ee5233e1cc9f
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -212,6 +212,7 @@ class ASTResource:
     # Backoff/jitter fields (for retry Nx backoff Xs syntax)
     retry_backoff_max: int = 0   # cap in seconds (0 = no cap)
     retry_jitter_pct: int = 0    # jitter percentage (0 = none)
+    interactive: bool = False    # force terminal-interactive mode (PTY + stdin forwarding)
     # On-success/failure variable bindings
     on_success_set: list[tuple] = field(default_factory=list)  # [(var, val), ...]
     on_failure_set: list[tuple] = field(default_factory=list)
@@ -607,7 +608,7 @@ class Parser:
         desc=""; needs=[]; check=None; run_cmd=None; script_path=None; run_as=d.get("as")
         timeout=d.get("timeout",300); retries=0; retry_delay=5; retry_backoff=False
         timeout_reset_on_output=d.get("timeout_reset_on_output", False)
-        on_fail=d.get("on_fail","stop"); when=None; env={}; env_when={}; children=[]; flags=[]; until=None
+        on_fail=d.get("on_fail","stop"); when=None; env={}; env_when={}; children=[]; flags=[]; until=None; interactive=False
         collect_key=None
         collect_format=None
         collect_var=None
@@ -741,6 +742,8 @@ class Parser:
             elif s.value=="from":
                 self._advance()
                 subgraph_path=self._expect(TT.STRING).value
+            elif s.value=="interactive":
+                self._advance(); interactive=True
             # ── Parallel constructs ──────────────────────────────────────
             elif s.value=="parallel":
                 plimit, ppolicy, pchildren = self._p_parallel(group_defaults)
@@ -761,7 +764,7 @@ class Parser:
                 subgraph_vars[arg_name] = arg_value.value
             else:
                 raise self._err(f"Unknown '{s.value}' in resource",
-                    "Valid: description, needs, check, run, script, as, timeout, retry, on_fail, on_success, on_failure, when, env, collect, reduce, flag, until, wait, from, tags, resource, parallel, race, each, stage, get, post, put, patch, delete, auth, header, body, expect")
+                    "Valid: description, needs, check, run, script, as, timeout, retry, on_fail, on_success, on_failure, when, env, collect, reduce, flag, until, wait, from, tags, interactive, resource, parallel, race, each, stage, get, post, put, patch, delete, auth, header, body, expect")
         if flags and not run_cmd:
             raise self._err("'flag' requires a 'run' command in the same step")
         if until and retries <= 0:
@@ -779,7 +782,8 @@ class Parser:
             wait_kind=wait_kind, wait_target=wait_target,
             subgraph_path=subgraph_path, subgraph_vars=dict(subgraph_vars),
             on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
-            collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var)
+            collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var,
+            interactive=interactive)
         # Attach optional fields if parsed
         if 'tags' in dir(): res.tags = tags
         if 'parallel_block' in dir(): res.parallel_block = parallel_block; res.parallel_limit = parallel_limit; res.parallel_fail_policy = parallel_fail_policy
@@ -1694,6 +1698,7 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
     reduce_var: str|None = None
     flags: list[tuple[str, str|None]] = []
     until: str|None = None
+    interactive: bool = False
     # Provisioning fields (Phase 2)
     prov_block_dest: str|None = None; prov_block_marker: str|None = None
     prov_block_inline: str|None = None; prov_block_from: str|None = None
@@ -2322,6 +2327,11 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
             tags.extend(t.strip() for t in tags_m.group(1).split(",") if t.strip())
             i += 1; continue
 
+        # interactive  — force PTY + stdin forwarding
+        if btext.strip() == "interactive":
+            interactive = True
+            i += 1; continue
+
         # description "text" (for templates)
         desc_m = re.match(r'description\s+"([^"]*)"', btext)
         if desc_m:
@@ -2382,7 +2392,8 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         retry_backoff_max=retry_backoff_max, retry_jitter_pct=retry_jitter_pct,
         on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
         collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var,
-        flags=list(flags), env_when=dict(env_when), until=until)
+        flags=list(flags), env_when=dict(env_when), until=until,
+        interactive=interactive)
 
 
 def _parse_cgr_verify(desc: str, body: list, ln: int, err) -> ASTResource:
@@ -2865,6 +2876,7 @@ class Resource:
     env_when: dict[str, str] = field(default_factory=dict)
     until: str|None = None
     cgr_phase_name: str|None = None  # name of the phase "..." when "...": block this resource belongs to
+    interactive: bool = False        # force terminal-interactive mode (PTY + stdin forwarding)
 
 @dataclass
 class HostNode:
@@ -3475,6 +3487,7 @@ def _flatten_ast_resource(
         reduce_key=ast_res.reduce_key, reduce_var=ast_res.reduce_var,
         flags=resolved_flags, env_when=dict(ast_res.env_when), until=ast_res.until,
         cgr_phase_name=ast_res.cgr_phase_name,
+        interactive=ast_res.interactive,
     )
     collector[rid] = res
     dedup_hashes[ihash] = rid
@@ -4205,6 +4218,7 @@ def _command_reads_tty(cmd) -> bool:
         return False
     return bool(
         "/dev/tty" in cmd
+        or "ssh-copy-id" in cmd
         or re.search(r"(^|[;&|({]\s*)read\s+(-[A-Za-z]*\s+)?", cmd)
     )
 
@@ -4247,14 +4261,11 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
         interactive_tty = (
             node.via_method != "ssh"
             and stdin_data is None
-            and _command_reads_tty(full)
+            and (res.interactive or _command_reads_tty(full))
             and sys.stdin and sys.stdin.isatty()
             and sys.stdout and sys.stdout.isatty()
         )
         use_pty = bool(on_output) or interactive_tty
-        if (not use_pty and node.via_method != "ssh" and stdin_data is None
-                and isinstance(full, str) and "ssh-copy-id" in full and sys.stdin and sys.stdin.isatty()):
-            use_pty = True
         if use_pty:
             master_fd, slave_fd = pty.openpty()
             echo_pty = on_output is None
@@ -5709,7 +5720,7 @@ def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False, webh
                 command_needs_terminal = (
                     live_progress.enabled
                     and node.via_method != "ssh"
-                    and _command_reads_tty(_effective_run_cmd(runtime_res, graph.graph_file))
+                    and (res.interactive or _command_reads_tty(_effective_run_cmd(runtime_res, graph.graph_file)))
                     and sys.stdin and sys.stdin.isatty()
                     and sys.stdout and sys.stdout.isatty()
                 )

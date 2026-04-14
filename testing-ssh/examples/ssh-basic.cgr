@@ -7,31 +7,47 @@ target "webserver" ssh ${deploy_user}@${target_host}:
 
   [create app directory] as root:
     skip if $ test -d /opt/myapp
-    run    $ mkdir -p /opt/myapp && chown deploy:deploy /opt/myapp
+    run:
+      mkdir -p /opt/myapp
+      chown deploy:deploy /opt/myapp
 
   [write config]:
     first [create app directory]
     skip if $ test -f /opt/myapp/app.conf
-    run    $ printf 'port=8080\nworkers=4\nlog_level=info\nenvironment=production\n' > /opt/myapp/app.conf
+    content > /opt/myapp/app.conf:
+      port=8080
+      workers=4
+      log_level=info
+      environment=production
 
   [write binary]:
     first [create app directory]
     skip if $ test -f /opt/myapp/server
-    run    $ printf '#!/bin/bash\necho "myapp running on $(hostname) port $(grep port /opt/myapp/app.conf | cut -d= -f2)"' > /opt/myapp/server && chmod +x /opt/myapp/server
+    run:
+      printf '#!/bin/bash\necho "myapp running on $(hostname) port $(grep port /opt/myapp/app.conf | cut -d= -f2)"\n' > /opt/myapp/server
+      chmod +x /opt/myapp/server
 
   [create log dir] as root:
     skip if $ test -d /var/log/myapp
-    run    $ mkdir -p /var/log/myapp && chown deploy:deploy /var/log/myapp
+    run:
+      mkdir -p /var/log/myapp
+      chown deploy:deploy /var/log/myapp
 
   [create systemd unit] as root:
     first [write binary], [write config]
     skip if $ test -f /etc/myapp.service
-    run    $ printf '[Unit]\nDescription=MyApp\n[Service]\nExecStart=/opt/myapp/server\nUser=deploy\n' > /etc/myapp.service
+    content > /etc/myapp.service:
+      [Unit]
+      Description=MyApp
+
+      [Service]
+      ExecStart=/opt/myapp/server
+      User=deploy
 
   [start app]:
     first [create systemd unit], [create log dir]
     skip if $ test -f /var/log/myapp/started
-    run    $ /opt/myapp/server > /var/log/myapp/started 2>&1
+    run $ /opt/myapp/server > /var/log/myapp/started 2>&1
 
   verify "app is deployed":
     first [start app]

@@ -76,6 +76,7 @@ class ASTResource:
     # Backoff/jitter fields (for retry Nx backoff Xs syntax)
     retry_backoff_max: int = 0   # cap in seconds (0 = no cap)
     retry_jitter_pct: int = 0    # jitter percentage (0 = none)
+    interactive: bool = False    # force terminal-interactive mode (PTY + stdin forwarding)
     # On-success/failure variable bindings
     on_success_set: list[tuple] = field(default_factory=list)  # [(var, val), ...]
     on_failure_set: list[tuple] = field(default_factory=list)

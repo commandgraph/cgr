@@ -219,6 +219,7 @@ Written inline on the step header line, comma-separated:
 | `retry Nx backoff Xs..Ys jitter Z%` | `retry 3x backoff 30s..300s jitter 10%` | backoff with ±10% jitter |
 | `until "VALUE"` | `until "0"` | disabled |
 | `if fails stop\|warn\|ignore` | `if fails warn` | stop |
+| `interactive` | (bare keyword) | disabled |
 
 `timeout` is a hard execution deadline by default. If you add `reset on output`, it becomes an inactivity timeout instead: every new stdout or stderr chunk from the running command resets the timer.
 
@@ -230,6 +231,18 @@ Example:
 ```
 
 This step can run longer than 30 seconds overall as long as it keeps producing CLI output at least once every 30 seconds. If output stops for 30 seconds, the step times out.
+
+### The `interactive` keyword — terminal-interactive steps
+
+The engine automatically detects steps that read from the terminal (`read`, `/dev/tty`, `ssh-copy-id`) and suspends live-progress rendering while they own the terminal. For commands the heuristic cannot detect, add the `interactive` keyword to the step body:
+
+```cgr
+[set password]:
+  run $ passwd deploy_user
+  interactive
+```
+
+This forces PTY allocation and stdin forwarding regardless of the command name. Use it for tools like `passwd`, `kinit`, `gpg --gen-key`, or any other utility that opens the terminal directly.
 
 ### The `first` keyword — why not `after`?
 
@@ -1129,6 +1142,7 @@ resource install_nginx {
 | `on_fail` | No | `stop` | What to do on failure: `stop` (abort the graph), `warn` (continue, mark as warned), `ignore` (treat as success). |
 | `when` | No | `null` | Quoted boolean expression. If false, the resource is skipped. Supports `==` and `!=`. |
 | `env` | No | `{}` | Set environment variables. Syntax: `env KEY = "value"`. Repeatable. |
+| `interactive` | No | `false` | Force terminal-interactive mode (PTY + stdin forwarding). Use for commands like `passwd`, `kinit`, or any tool that reads directly from the terminal. The engine auto-detects common patterns (`read`, `/dev/tty`, `ssh-copy-id`); use this keyword for others. |
 
 ### Command delimiters
 

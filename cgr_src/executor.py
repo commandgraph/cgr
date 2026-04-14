@@ -200,6 +200,7 @@ def _command_reads_tty(cmd) -> bool:
         return False
     return bool(
         "/dev/tty" in cmd
+        or "ssh-copy-id" in cmd
         or re.search(r"(^|[;&|({]\s*)read\s+(-[A-Za-z]*\s+)?", cmd)
     )
 
@@ -242,14 +243,11 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
         interactive_tty = (
             node.via_method != "ssh"
             and stdin_data is None
-            and _command_reads_tty(full)
+            and (res.interactive or _command_reads_tty(full))
             and sys.stdin and sys.stdin.isatty()
             and sys.stdout and sys.stdout.isatty()
         )
         use_pty = bool(on_output) or interactive_tty
-        if (not use_pty and node.via_method != "ssh" and stdin_data is None
-                and isinstance(full, str) and "ssh-copy-id" in full and sys.stdin and sys.stdin.isatty()):
-            use_pty = True
         if use_pty:
             master_fd, slave_fd = pty.openpty()
             echo_pty = on_output is None
@@ -1704,7 +1702,7 @@ def cmd_apply(graph, *, dry_run=False, max_parallel=4, progress_mode=False, webh
                 command_needs_terminal = (
                     live_progress.enabled
                     and node.via_method != "ssh"
-                    and _command_reads_tty(_effective_run_cmd(runtime_res, graph.graph_file))
+                    and (res.interactive or _command_reads_tty(_effective_run_cmd(runtime_res, graph.graph_file)))
                     and sys.stdin and sys.stdin.isatty()
                     and sys.stdout and sys.stdout.isatty()
                 )

@@ -268,6 +268,7 @@ class Resource:
     env_when: dict[str, str] = field(default_factory=dict)
     until: str|None = None
     cgr_phase_name: str|None = None  # name of the phase "..." when "...": block this resource belongs to
+    interactive: bool = False        # force terminal-interactive mode (PTY + stdin forwarding)
 
 @dataclass
 class HostNode:
@@ -878,6 +879,7 @@ def _flatten_ast_resource(
         reduce_key=ast_res.reduce_key, reduce_var=ast_res.reduce_var,
         flags=resolved_flags, env_when=dict(ast_res.env_when), until=ast_res.until,
         cgr_phase_name=ast_res.cgr_phase_name,
+        interactive=ast_res.interactive,
     )
     collector[rid] = res
     dedup_hashes[ihash] = rid

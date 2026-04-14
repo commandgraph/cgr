@@ -307,7 +307,7 @@ class Parser:
         desc=""; needs=[]; check=None; run_cmd=None; script_path=None; run_as=d.get("as")
         timeout=d.get("timeout",300); retries=0; retry_delay=5; retry_backoff=False
         timeout_reset_on_output=d.get("timeout_reset_on_output", False)
-        on_fail=d.get("on_fail","stop"); when=None; env={}; env_when={}; children=[]; flags=[]; until=None
+        on_fail=d.get("on_fail","stop"); when=None; env={}; env_when={}; children=[]; flags=[]; until=None; interactive=False
         collect_key=None
         collect_format=None
         collect_var=None
@@ -441,6 +441,8 @@ class Parser:
             elif s.value=="from":
                 self._advance()
                 subgraph_path=self._expect(TT.STRING).value
+            elif s.value=="interactive":
+                self._advance(); interactive=True
             # ── Parallel constructs ──────────────────────────────────────
             elif s.value=="parallel":
                 plimit, ppolicy, pchildren = self._p_parallel(group_defaults)
@@ -461,7 +463,7 @@ class Parser:
                 subgraph_vars[arg_name] = arg_value.value
             else:
                 raise self._err(f"Unknown '{s.value}' in resource",
-                    "Valid: description, needs, check, run, script, as, timeout, retry, on_fail, on_success, on_failure, when, env, collect, reduce, flag, until, wait, from, tags, resource, parallel, race, each, stage, get, post, put, patch, delete, auth, header, body, expect")
+                    "Valid: description, needs, check, run, script, as, timeout, retry, on_fail, on_success, on_failure, when, env, collect, reduce, flag, until, wait, from, tags, interactive, resource, parallel, race, each, stage, get, post, put, patch, delete, auth, header, body, expect")
         if flags and not run_cmd:
             raise self._err("'flag' requires a 'run' command in the same step")
         if until and retries <= 0:
@@ -479,7 +481,8 @@ class Parser:
             wait_kind=wait_kind, wait_target=wait_target,
             subgraph_path=subgraph_path, subgraph_vars=dict(subgraph_vars),
             on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
-            collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var)
+            collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var,
+            interactive=interactive)
         # Attach optional fields if parsed
         if 'tags' in dir(): res.tags = tags
         if 'parallel_block' in dir(): res.parallel_block = parallel_block; res.parallel_limit = parallel_limit; res.parallel_fail_policy = parallel_fail_policy
