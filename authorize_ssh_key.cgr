@@ -1,19 +1,18 @@
---- revoke local SSH key from remote hosts ---
+--- authorize local SSH key on remote hosts ---
 #
-# Removes your local public key from each host's ~/.ssh/authorized_keys,
-# then verifies that key-based login no longer works (BatchMode=yes refused).
+# Copies your local public key to each host using ssh-copy-id.
 # Each host gets its own step with independent skip-if and state tracking.
+# Prompts are sequential (1 at a time) so they never collide.
 #
 # Usage:
-#   cgr apply revoke_ssh_key.cgr --set hosts="192.168.1.10,192.168.1.11"
-#   cgr apply revoke_ssh_key.cgr --set hosts="web01,web02,db01" --set ssh_user=admin
-#   cgr apply revoke_ssh_key.cgr --set hosts="host1" --set ssh_port=2222
+#   cgr apply authorize_ssh_key.cgr --set hosts="192.168.1.10,192.168.1.11"
+#   cgr apply authorize_ssh_key.cgr --set hosts="web01,web02,db01" --set ssh_user=admin
+#   cgr apply authorize_ssh_key.cgr --set hosts="host1" --set ssh_port=2222
 #
 # Variables:
 #   hosts     — comma-separated list of hostnames or IPs (required)
 #   ssh_user  — remote user (default: $USER from environment)
 #   ssh_port  — SSH port (default: 22)
-
 
 set hosts    = "192.168.1.10,192.168.1.11,192.168.1.12"
 set ssh_user = env("USER", "ubuntu")
@@ -22,46 +21,42 @@ set ssh_port = "22"
 target "local" local:
 
   [check prerequisites]:
-    run    $ key="$HOME/.ssh/id_ed25519.pub"; \
+    run    $ missing=""; \
+             command -v ssh-copy-id > /dev/null 2>&1 || missing="$missing ssh-copy-id"; \
+             command -v ssh-keyscan > /dev/null 2>&1 || missing="$missing ssh-keyscan"; \
+             [ -z "$missing" ] || { echo "Missing tools:$missing  (install openssh-client)"; exit 1; }; \
+             key="$HOME/.ssh/id_ed25519.pub"; \
              test -f "$key" || key="$HOME/.ssh/id_rsa.pub"; \
-             test -f "$key" || { echo "No public key found in ~/.ssh/. Nothing to revoke."; exit 1; }; \
+             test -f "$key" || { echo "No public key found in ~/.ssh/. Run: ssh-keygen"; exit 1; }; \
              echo "Key: $(awk '{print $1, substr($2,1,16)"...", $3}' "$key")"
     timeout 5s
 
-  [revoke hosts]:
+  [authorize hosts]:
     first  [check prerequisites]
-    # 1 at a time so output stays readable
+    # 1 at a time: interactive password prompts must not run concurrently
     each host in ${hosts}, 1 at a time:
 
       [${host}]:
-        # Skip if key-based auth already fails — key is already gone
-        skip if $ ! ssh -o BatchMode=yes \
-                        -o ConnectTimeout=5 \
-                        -o StrictHostKeyChecking=no \
-                        -p ${ssh_port} \
-                        "${ssh_user}@${host}" true 2>/dev/null
+        skip if $ ssh -o BatchMode=yes \
+                      -o ConnectTimeout=5 \
+                      -o StrictHostKeyChecking=no \
+                      -p ${ssh_port} \
+                      "${ssh_user}@${host}" true 2>/dev/null
         run    $ key="$HOME/.ssh/id_ed25519.pub"; \
                  test -f "$key" || key="$HOME/.ssh/id_rsa.pub"; \
-                 keydata=$(awk '{print $1" "$2}' "$key"); \
-                 ssh -o BatchMode=yes \
-                     -o StrictHostKeyChecking=no \
-                     -p ${ssh_port} \
-                     "${ssh_user}@${host}" \
-                     "grep -vF \"$keydata\" ~/.ssh/authorized_keys > /tmp/.ak_tmp \
-                      && mv /tmp/.ak_tmp ~/.ssh/authorized_keys \
-                      && chmod 600 ~/.ssh/authorized_keys \
-                      && echo \"Key removed from ${host}\""
-        timeout 30s
+                 ssh-keyscan -p ${ssh_port} -H "${host}" >> "$HOME/.ssh/known_hosts" 2>/dev/null; \
+                 ssh-copy-id -i "$key" -p ${ssh_port} "${ssh_user}@${host}"
+        timeout 60s
 
   [verify all hosts]:
-    first  [revoke hosts]
-    # Confirm in parallel that key-based auth is now rejected on every host
+    first  [authorize hosts]
+    # Run verification in parallel — no interaction needed
     each host in ${hosts}:
 
       [${host}]:
-        run    $ ! ssh -o BatchMode=yes \
-                       -o ConnectTimeout=10 \
-                       -p ${ssh_port} \
-                       "${ssh_user}@${host}" \
-                       true 2>/dev/null && echo "REVOKED: ${host}"
+        run    $ ssh -o BatchMode=yes \
+                     -o ConnectTimeout=10 \
+                     -p ${ssh_port} \
+                     "${ssh_user}@${host}" \
+                     echo "OK ${host}"
         timeout 15s
