@@ -4599,6 +4599,25 @@ class TestMultilineRunBlock:
         res = g.all_resources["t.step"]
         assert res.run == "mkdir -p /foo && cp bar /foo && chmod 755 /foo"
 
+    def test_run_block_preserves_backslash_continuations(self):
+        """run: block does not insert '&&' inside shell backslash continuations."""
+        src = textwrap.dedent(r"""
+            target "t" local:
+              [step]:
+                run:
+                  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                    -keyout /etc/nginx/certs/vnc.key \
+                    -out /etc/nginx/certs/vnc.crt \
+                    -subj "/CN=$(hostname).local"
+                  chmod 600 /etc/nginx/certs/vnc.key
+        """)
+        g = _resolve_cgr(src)
+        res = g.all_resources["t.step"]
+        assert "rsa:2048 \\\n-keyout" in res.run
+        assert "vnc.crt \\\n-subj" in res.run
+        assert "local\" && chmod 600" in res.run
+        assert "\\ &&" not in res.run
+
     def test_run_block_single_line(self):
         """run: block with one line produces that line verbatim (no &&)."""
         src = textwrap.dedent("""\
@@ -4983,6 +5002,25 @@ class TestProvisioningExecution:
         result = cg.exec_resource(res, self._local_node())
         assert result.status == cg.Status.SUCCESS
         assert Path(dest).read_text() == "# comment\nvalue = keep # hash\n"
+
+    def test_content_inline_as_root_uses_privileged_runner(self, tmp_path, monkeypatch):
+        dest = str(tmp_path / "root.conf")
+        calls = []
+
+        def fake_run_cmd(cmd, node, res, **kwargs):
+            calls.append(cmd)
+            return 0, "", ""
+
+        monkeypatch.setattr(cg, "_run_cmd", fake_run_cmd)
+        res = self._prov_resource(
+            prov_content_inline="key = value",
+            prov_dest=dest,
+            run_as="root",
+        )
+        result = cg.exec_resource(res, self._local_node())
+        assert result.status == cg.Status.SUCCESS
+        assert calls
+        assert any("base64 -d" in cmd and ".cgr_tmp" in cmd for cmd in calls)
 
     def test_content_inline_atomic_write(self, tmp_path):
         dest = str(tmp_path / "test.conf")

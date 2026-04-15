@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 328ef7ffa86290da
+# Built from source hash: e7182974fad83c04
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -28,6 +28,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any
 
+# Engine release version. Update through the process in RELEASE.md.
 __version__ = "0.6.0"
 
 def _duration_to_secs(value: int, suffix) -> int:
@@ -1622,6 +1623,21 @@ def _is_cgr_keyword(s: str) -> bool:
     return False
 
 
+def _join_cgr_command_block(lines: list[str]) -> str:
+    """Join run: block lines with fail-fast separators, preserving shell continuations."""
+    commands: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        current.append(line)
+        if line.endswith("\\"):
+            continue
+        commands.append("\n".join(current))
+        current = []
+    if current:
+        commands.append("\n".join(current))
+    return " && ".join(commands)
+
+
 def _parse_cgr_step_line(text: str):
     """Parse either a block step header or a one-line step body."""
     block_m = re.match(r'\[([^\]]+)\](.*):\s*$', text)
@@ -1773,7 +1789,7 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                 cmd_lines.append(body[j][2]); j += 1
             if not cmd_lines:
                 raise err(f"Step [{name}] has an empty 'always run:' block", ln)
-            run_cmd = " && ".join(cmd_lines); always_run = True
+            run_cmd = _join_cgr_command_block(cmd_lines); always_run = True
             i = j; continue
 
         # always run $ command
@@ -1853,7 +1869,7 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                 cmd_lines.append(body[j][2]); j += 1
             if not cmd_lines:
                 raise err(f"Step [{name}] has an empty 'run:' block", ln)
-            run_cmd = " && ".join(cmd_lines)
+            run_cmd = _join_cgr_command_block(cmd_lines)
             i = j; continue
 
         # run $ command
@@ -4856,14 +4872,32 @@ def _exec_http_ssh(res, node):
     else:
         return 1, body, f"HTTP {status_code} (expected {res.http_expect or '2xx'})"
 
-def _exec_prov_local(res, graph_file=None):
+def _exec_prov_local(res, node, graph_file=None):
     """Execute provisioning operations locally. Returns (rc, stdout, stderr)."""
+    import base64
     import shutil
     backups: list[tuple[str, str]] = []  # (backup_path, original_dest)
     messages: list[str] = []
 
+    def _uses_run_as() -> bool:
+        return bool(res.run_as and res.run_as != os.getenv("USER", "root"))
+
+    def _local_run(cmd: str) -> tuple[int, str, str]:
+        return _run_cmd(cmd, node, res, timeout=res.timeout)
+
     def _backup(dest: str) -> str|None:
         """Backup dest to dest.cgr_bak if it exists. Returns backup path or None."""
+        if _uses_run_as():
+            bak = dest + ".cgr_bak"
+            cmd = (
+                f"if test -e {_sq(dest)}; then "
+                f"cp -p {_sq(dest)} {_sq(bak)} && printf %s {_sq(bak)}; "
+                f"fi"
+            )
+            rc, out, err = _local_run(cmd)
+            if rc != 0:
+                raise OSError(f"backup failed for {dest}: {err}")
+            return out.strip() or None
         if os.path.exists(dest):
             bak = dest + ".cgr_bak"
             shutil.copy2(dest, bak)
@@ -4872,6 +4906,19 @@ def _exec_prov_local(res, graph_file=None):
 
     def _atomic_write(dest: str, content: str) -> None:
         """Write content to dest atomically via a temp file."""
+        if _uses_run_as():
+            encoded = base64.b64encode(content.encode()).decode()
+            dir_cmd = f"mkdir -p {_sq(os.path.dirname(dest))}" if os.path.dirname(dest) else "true"
+            tmp = dest + ".cgr_tmp"
+            cmd = (
+                f"{dir_cmd} && "
+                f"printf %s {_sq(encoded)} | base64 -d > {_sq(tmp)} && "
+                f"mv {_sq(tmp)} {_sq(dest)}"
+            )
+            rc, _, err = _local_run(cmd)
+            if rc != 0:
+                raise OSError(f"write failed for {dest}: {err}")
+            return
         os.makedirs(os.path.dirname(dest) if os.path.dirname(dest) else ".", exist_ok=True)
         tmp = dest + ".cgr_tmp"
         with open(tmp, "w") as f:
@@ -4881,7 +4928,9 @@ def _exec_prov_local(res, graph_file=None):
     def _revert_all() -> None:
         """Restore all backed-up files."""
         for bak, dest in reversed(backups):
-            if bak and os.path.exists(bak):
+            if _uses_run_as():
+                _local_run(f"test -f {_sq(bak)} && mv {_sq(bak)} {_sq(dest)} || true")
+            elif bak and os.path.exists(bak):
                 try:
                     os.replace(bak, dest)
                 except OSError:
@@ -4891,9 +4940,8 @@ def _exec_prov_local(res, graph_file=None):
         # ── assert keyword (run before any writes) ─────────────────────────
         if res.prov_asserts:
             for cmd, msg in res.prov_asserts:
-                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                                      timeout=min(res.timeout, 30), env={**os.environ, **res.env})
-                if proc.returncode != 0:
+                rc, _, err = _local_run(cmd)
+                if rc != 0:
                     return 1, "", msg or f"assertion failed: {cmd}"
 
         # ── content keyword ────────────────────────────────────────────────
@@ -5135,18 +5183,17 @@ def _exec_prov_local(res, graph_file=None):
 
         # ── validate keyword ───────────────────────────────────────────────
         if res.prov_validate:
-            proc = subprocess.run(
-                res.prov_validate, shell=True, capture_output=True, text=True,
-                timeout=min(res.timeout, 60), env={**os.environ, **res.env}
-            )
-            if proc.returncode != 0:
+            rc, vout, verr = _local_run(res.prov_validate)
+            if rc != 0:
                 _revert_all()
-                return 1, proc.stdout, f"validate failed (reverted): {proc.stderr}"
+                return 1, vout, f"validate failed (reverted): {verr}"
             messages.append("validate ok")
 
         # ── clean up backups ───────────────────────────────────────────────
         for bak, _ in backups:
-            if bak and os.path.exists(bak):
+            if _uses_run_as():
+                _local_run(f"rm -f {_sq(bak)} 2>/dev/null || true")
+            elif bak and os.path.exists(bak):
                 try: os.unlink(bak)
                 except OSError: pass
 
@@ -5626,7 +5673,7 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
             if node.via_method == "ssh":
                 lr,lo,le=_exec_prov_ssh(res, node, graph_file=graph_file)
             else:
-                lr,lo,le=_exec_prov_local(res, graph_file=graph_file)
+                lr,lo,le=_exec_prov_local(res, node, graph_file=graph_file)
             # If provisioning succeeded and there's also a run command, execute it
             has_real_run = bool(effective_run_cmd) and not effective_run_cmd.startswith("__prov__ ")
             if lr == 0 and has_real_run:

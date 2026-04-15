@@ -10,6 +10,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any
 
+# Engine release version. Update through the process in RELEASE.md.
 __version__ = "0.6.0"
 
 def _duration_to_secs(value: int, suffix) -> int:

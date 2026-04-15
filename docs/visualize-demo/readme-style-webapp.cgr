@@ -1,0 +1,38 @@
+--- README-style web app rollout ---
+
+target "demo" local:
+
+  [install nginx]:
+    skip if $ test -x /tmp/cgr-pages-demo/bin/nginx
+    run    $ mkdir -p /tmp/cgr-pages-demo/bin && printf '#!/bin/sh\nexit 0\n' > /tmp/cgr-pages-demo/bin/nginx && chmod +x /tmp/cgr-pages-demo/bin/nginx
+
+  [write site config]:
+    first [install nginx]
+    content > /tmp/cgr-pages-demo/nginx.conf:
+      server {
+          listen 8080;
+          server_name demo.local;
+          root /tmp/cgr-pages-demo/www;
+          index index.html;
+          location / { try_files $uri $uri/ =404; }
+      }
+    validate $ /tmp/cgr-pages-demo/bin/nginx -t
+
+  [enable site]:
+    first [write site config]
+    skip if $ test -L /tmp/cgr-pages-demo/sites-enabled/myapp
+    run    $ mkdir -p /tmp/cgr-pages-demo/sites-enabled && ln -sf /tmp/cgr-pages-demo/nginx.conf /tmp/cgr-pages-demo/sites-enabled/myapp
+
+  [deploy code]:
+    first [install nginx]
+    skip if $ test -f /tmp/cgr-pages-demo/www/index.html
+    run    $ mkdir -p /tmp/cgr-pages-demo/www && printf '<h1>Hello from CommandGraph</h1>\n' > /tmp/cgr-pages-demo/www/index.html
+
+  [start nginx]:
+    first [enable site], [deploy code]
+    run $ printf 'nginx would reload here\n'
+
+  verify "site is live":
+    first [start nginx]
+    run $ test -f /tmp/cgr-pages-demo/www/index.html
+    retry 3x wait 2s

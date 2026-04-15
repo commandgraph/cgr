@@ -627,6 +627,21 @@ def _is_cgr_keyword(s: str) -> bool:
     return False
 
 
+def _join_cgr_command_block(lines: list[str]) -> str:
+    """Join run: block lines with fail-fast separators, preserving shell continuations."""
+    commands: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        current.append(line)
+        if line.endswith("\\"):
+            continue
+        commands.append("\n".join(current))
+        current = []
+    if current:
+        commands.append("\n".join(current))
+    return " && ".join(commands)
+
+
 def _parse_cgr_step_line(text: str):
     """Parse either a block step header or a one-line step body."""
     block_m = re.match(r'\[([^\]]+)\](.*):\s*$', text)
@@ -778,7 +793,7 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                 cmd_lines.append(body[j][2]); j += 1
             if not cmd_lines:
                 raise err(f"Step [{name}] has an empty 'always run:' block", ln)
-            run_cmd = " && ".join(cmd_lines); always_run = True
+            run_cmd = _join_cgr_command_block(cmd_lines); always_run = True
             i = j; continue
 
         # always run $ command
@@ -858,7 +873,7 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
                 cmd_lines.append(body[j][2]); j += 1
             if not cmd_lines:
                 raise err(f"Step [{name}] has an empty 'run:' block", ln)
-            run_cmd = " && ".join(cmd_lines)
+            run_cmd = _join_cgr_command_block(cmd_lines)
             i = j; continue
 
         # run $ command

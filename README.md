@@ -652,6 +652,7 @@ cd testing-ssh/ && ./run-ssh-demos.sh          # 5 SSH demos
 | [MANUAL.md](MANUAL.md) | Reference | Complete syntax for `.cgr` and `.cg` |
 | [COMMANDGRAPH_SPEC.md](COMMANDGRAPH_SPEC.md) | Code generators | Formal PEG grammar |
 | [AGENTS.md](AGENTS.md) | Contributors | Architecture, internals, and build workflow |
+| [RELEASE.md](RELEASE.md) | Maintainers | Version policy, release checklist, and installer version behavior |
 
 ---
 
@@ -660,9 +661,9 @@ cd testing-ssh/ && ./run-ssh-demos.sh          # 5 SSH demos
 The release artifact is a single `cgr.py`. Development happens in `cgr_src/`, with `cgr_dev.py` as the thin dev entrypoint. Rebuild after changing source modules, `ide.html`, or `visualize_template.py`:
 
 ```bash
-python3 cgr_dev.py apply build.cgr
+python3 cgr_dev.py apply build.cgr --no-resume
 ```
 
-See [AGENTS.md](AGENTS.md) for the full build workflow and [MODULE_MAP.md](MODULE_MAP.md) for the quick reference on where parser, resolver, executor, state, IDE, and CLI changes live.
+The engine version is maintained manually in `cgr_src/common.py`. See [RELEASE.md](RELEASE.md) for the formal version bump and release process, [AGENTS.md](AGENTS.md) for the full build workflow, and [MODULE_MAP.md](MODULE_MAP.md) for the quick reference on where parser, resolver, executor, state, IDE, and CLI changes live.
 
 ---

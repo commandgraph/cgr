@@ -539,6 +539,42 @@ do_uninstall() {
     remove_installer_path_entries
 }
 
+print_remaining_data_notice() {
+    section "Remaining cgr data"
+
+    find_path_cgrs
+    if [ "${#CGR_PATH_CANDIDATES[@]}" -gt 0 ]; then
+        warn "Other cgr commands are still reachable in PATH:"
+        local path
+        for path in "${CGR_PATH_CANDIDATES[@]}"; do
+            dim "$path"
+        done
+    else
+        ok "No other cgr command is currently reachable in PATH"
+    fi
+
+    nl
+    dim "The uninstaller only removes the selected binary, optional default repo, and installer-added PATH entries."
+    dim "It does not scan or delete graph project data."
+    nl
+
+    if [ -d "${HOME}/.cgr/repo" ]; then
+        warn "Default stdlib repo still exists: ${HOME}/.cgr/repo"
+    fi
+    if [ -d "${HOME}/.cgr" ]; then
+        warn "CommandGraph home still exists: ${HOME}/.cgr"
+    fi
+    if [ -d "${SCRIPT_DIR}/.state" ]; then
+        warn "State directory exists in this checkout: ${SCRIPT_DIR}/.state"
+    fi
+
+    dim "Other possible locations:"
+    dim "- Custom template repos passed with --repo"
+    dim "- Per-graph state directories named .state/ in graph workspaces"
+    dim "- Saved reports, DOT files, HTML visualizations, and secret vault files created by cgr commands"
+    dim "- Manually added PATH entries or aliases in shell startup files"
+}
+
 # ── PATH check ────────────────────────────────────────────────────────────────
 
 check_path() {
@@ -685,4 +721,5 @@ else
     do_uninstall
     nl
     ok "Uninstall complete."
+    print_remaining_data_notice
 fi
