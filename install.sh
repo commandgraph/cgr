@@ -238,12 +238,13 @@ detect_existing_installations() {
 
 choose_install_action() {
     UPGRADE_EXISTING=0
+    UPGRADE_ONLY=0
     detect_existing_installations
 
     if [ "${#CGR_PATH_CANDIDATES[@]}" -gt 0 ]; then
         local first="${CGR_PATH_CANDIDATES[0]}"
         nl
-        if confirm "Upgrade PATH-first cgr at ${first} to CommandGraph ${CGR_VER}?" "y"; then
+        if confirm "cgr is already installed at ${first}. Upgrade it now without changing repo or PATH settings?" "y"; then
             INSTALL_DIR="$(dirname "$first")"
             if needs_sudo_for_path "$first"; then
                 NEED_SUDO=1
@@ -251,6 +252,7 @@ choose_install_action() {
                 NEED_SUDO=0
             fi
             UPGRADE_EXISTING=1
+            UPGRADE_ONLY=1
             return 0
         fi
     fi
@@ -692,14 +694,21 @@ if [ "$ACTION" = "install" ]; then
 
     # Gather choices
     choose_install_action
-    choose_repo_dir
+    if [ "${UPGRADE_ONLY:-0}" = "1" ]; then
+        INSTALL_REPO=0
+        REPO_DEST=""
+    else
+        choose_repo_dir
+    fi
     print_summary
 
-    nl
-    if ! confirm "Proceed with installation?" "y"; then
+    if [ "${UPGRADE_ONLY:-0}" != "1" ]; then
         nl
-        info "Installation cancelled."
-        exit 0
+        if ! confirm "Proceed with installation?" "y"; then
+            nl
+            info "Installation cancelled."
+            exit 0
+        fi
     fi
 
     do_install

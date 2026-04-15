@@ -2,7 +2,7 @@
 
 # Demonstrates:
 #   - phase "name" when "COND": conditional group blocks
-#   - run: multiline block form (lines joined with &&)
+#   - run: multiline block form (set -e; pipefail; newline-joined — compound constructs work)
 #   - always run: multiline form
 #   - skip if: multiline form
 #

@@ -188,7 +188,7 @@ def _print_completion(shell: str):
                 if [[ "$cur" == -* ]]; then
                     local opts="--repo --set --vars-file -v --verbose -i --inventory --help"
                     case "${{COMP_WORDS[1]}}" in
-                        apply) opts="$opts --dry-run --parallel --progress --report --no-color --no-resume --start-from --timeout --log --on-complete --blast-radius --tags --skip-tags --vault-pass --vault-pass-ask --vault-pass-file --skip -A -K --ask-become-pass" ;;
+                        apply) opts="$opts --dry-run --parallel --progress --report --no-color --no-resume --no-state --start-from --timeout --log --on-complete --blast-radius --tags --skip-tags --vault-pass --vault-pass-ask --vault-pass-file --skip -A -K --ask-become-pass" ;;
                         plan) opts="$opts --tags --skip-tags --vault-pass --vault-pass-ask --vault-pass-file -A" ;;
                         validate) opts="$opts -q --quiet --json --no-color --vault-pass --vault-pass-ask --vault-pass-file -A" ;;
                         check) opts="$opts --json --parallel --vault-pass --vault-pass-ask --vault-pass-file -A" ;;
@@ -311,7 +311,7 @@ def main():
     sa.add_argument("--report",metavar="FILE",help="Write JSON execution report to FILE")
     sa.add_argument("--output",choices=["text","json"],default="text",help="Apply output format (default: text)")
     sa.add_argument("--no-color",action="store_true",help="Disable colored output")
-    sa.add_argument("--no-resume",action="store_true",help="Ignore state file, run everything fresh")
+    sa.add_argument("--no-resume","--no-state",action="store_true",dest="no_resume",help="Ignore state file, run everything fresh")
     sa.add_argument("--run-id",metavar="ID",help="Salt the default state file path for this apply run")
     sa.add_argument("--state",dest="apply_state",metavar="FILE",help="Use an explicit state file for this apply run")
     sa.add_argument("--start-from",metavar="STEP",help="Skip all steps before STEP (by name or slug)")

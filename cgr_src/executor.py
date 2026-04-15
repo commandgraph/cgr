@@ -916,6 +916,7 @@ def _exec_prov_local(res, node, graph_file=None):
             if res.prov_content_from:
                 src = res.prov_content_from
                 # Resolve relative to graph file directory
+                src = os.path.expanduser(os.path.expandvars(src))
                 if not os.path.isabs(src) and graph_file:
                     src = os.path.join(os.path.dirname(graph_file), src)
                 try:
@@ -972,7 +973,7 @@ def _exec_prov_local(res, node, graph_file=None):
 
         # ── put keyword ────────────────────────────────────────────────────
         if res.prov_put_src:
-            src = res.prov_put_src
+            src = os.path.expanduser(os.path.expandvars(res.prov_put_src))
             dest = res.prov_dest
             if not os.path.isabs(src) and graph_file:
                 src = os.path.join(os.path.dirname(graph_file), src)
@@ -1204,7 +1205,7 @@ def _exec_prov_ssh(res, node, graph_file=None):
         if res.prov_content_inline is not None or res.prov_content_from:
             dest = res.prov_dest
             if res.prov_content_from:
-                src = res.prov_content_from
+                src = os.path.expanduser(os.path.expandvars(res.prov_content_from))
                 if not os.path.isabs(src) and graph_file:
                     src = os.path.join(os.path.dirname(graph_file), src)
                 try:
@@ -1268,12 +1269,19 @@ def _exec_prov_ssh(res, node, graph_file=None):
 
         # ── put keyword ────────────────────────────────────────────────────
         if res.prov_put_src:
-            src = res.prov_put_src
+            src = os.path.expanduser(os.path.expandvars(res.prov_put_src))
             dest = res.prov_dest
             if not os.path.isabs(src) and graph_file:
                 src = os.path.join(os.path.dirname(graph_file), src)
             if not os.path.exists(src):
                 return 1, "", f"put: source file not found: {src}"
+            # Expand shell variables and ~ in the remote dest path — scp/rsync
+            # don't invoke a shell on their destination argument, so $HOME and
+            # other variables would be passed literally without this step.
+            if '$' in dest or dest.startswith('~'):
+                rc_exp, expanded, _ = _ssh_run(f"printf '%s' {dest}")
+                if rc_exp == 0 and expanded.strip():
+                    dest = expanded.strip()
             _ssh_backup(dest)
             ssh_user = node.via_props.get("user", "")
             h = node.via_props.get("host", "localhost")
@@ -1375,7 +1383,7 @@ def _exec_prov_ssh(res, node, graph_file=None):
                 messages.append(f"removed block '{marker}' from {dest}")
             else:
                 if res.prov_block_from:
-                    src = res.prov_block_from
+                    src = os.path.expanduser(os.path.expandvars(res.prov_block_from))
                     if not os.path.isabs(src) and graph_file:
                         src = os.path.join(os.path.dirname(graph_file), src)
                     try:

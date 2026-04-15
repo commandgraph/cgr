@@ -628,7 +628,7 @@ def _is_cgr_keyword(s: str) -> bool:
 
 
 def _join_cgr_command_block(lines: list[str]) -> str:
-    """Join run: block lines with fail-fast separators, preserving shell continuations."""
+    """Join run: block lines into a fail-fast script, preserving shell continuations."""
     commands: list[str] = []
     current: list[str] = []
     for line in lines:
@@ -639,7 +639,7 @@ def _join_cgr_command_block(lines: list[str]) -> str:
         current = []
     if current:
         commands.append("\n".join(current))
-    return " && ".join(commands)
+    return "set -e; set -o pipefail\n" + "\n".join(commands)
 
 
 def _parse_cgr_step_line(text: str):

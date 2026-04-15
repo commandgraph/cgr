@@ -4585,8 +4585,8 @@ class TestPhaseBlocks:
 class TestMultilineRunBlock:
     """Tests for run: and always run: multiline block forms."""
 
-    def test_run_block_joins_with_and(self):
-        """run: block joins lines with ' && '."""
+    def test_run_block_joins_with_newline(self):
+        """run: block produces a set -e preamble followed by newline-joined lines."""
         src = textwrap.dedent("""\
             target "t" local:
               [step]:
@@ -4597,7 +4597,7 @@ class TestMultilineRunBlock:
         """)
         g = _resolve_cgr(src)
         res = g.all_resources["t.step"]
-        assert res.run == "mkdir -p /foo && cp bar /foo && chmod 755 /foo"
+        assert res.run == "set -e; set -o pipefail\nmkdir -p /foo\ncp bar /foo\nchmod 755 /foo"
 
     def test_run_block_preserves_backslash_continuations(self):
         """run: block does not insert '&&' inside shell backslash continuations."""
@@ -4615,11 +4615,12 @@ class TestMultilineRunBlock:
         res = g.all_resources["t.step"]
         assert "rsa:2048 \\\n-keyout" in res.run
         assert "vnc.crt \\\n-subj" in res.run
-        assert "local\" && chmod 600" in res.run
+        assert "local\"\nchmod 600" in res.run
         assert "\\ &&" not in res.run
+        assert res.run.startswith("set -e; set -o pipefail\n")
 
     def test_run_block_single_line(self):
-        """run: block with one line produces that line verbatim (no &&)."""
+        """run: block with one line still gets the set -e preamble."""
         src = textwrap.dedent("""\
             target "t" local:
               [step]:
@@ -4627,10 +4628,10 @@ class TestMultilineRunBlock:
                   echo hello
         """)
         g = _resolve_cgr(src)
-        assert g.all_resources["t.step"].run == "echo hello"
+        assert g.all_resources["t.step"].run == "set -e; set -o pipefail\necho hello"
 
     def test_always_run_block(self):
-        """always run: block sets always_run and joins with ' && '."""
+        """always run: block sets always_run and produces set -e preamble + newline-joined lines."""
         src = textwrap.dedent("""\
             target "t" local:
               [step]:
@@ -4640,7 +4641,7 @@ class TestMultilineRunBlock:
         """)
         ast = cg.parse_cgr(src)
         res = ast.nodes[0].resources[0]
-        assert res.run == "systemctl daemon-reload && systemctl restart nginx"
+        assert res.run == "set -e; set -o pipefail\nsystemctl daemon-reload\nsystemctl restart nginx"
         # always_run is encoded as check == "false" in the resolver
         g = _resolve_cgr(src)
         assert g.all_resources["t.step"].check == "false"
@@ -4657,7 +4658,7 @@ class TestMultilineRunBlock:
         """)
         g = _resolve_cgr(src)
         res = g.all_resources["t.step"]
-        assert res.run == "echo one && echo two"
+        assert res.run == "set -e; set -o pipefail\necho one\necho two"
         assert res.timeout == 45
 
     def test_run_block_empty_raises(self):
@@ -4682,7 +4683,7 @@ class TestMultilineRunBlock:
         """)
         g = _resolve_cgr(src)
         res = g.all_resources["t.setup"]
-        assert res.run == "mkdir -p /opt/app && chown app:app /opt/app"
+        assert res.run == "set -e; set -o pipefail\nmkdir -p /opt/app\nchown app:app /opt/app"
         assert res.cgr_phase_name == "install"
 
 
