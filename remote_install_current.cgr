@@ -1,0 +1,78 @@
+--- Install current CommandGraph workspace on a remote host ---
+#
+# Ships the current working tree, including uncommitted and untracked files,
+# to a remote SSH target and installs it there.
+#
+# Usage:
+#   cgr apply remote_install_current.cgr --set ssh_host=server.example.com
+#   cgr apply remote_install_current.cgr --set ssh_host=10.0.1.25 --set ssh_user=ubuntu
+#   cgr apply remote_install_current.cgr --dry-run
+#
+# Notes:
+#   - The remote SSH user must have passwordless sudo for system-wide install.
+#   - Non-default SSH port: edit the target line to `ssh ${ssh_user}@${ssh_host}:2222`.
+#   - The workspace archive excludes .git, .state, .build, __pycache__, and .pytest_cache.
+#   - The installed binary defaults to /usr/local/bin/cgr.
+#   - The stdlib template repo is installed for the SSH user at ~/.cgr/repo.
+
+set stateless       = true
+set ssh_host        = "example.com"
+set ssh_user        = env("USER", "ubuntu")
+set local_archive   = "/tmp/commandgraph-current-workspace.tar.gz"
+set remote_archive  = "/tmp/commandgraph-current-workspace.tar.gz"
+set install_prefix  = "/opt/commandgraph"
+set bin_path        = "/usr/local/bin/cgr"
+
+target "local" local:
+
+  [create workspace archive] timeout 2m:
+    run:
+      rm -f ${local_archive}
+      tar --exclude=.git --exclude=.state --exclude=.build --exclude=__pycache__ --exclude=.pytest_cache -czf ${local_archive} .
+      test -s ${local_archive}
+
+target "remote" ssh ${ssh_user}@${ssh_host}, after "local":
+
+  [check remote prerequisites] timeout 30s:
+    run:
+      command -v python3
+      command -v tar
+      command -v sudo
+
+  [upload workspace archive] timeout 5m:
+    first [check remote prerequisites]
+    put ${local_archive} > ${remote_archive}, transfer scp
+
+  [unpack workspace] as root, timeout 2m:
+    first [upload workspace archive]
+    run:
+      rm -rf ${install_prefix}.new
+      mkdir -p ${install_prefix}.new
+      tar xzf ${remote_archive} -C ${install_prefix}.new
+      test -f ${install_prefix}.new/cgr_dev.py
+      test -d ${install_prefix}.new/cgr_src
+
+  [build shipped cgr] as root, timeout 2m:
+    first [unpack workspace]
+    run $ cd ${install_prefix}.new && python3 cgr_dev.py apply build.cgr --no-resume
+
+  [activate installation] as root, timeout 1m:
+    first [build shipped cgr]
+    run:
+      mkdir -p "$(dirname "${bin_path}")"
+      rm -rf ${install_prefix}.previous
+      if test -d ${install_prefix}; then mv ${install_prefix} ${install_prefix}.previous; fi
+      mv ${install_prefix}.new ${install_prefix}
+      cp ${install_prefix}/cgr.py ${bin_path}
+      chmod 755 ${bin_path}
+
+  [install stdlib repo] timeout 1m:
+    first [activate installation]
+    run:
+      rm -rf "$HOME/.cgr/repo"
+      mkdir -p "$HOME/.cgr"
+      cp -R ${install_prefix}/repo "$HOME/.cgr/repo"
+
+  verify "remote cgr works":
+    first [install stdlib repo]
+    run $ ${bin_path} version && ${bin_path} validate ${install_prefix}/hello.cgr --repo "$HOME/.cgr/repo"

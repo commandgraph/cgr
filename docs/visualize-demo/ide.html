@@ -1,0 +1,3369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CommandGraph IDE Demo</title>
+<style>
+:root {
+  --bg: #0e1117; --bg2: #161b22; --bg3: #1c2129; --bg-hover: #21262d;
+  --border: #30363d; --border-hi: #484f58;
+  --text: #e6edf3; --text2: #8b949e; --text3: #6e7681;
+  --accent: #58a6ff; --green: #3fb950; --amber: #d29922;
+  --red: #f85149; --purple: #bc8cff; --coral: #f0883e;
+  --teal: #39d353; --pink: #f778ba;
+  --mono: "SF Mono","Cascadia Code","Fira Code","JetBrains Mono","Consolas",monospace;
+  --sans: "Segoe UI",system-ui,-apple-system,sans-serif;
+  --radius: 6px;
+}
+@media (prefers-color-scheme:light) {
+  :root:not(.dark) {
+    --bg: #f6f8fa; --bg2: #ffffff; --bg3: #f0f2f5; --bg-hover: #eaeef2;
+    --border: #d0d7de; --border-hi: #afb8c1;
+    --text: #1f2328; --text2: #656d76; --text3: #8c959f;
+    --accent: #0969da; --green: #1a7f37; --amber: #9a6700;
+    --red: #cf222e; --purple: #8250df; --coral: #bc4c00;
+    --teal: #0f6e56; --pink: #bf3989;
+  }
+}
+:root.light {
+  --bg: #f6f8fa; --bg2: #ffffff; --bg3: #f0f2f5; --bg-hover: #eaeef2;
+  --border: #d0d7de; --border-hi: #afb8c1;
+  --text: #1f2328; --text2: #656d76; --text3: #8c959f;
+  --accent: #0969da; --green: #1a7f37; --amber: #9a6700;
+  --red: #cf222e; --purple: #8250df; --coral: #bc4c00;
+  --teal: #0f6e56; --pink: #bf3989;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:var(--sans); height:100vh; overflow:hidden; }
+
+/* Header */
+.hdr { background:var(--bg2); border-bottom:1px solid var(--border); padding:8px 14px; display:flex; align-items:center; gap:12px; height:42px; z-index:100; }
+.hdr h1 { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--accent); }
+.hdr .sep { color:var(--text3); }
+.hdr .fname { font-family:var(--mono); font-size:12px; color:var(--text); cursor:pointer; }
+.hdr .fname:hover { color:var(--accent); }
+.hdr .dirty { color:var(--amber); font-size:10px; }
+.hdr .actions { margin-left:auto; display:flex; gap:6px; align-items:center; }
+.btn { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); color:var(--text2); font-size:11px; padding:4px 10px; cursor:pointer; font-family:var(--mono); transition:all .15s; }
+.btn:hover { background:var(--bg-hover); color:var(--text); border-color:var(--border-hi); }
+.btn-primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+.btn-primary:hover { opacity:.85; }
+.btn-green { background:var(--green); color:#fff; border-color:var(--green); }
+.btn-green:hover { opacity:.85; }
+.status { font-size:11px; font-family:var(--mono); padding:2px 8px; border-radius:10px; }
+.status-ok { background:rgba(63,185,80,.12); color:var(--green); }
+.status-err { background:rgba(248,81,73,.12); color:var(--red); }
+.status-info { background:rgba(88,166,255,.1); color:var(--accent); }
+.status-warn { background:rgba(210,153,34,.12); color:var(--amber); }
+.problems-panel { padding:0; font-size:12px; max-height:180px; overflow-y:auto; border-top:1px solid var(--border); background:var(--bg); }
+.problems-panel.show { display:block; }
+.prob-item { padding:4px 12px; display:flex; gap:6px; align-items:baseline; cursor:pointer; font-family:var(--mono); font-size:11px; }
+.prob-item:hover { background:var(--bg-hover); }
+.prob-icon { flex-shrink:0; width:14px; text-align:center; }
+.prob-icon.prob-err { color:var(--red); }
+.prob-icon.prob-warn { color:var(--amber); }
+.prob-icon.prob-info { color:var(--text3); }
+.prob-msg { color:var(--text2); flex:1; }
+.prob-loc { color:var(--text3); font-size:10px; white-space:nowrap; }
+.prob-file-link { color:var(--accent); text-decoration:underline; cursor:pointer; }
+.prob-file-link:hover { color:var(--text); }
+.prob-summary { padding:4px 12px; font-size:10px; font-family:var(--mono); color:var(--text3); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+.prob-summary .prob-close { cursor:pointer; color:var(--text3); padding:0 4px; }
+.prob-summary .prob-close:hover { color:var(--text); }
+
+/* Main layout */
+.main { display:flex; flex-direction:column; height:calc(100vh - 42px); }
+.main-panels { display:flex; flex:1; overflow:hidden; }
+
+/* Editor panel */
+.editor-panel { width:40%; min-width:300px; display:flex; flex-direction:column; border-right:1px solid var(--border); }
+.editor-tabs { display:flex; gap:0; background:var(--bg2); border-bottom:1px solid var(--border); padding:0 8px; }
+.tab { padding:6px 12px; font-size:11px; font-family:var(--mono); color:var(--text3); cursor:pointer; border-bottom:2px solid transparent; transition:all .15s; }
+.tab:hover { color:var(--text2); }
+.tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.editor-wrap { flex:1; position:relative; overflow:hidden; }
+.editor-container { display:flex; height:100%; overflow:auto; background:var(--bg); }
+.line-numbers { padding:10px 0; text-align:right; min-width:40px; padding-right:10px; font-family:var(--mono); font-size:13px; line-height:1.6; color:var(--text3); user-select:none; background:var(--bg2); border-right:1px solid var(--border); flex-shrink:0; }
+.editor-area { position:relative; flex:1; min-height:100%; }
+.highlight-layer { padding:10px 12px; font-family:var(--mono); font-size:13px; line-height:1.6; white-space:pre-wrap; word-wrap:break-word; pointer-events:none; user-select:none; -webkit-user-select:none; color:var(--text); width:100%; min-height:100%; }
+textarea#code { position:absolute; top:0; left:0; width:100%; height:100%; padding:10px 12px; font-family:var(--mono); font-size:13px; line-height:1.6; background:transparent; color:var(--text); border:none; outline:none; resize:none; white-space:pre-wrap; word-wrap:break-word; caret-color:var(--text); -webkit-text-fill-color:transparent; overflow:hidden; }
+/* Syntax highlighting */
+.hl-kw { color:var(--accent); font-weight:600; }
+.hl-str { color:var(--green); }
+.hl-step { color:var(--coral); font-weight:600; }
+.hl-cmd { color:var(--text); }
+.hl-comment { color:var(--text3); font-style:italic; }
+.hl-var { color:var(--purple); }
+.hl-prop { color:var(--amber); }
+.hl-title { color:var(--pink); font-weight:700; }
+.hl-upath { color:var(--accent); text-decoration:underline; text-decoration-style:dotted; text-underline-offset:2px; }
+/* Error gutter */
+.line-numbers .ln-err { color:var(--red); font-weight:700; }
+
+/* Graph + Log area */
+.graph-log-area { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+/* Graph tab bar */
+.graph-tabs { display:flex; gap:0; background:var(--bg2); border-bottom:1px solid var(--border); padding:0 8px; flex-shrink:0; }
+.gtab { padding:5px 12px; font-size:11px; font-family:var(--mono); color:var(--text3); cursor:pointer; border-bottom:2px solid transparent; transition:all .15s; display:flex; align-items:center; gap:5px; }
+.gtab:hover { color:var(--text2); }
+.gtab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.gtab-close { font-size:14px; color:var(--text3); margin-left:2px; line-height:1; }
+.gtab-close:hover { color:var(--red); }
+/* File viewer panel (replaces graph) */
+.fileview-panel { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+.fileview-hdr { display:flex; align-items:center; gap:8px; padding:6px 12px; background:var(--bg2); border-bottom:1px solid var(--border); flex-shrink:0; }
+.fileview-lock { font-size:12px; }
+.fileview-path { font-family:var(--mono); font-size:11px; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fileview-msg { font-family:var(--mono); font-size:10px; color:var(--text3); }
+.fileview-body { flex:1; overflow:auto; background:var(--bg); }
+.fileview-editor-wrap { display:flex; min-height:100%; }
+.fv-line-numbers { padding:10px 0; text-align:right; min-width:40px; padding-right:10px; font-family:var(--mono); font-size:13px; line-height:1.6; color:var(--text3); user-select:none; background:var(--bg2); border-right:1px solid var(--border); flex-shrink:0; }
+.fv-editor-area { position:relative; flex:1; min-height:100%; }
+.fv-highlight { padding:10px 12px; font-family:var(--mono); font-size:13px; line-height:1.6; white-space:pre-wrap; word-wrap:break-word; pointer-events:none; user-select:none; color:var(--text); width:100%; min-height:100%; }
+.fv-textarea { position:absolute; top:0; left:0; width:100%; height:100%; padding:10px 12px; font-family:var(--mono); font-size:13px; line-height:1.6; background:transparent; color:var(--text); border:none; outline:none; resize:none; white-space:pre-wrap; word-wrap:break-word; caret-color:var(--text); -webkit-text-fill-color:transparent; overflow:hidden; }
+.fv-textarea[readonly] { cursor:default; }
+.graph-panel { flex:1; overflow:auto; position:relative; padding:16px; }
+.graph-panel .empty-msg { color:var(--text3); font-size:13px; text-align:center; padding:60px 20px; }
+/* Log resize handle */
+.log-resize { height:4px; background:var(--border); cursor:ns-resize; flex-shrink:0; }
+.log-resize:hover { background:var(--accent); }
+/* Log pane */
+.log-pane { height:220px; min-height:80px; max-height:60vh; display:flex; flex-direction:column; border-top:1px solid var(--border); background:var(--bg); flex-shrink:0; }
+.log-pane.collapsed { height:auto; min-height:0; max-height:none; }
+.log-pane.collapsed .log-body { display:none; }
+.log-pane.collapsed .log-header { border-bottom:none; }
+.log-header { display:flex; align-items:center; gap:8px; padding:4px 10px; background:var(--bg2); border-bottom:1px solid var(--border); flex-shrink:0; cursor:pointer; }
+.log-title { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--text2); }
+.log-actions { margin-left:auto; display:flex; gap:4px; }
+.log-btn { padding:2px 7px; font-size:11px; }
+.log-follow { display:flex; align-items:center; gap:3px; font-family:var(--mono); font-size:10px; color:var(--text3); cursor:pointer; padding:0 6px; user-select:none; }
+.log-follow input { cursor:pointer; accent-color:var(--accent); }
+.log-body { flex:1; overflow:auto; padding:6px 10px; font-family:var(--mono); font-size:13px; line-height:1.6; }
+/* Log entry highlight flash when scrolled to */
+@keyframes log-flash { 0%{background:rgba(88,166,255,.2)} 100%{background:transparent} }
+.log-entry.flash { animation:log-flash 1.2s ease-out; }
+/* Log entries */
+.log-entry { border-bottom:1px solid var(--border); padding:4px 0; }
+.log-entry:last-child { border-bottom:none; }
+.log-entry-hdr { display:flex; align-items:center; gap:6px; cursor:pointer; padding:2px 0; border-radius:var(--radius); }
+.log-entry-hdr:hover { background:var(--bg-hover); }
+.log-icon { width:16px; text-align:center; flex-shrink:0; }
+.log-icon.ok { color:var(--green); }
+.log-icon.skip { color:var(--text3); }
+.log-icon.fail { color:var(--red); }
+.log-icon.warn { color:var(--amber); }
+.log-name { flex:1; color:var(--text); }
+.log-desc { color:var(--text3); font-size:11px; margin-left:4px; }
+.log-time { color:var(--text3); font-size:11px; flex-shrink:0; }
+.log-rc { font-size:11px; padding:0 5px; border-radius:6px; flex-shrink:0; }
+.log-rc.rc-ok { background:rgba(63,185,80,.12); color:var(--green); }
+.log-rc.rc-fail { background:rgba(248,81,73,.12); color:var(--red); }
+.log-detail { display:none; padding:4px 0 4px 22px; }
+.log-detail.open { display:block; }
+.log-detail-section { margin:3px 0; }
+.log-detail-label { color:var(--text3); font-size:10px; text-transform:uppercase; letter-spacing:.5px; }
+.log-detail-cmd { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:5px 9px; font-size:12px; margin:2px 0; white-space:pre-wrap; word-break:break-all; color:var(--text); max-height:140px; overflow:auto; }
+.log-detail-cmd.cmd-stdout { color:var(--text2); }
+.log-detail-cmd.cmd-stderr { color:var(--red); border-color:rgba(248,81,73,.3); }
+.log-wave-hdr { color:var(--text3); font-size:12px; font-weight:700; letter-spacing:.3px; padding:6px 0 2px; border-bottom:1px solid var(--border); margin:4px 0 2px; }
+.log-summary { padding:8px 0; font-weight:700; font-size:14px; }
+.log-summary.ok { color:var(--green); }
+.log-summary.fail { color:var(--red); }
+/* Reuse existing viz styles */
+.wc { margin:0 0 3px; }
+.wl { font-family:var(--mono); font-size:11px; color:var(--text3); font-weight:700; letter-spacing:.3px; padding:0 0 5px; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.wl::after { content:""; flex:1; height:1px; background:var(--border); min-width:20px; }
+.wl-count { font-weight:400; color:var(--text3); }
+.wl-summary { font-weight:400; font-size:11px; color:var(--text2); letter-spacing:0; max-width:500px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wl-phase { background:rgba(88,166,255,.12); color:var(--accent); font-size:9px; padding:0 6px; border-radius:8px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
+.wr { display:flex; flex-wrap:wrap; gap:6px; padding:6px 0 6px 14px; border-left:2px solid var(--border); margin-left:3px; }
+.nc { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px 8px 10px; cursor:pointer; transition:all .15s; position:relative; max-width:240px; min-width:110px; }
+.nc:hover { border-color:var(--border-hi); background:var(--bg-hover); transform:translateY(-1px); }
+.nc.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.nc.dep { border-color:var(--green); background:rgba(63,185,80,.06); }
+.nc.depnt { border-color:var(--purple); background:rgba(188,140,255,.06); }
+.nc.cdim { opacity:.2; }
+.nc.editor-hl { border-color:var(--accent); background:rgba(88,166,255,.1); box-shadow:0 0 0 1px rgba(88,166,255,.3); }
+.nc.follow-hl { border-color:var(--amber); box-shadow:0 0 0 2px rgba(210,153,34,.4); animation:demo-pulse .8s ease-in-out infinite; }
+.nc.diff-added { border-color:var(--green); box-shadow:0 0 0 2px rgba(63,185,80,.3); }
+.nc.diff-added::after { content:'NEW'; position:absolute; top:2px; right:4px; font-size:8px; color:var(--green); font-weight:700; }
+.nc.diff-changed { border-color:var(--amber); box-shadow:0 0 0 2px rgba(210,153,34,.25); }
+.nc.diff-changed::after { content:'CHANGED'; position:absolute; top:2px; right:4px; font-size:8px; color:var(--amber); font-weight:700; }
+/* SVG dependency arrows */
+.sa { position:absolute; top:0; left:0; pointer-events:none; z-index:1; }
+.ap { fill:none; stroke:var(--border-hi); stroke-width:1; opacity:.3; transition:opacity .2s, stroke .2s; }
+.ap.hd { stroke:var(--green); opacity:.7; stroke-width:1.5; }
+.ap.ht { stroke:var(--purple); opacity:.7; stroke-width:1.5; }
+/* Editor line highlight strip */
+.line-numbers .ln-hl { background:rgba(88,166,255,.15); }
+.editor-line-hl { position:absolute; left:0; width:100%; height:1.6em; background:rgba(88,166,255,.08); pointer-events:none; z-index:0; transition:top .1s ease-out; }
+.nn { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--text); margin:0 0 2px; padding-right:40px; }
+.nd { font-size:11px; color:var(--text2); line-height:1.4; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.nb { display:flex; gap:3px; margin-top:4px; flex-wrap:wrap; }
+.bg { font-size:10px; padding:1px 6px; border-radius:7px; font-family:var(--mono); font-weight:600; line-height:1.7; }
+.bg-p { background:rgba(88,166,255,.12); color:var(--accent); }
+.bg-v { background:rgba(247,120,186,.12); color:var(--pink); }
+.bg-r { background:rgba(210,153,34,.12); color:var(--amber); }
+.nc.barrier { opacity:.4; border-style:dashed; min-width:60px; max-width:110px; }
+.nc.barrier .nn { font-size:9px; color:var(--text3); }
+.grp { border:1px dashed var(--border-hi); border-radius:8px; padding:8px 8px 6px; margin:2px 0; }
+.grp-par { border-color:var(--accent); }
+.grp-race { border-color:var(--coral); }
+.grp-each { border-color:var(--teal); }
+.grp-phase { border-color:var(--purple); }
+.grp-lbl { font-family:var(--mono); font-size:9px; font-weight:700; text-transform:uppercase; padding:0 5px; margin:0 0 5px; }
+.grp-par .grp-lbl { color:var(--accent); }
+.grp-race .grp-lbl { color:var(--coral); }
+.grp-each .grp-lbl { color:var(--teal); }
+.grp-phase .grp-lbl { color:var(--purple); }
+.grp-cards { display:flex; flex-wrap:wrap; gap:6px; }
+.nc.st-success { border-left:3px solid var(--green); }
+.nc.st-failed { border-left:3px solid var(--red); background:rgba(248,81,73,.05); }
+.nc.st-warned { border-left:3px solid var(--amber); }
+/* Node groups within waves */
+.ng { border:1px solid var(--border); border-radius:6px; margin:2px 0; overflow:hidden; width:100%; }
+.ng-hdr { display:flex; align-items:center; gap:8px; padding:5px 10px; cursor:pointer; font-family:var(--mono); font-size:11px; background:var(--bg2); user-select:none; }
+.ng-hdr:hover { background:var(--bg-hover); }
+.ng-toggle { color:var(--text3); font-size:9px; flex-shrink:0; width:12px; text-align:center; }
+.ng-name { font-weight:700; color:var(--text); }
+.ng-via { color:var(--text3); font-size:10px; }
+.ng-count { color:var(--text2); margin-left:auto; font-size:10px; }
+.ng-state { display:flex; gap:6px; font-size:10px; }
+.ng-state .ns-ok { color:var(--green); }
+.ng-state .ns-fail { color:var(--red); }
+.ng-state .ns-pend { color:var(--text3); }
+.ng-body { display:flex; flex-wrap:wrap; gap:6px; padding:6px 10px; }
+.ng.collapsed .ng-body { display:none; }
+.ng.collapsed { border-color:var(--border); }
+
+/* Info bar */
+.info-bar { background:var(--bg2); border-top:1px solid var(--border); padding:6px 14px; font-family:var(--mono); font-size:11px; color:var(--text2); display:flex; gap:14px; flex-wrap:wrap; }
+.info-bar .st { display:flex; align-items:center; gap:3px; }
+.info-bar .stn { color:var(--text); font-weight:600; }
+
+/* Inspector panel */
+.inspector { width:280px; min-width:250px; background:var(--bg2); border-left:1px solid var(--border); overflow-y:auto; padding:14px; }
+.inspector h2 { font-family:var(--mono); font-size:13px; font-weight:600; color:var(--accent); margin:0 0 10px; word-break:break-all; }
+.inspector .empty { color:var(--text3); font-size:12px; font-style:italic; padding:28px 0; text-align:center; }
+.ds { margin:0 0 12px; }
+.ds h3 { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text3); margin:0 0 4px; }
+.dcmd { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:6px 8px; font-family:var(--mono); font-size:11px; color:var(--text); white-space:pre-wrap; word-break:break-all; margin:3px 0; }
+.dbadge { display:inline-block; padding:1px 6px; border-radius:9px; font-size:10px; font-weight:600; font-family:var(--mono); }
+.ddeps { display:flex; flex-wrap:wrap; gap:3px; margin:3px 0; }
+.dchip { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); padding:1px 6px; font-size:10px; font-family:var(--mono); color:var(--text2); cursor:pointer; transition:all .15s; }
+.dchip:hover { border-color:var(--accent); color:var(--accent); }
+
+/* Resize handle */
+.resize-handle { width:4px; cursor:col-resize; background:transparent; transition:background .2s; flex-shrink:0; }
+.resize-handle:hover, .resize-handle.active { background:var(--accent); }
+
+/* Autocomplete popup */
+.ac-popup { display:none; position:absolute; z-index:200; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); max-height:160px; overflow-y:auto; min-width:180px; box-shadow:0 4px 12px rgba(0,0,0,.3); }
+.ac-popup.show { display:block; }
+.ac-item { padding:4px 10px; font-family:var(--mono); font-size:11px; color:var(--text2); cursor:pointer; display:flex; align-items:center; gap:6px; }
+.ac-item:hover, .ac-item.sel { background:var(--accent); color:#fff; }
+.ac-icon { font-size:9px; opacity:.6; }
+
+/* Inspector tabs */
+.insp-tabs { display:flex; gap:0; border-bottom:1px solid var(--border); margin:0 -14px 10px; padding:0 14px; }
+.insp-tabs .tab { padding:5px 10px; font-size:11px; font-family:var(--mono); color:var(--text3); cursor:pointer; border-bottom:2px solid transparent; }
+.insp-tabs .tab:hover { color:var(--text2); }
+.insp-tabs .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+/* Execution log */
+.exec-log { font-family:var(--mono); font-size:11px; line-height:1.7; }
+.exec-log .ev { padding:2px 0; display:flex; align-items:flex-start; gap:6px; }
+.exec-log .ev-wave { color:var(--text3); font-weight:700; font-size:10px; letter-spacing:.3px; margin:6px 0 2px; border-bottom:1px solid var(--border); padding-bottom:2px; }
+.exec-log .ev-ok { color:var(--green); }
+.exec-log .ev-skip { color:var(--text3); }
+.exec-log .ev-fail { color:var(--red); }
+.exec-log .ev-warn { color:var(--amber); }
+.exec-log .ev-icon { flex-shrink:0; width:14px; text-align:center; }
+.exec-log .ev-name { flex:1; }
+.exec-log .ev-time { color:var(--text3); font-size:10px; }
+.exec-log .ev-err { color:var(--red); font-size:10px; padding:2px 0 2px 20px; word-break:break-all; }
+.exec-log .ev-done { padding:8px 0; font-weight:700; }
+.exec-log .ev-done.ok { color:var(--green); }
+.exec-log .ev-done.fail { color:var(--red); }
+.exec-log .ev-rerun { font-size:10px; color:var(--accent); cursor:pointer; text-decoration:underline; margin-left:4px; }
+.exec-log .ev-rerun:hover { color:var(--text); }
+.exec-log .ev-running { color:var(--amber); }
+.exec-log .ev-block { padding:2px 0 4px; border-bottom:1px solid var(--border); }
+.exec-log .ev-block:last-child { border-bottom:none; }
+.exec-log .ev-stream { margin:2px 0 0 20px; padding:4px 7px; background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); white-space:pre-wrap; word-break:break-all; max-height:140px; overflow:auto; font-size:10px; }
+.exec-log .ev-stream:empty { display:none; }
+.exec-log .ev-stream.stdout { color:var(--text2); }
+.exec-log .ev-stream.stderr { color:var(--red); border-color:rgba(248,81,73,.3); }
+.exec-log .ev-meta { margin:2px 0 0 20px; color:var(--text3); font-size:10px; white-space:pre-wrap; }
+.exec-log .ev-meta.waiting { color:var(--amber); }
+.exec-log .ev-cmd { margin:2px 0 0 20px; padding:4px 7px; background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); white-space:pre-wrap; word-break:break-all; max-height:120px; overflow:auto; font-size:10px; color:var(--text); }
+.exec-input { display:none; gap:8px; align-items:center; padding:8px 0 0; }
+.exec-input.show { display:flex; }
+.exec-input-label { color:var(--text3); font-size:10px; font-family:var(--mono); text-transform:uppercase; letter-spacing:.5px; }
+.exec-input-box { flex:1; min-width:0; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:7px 9px; font-family:var(--mono); font-size:12px; }
+.exec-input-box:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 1px rgba(88,166,255,.2); }
+.exec-input-send { white-space:nowrap; }
+.exec-input-toggle { white-space:nowrap; }
+.log-entry.running .log-icon { color:var(--amber); }
+.term-fg-black { color:#484f58; }
+.term-fg-red { color:#ff7b72; }
+.term-fg-green { color:#7ee787; }
+.term-fg-yellow { color:#e3b341; }
+.term-fg-blue { color:#79c0ff; }
+.term-fg-magenta { color:#d2a8ff; }
+.term-fg-cyan { color:#56d4dd; }
+.term-fg-white { color:#f0f6fc; }
+.term-bold { font-weight:700; }
+/* Graph toolbar */
+.graph-toolbar { display:flex; gap:6px; align-items:center; margin:0 0 10px; }
+/* State badges on cards */
+.stb { position:absolute; top:4px; right:4px; font-size:10px; font-weight:700; font-family:var(--mono); padding:0 5px; border-radius:4px; line-height:1.6; }
+.stb-success { background:rgba(63,185,80,.15); color:var(--green); }
+.stb-skip { background:rgba(63,185,80,.1); color:var(--green); }
+.stb-failed { background:rgba(248,81,73,.15); color:var(--red); }
+.stb-checking { background:rgba(88,166,255,.15); color:var(--accent); }
+.stb-running { background:rgba(210,153,34,.15); color:var(--amber); }
+.stb-resuming { background:rgba(188,140,255,.15); color:var(--purple); }
+/* Demo animations */
+@keyframes demo-pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+@keyframes demo-shake { 0%,100%{transform:translateX(0)} 15%{transform:translateX(-3px)} 30%{transform:translateX(3px)} 45%{transform:translateX(-2px)} 60%{transform:translateX(2px)} 75%{transform:translateX(-1px)} }
+.nc.demo-checking { border-left:3px solid var(--accent); animation:demo-pulse .8s ease-in-out infinite; }
+.nc.demo-running { border-left:3px solid var(--amber); animation:demo-pulse .8s ease-in-out infinite; }
+.nc.demo-failed-shake { animation:demo-shake .4s ease-in-out; }
+.nc.demo-resuming { border-left:3px solid var(--purple); animation:demo-pulse .6s ease-in-out infinite; }
+.nc.st-success { border-left:3px solid var(--green); }
+.nc.st-skip_check { border-left:3px solid var(--green); opacity:.7; }
+.nc.st-failed { border-left:3px solid var(--red); background:rgba(248,81,73,.05); }
+/* More menu */
+.more-menu.show { display:block !important; }
+.more-item { padding:5px 10px; font-family:var(--mono); font-size:11px; color:var(--text2); cursor:pointer; }
+.more-item:hover { background:var(--bg-hover); color:var(--text); }
+/* Demo button states */
+#bdemo.demo-active { color:var(--amber); font-weight:700; }
+#bdemo.demo-done { color:var(--text3); }
+/* Wave progress */
+.wl .wprog { display:inline-block; margin-left:8px; font-size:10px; color:var(--text3); font-family:var(--mono); }
+.wprog-bar { display:inline-block; width:60px; height:5px; background:var(--bg3); border-radius:3px; vertical-align:middle; margin-right:4px; overflow:hidden; }
+.wprog-fill { height:100%; background:var(--green); border-radius:3px; transition:width .3s ease-out; }
+/* Toast */
+.toast { background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:6px 12px; font-size:11px; font-family:var(--mono); color:var(--text); box-shadow:0 4px 12px rgba(0,0,0,.3); animation:toast-in .3s ease-out; max-width:320px; }
+.toast.toast-fail { border-color:var(--red); background:rgba(248,81,73,.08); }
+.toast.toast-resume { border-color:var(--purple); background:rgba(188,140,255,.08); }
+.toast.toast-done { border-color:var(--green); background:rgba(63,185,80,.08); }
+@keyframes toast-in { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+.file-picker-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:flex-start; justify-content:center; padding-top:72px; z-index:250; }
+.file-picker { width:min(680px, calc(100vw - 40px)); max-height:min(70vh, 720px); background:var(--bg2); border:1px solid var(--border-hi); border-radius:10px; box-shadow:0 18px 60px rgba(0,0,0,.45); display:flex; flex-direction:column; overflow:hidden; }
+.file-picker-hdr { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--border); font-family:var(--mono); font-size:12px; color:var(--text2); }
+.file-picker-search { margin:12px; margin-bottom:8px; width:calc(100% - 24px); background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-family:var(--mono); font-size:12px; padding:8px 10px; outline:none; }
+.file-picker-search:focus { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.file-picker-controls { display:flex; align-items:center; gap:10px; padding:0 12px 10px; }
+.file-picker-filter { display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px; color:var(--text3); }
+.file-picker-filter select { background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-family:var(--mono); font-size:11px; padding:6px 8px; outline:none; }
+.file-picker-filter select:focus { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.file-picker-list { padding:0 12px 12px; overflow:auto; }
+.file-picker-item { padding:8px 10px; margin:0 0 6px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg3); cursor:pointer; transition:all .15s; }
+.file-picker-item:hover { border-color:var(--accent); background:var(--bg-hover); }
+.file-picker-item.active { border-color:var(--accent); box-shadow:0 0 0 1px rgba(88,166,255,.35); }
+.file-picker-path { font-family:var(--mono); font-size:12px; color:var(--text); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.file-picker-meta { margin-top:2px; font-size:10px; color:var(--text3); }
+.file-picker-tag { display:inline-block; padding:1px 6px; border-radius:999px; font-size:9px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; }
+.file-picker-tag.cgr { background:rgba(88,166,255,.14); color:var(--accent); }
+.file-picker-tag.cg { background:rgba(210,153,34,.14); color:var(--amber); }
+.file-picker-tag.root { background:rgba(139,148,158,.18); color:var(--text2); }
+.file-picker-tag.example { background:rgba(63,185,80,.14); color:var(--green); }
+.file-picker-tag.testing { background:rgba(188,140,255,.14); color:var(--purple); }
+.file-picker-tag.template { background:rgba(240,136,62,.15); color:var(--coral); }
+.file-picker-empty { padding:14px 6px; color:var(--text3); font-size:12px; text-align:center; }
+.file-picker-trigger { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg3); color:var(--text2); cursor:pointer; font-size:12px; transition:all .15s; }
+.file-picker-trigger:hover { border-color:var(--accent); color:var(--accent); background:var(--bg-hover); }
+.file-picker-trigger.disabled { opacity:.45; cursor:default; }
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <h1>&#9671; CommandGraph</h1>
+  <span class="sep">|</span>
+  <span class="fname" id="filename" title="Click to change file">—</span>
+  <button class="file-picker-trigger" id="filePickerBtn" title="Open graph file (Ctrl+O)">&#128194;</button>
+  <span class="dirty" id="dirty" style="display:none">● unsaved</span>
+  <div class="actions">
+    <span class="status status-info" id="statusBadge" title="Static GitHub Pages IDE demo">loading...</span>
+    <button class="btn" onclick="doSave()" title="Static demo: save disabled">Save</button>
+    <button class="btn btn-primary" onclick="doCheck()" title="Static demo: graph is precomputed" id="checkBtn">Check</button>
+    <button class="btn btn-green" id="applyBtn" onclick="doApply()" title="Run the browser demo simulation">▶ Demo</button>
+    <button class="btn" id="rerunBtn" onclick="doApplyFresh()" title="Restart the browser demo simulation">⟳ Demo</button>
+    <button class="btn" id="themeBtn" onclick="toggleTheme()" title="Toggle dark/light mode" style="font-size:15px;padding:2px 8px"></button>
+  </div>
+</div>
+
+<div class="main">
+<div class="main-panels">
+  <!-- Editor -->
+  <div class="editor-panel" id="editorPanel">
+    <div class="editor-wrap">
+      <div class="editor-container" id="editorContainer">
+        <div class="line-numbers" id="lineNumbers"></div>
+        <div class="editor-area" id="editorArea">
+          <div class="highlight-layer" id="highlight"></div>
+          <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="problems-panel" id="problemsPanel" style="display:none"></div>
+  </div>
+
+  <div class="resize-handle" id="resizeH"></div>
+
+  <!-- Graph + Log column -->
+  <div class="graph-log-area">
+    <!-- Tab bar for Graph / File view -->
+    <div class="graph-tabs" id="graphTabs">
+      <div class="gtab active" data-gtab="graph" onclick="switchGraphTab('graph')">Graph</div>
+      <div class="gtab" data-gtab="fileview" id="gtabFile" onclick="switchGraphTab('fileview')" style="display:none">
+        <span id="gtabFileIcon">📦</span>
+        <span id="gtabFileLabel"></span>
+        <span class="gtab-close" onclick="event.stopPropagation();closeSideEditor()" title="Close file">&times;</span>
+      </div>
+    </div>
+    <div class="graph-panel" id="graphPanel">
+      <div class="graph-toolbar" id="graphToolbar" style="display:none">
+        <button class="btn" id="bcollapse" onclick="toggleCollapseAll()" title="Collapse/expand node groups" style="display:none">&#9660; Collapse</button>
+        <button class="btn" id="bedges" onclick="cycleEdgeMode()" title="Cycle edge visibility: all / selection / off">&#x27CB; Edges: all</button>
+        <div style="position:relative;display:inline-block">
+          <button class="btn" onclick="document.getElementById('moreMenu').classList.toggle('show')" title="More options">&#8943;</button>
+          <div id="moreMenu" class="more-menu" style="display:none;position:absolute;right:0;top:100%;z-index:50;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 0;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.3)">
+            <div class="more-item" onclick="demoToggle();document.getElementById('moreMenu').classList.remove('show')">
+              <span id="bdemo">&#9654; Demo</span>
+            </div>
+            <div class="more-item" style="padding:4px 10px;display:flex;align-items:center;gap:6px">
+              <span style="color:var(--text3);font-size:11px">Speed</span>
+              <select id="dspeed" onchange="demoSpeed(this.value)" style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text2);font-size:11px;padding:1px 4px;font-family:var(--mono);cursor:pointer;flex:1">
+                <option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="empty-msg" id="emptyMsg">Edit a .cgr file to see the dependency graph</div>
+      <svg class="sa" id="svg"></svg>
+      <div id="waves"></div>
+    </div>
+    <!-- File viewer panel (shown in place of graph) -->
+    <div class="fileview-panel" id="fileviewPanel" style="display:none">
+      <div class="fileview-hdr">
+        <span class="fileview-lock" id="fvLock" title="Read-only">🔒</span>
+        <span class="fileview-path" id="fvPath"></span>
+        <span class="dbadge" id="fvBadge" style="font-size:9px"></span>
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+          <span class="fileview-msg" id="fvMsg">Read-only</span>
+          <button class="btn" id="fvEditBtn" onclick="toggleSideEdit()" style="font-size:10px;padding:2px 8px">Enable editing</button>
+        </div>
+      </div>
+      <div class="fileview-body" id="fvBody">
+        <div class="fileview-editor-wrap">
+          <div class="fv-line-numbers" id="fvLineNumbers"></div>
+          <div class="fv-editor-area">
+            <div class="fv-highlight" id="fvHighlight"></div>
+            <textarea id="fvCode" class="fv-textarea" spellcheck="false" autocomplete="off" autocapitalize="off" readonly></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="log-resize" id="logResizeH" style="display:none"></div>
+    <div class="log-pane collapsed" id="logPane" style="display:none">
+      <div class="log-header" onclick="toggleLogCollapse()">
+        <span class="log-title" id="logTitle">Execution log</span>
+        <div class="log-actions">
+          <label class="log-follow" onclick="event.stopPropagation()" title="Auto-scroll to current step during execution">
+            <input type="checkbox" id="logFollowCb" checked> Follow
+          </label>
+          <button class="btn log-btn" onclick="event.stopPropagation();toggleLogExpand()" id="logExpandBtn" title="Expand/collapse all entries">&#8863; Collapse All</button>
+          <button class="btn log-btn" onclick="event.stopPropagation();clearLog()" title="Clear log">Clear</button>
+          <button class="btn log-btn" id="logCollapseBtn" onclick="event.stopPropagation();toggleLogCollapse()" title="Expand/collapse log">&#9650;</button>
+        </div>
+      </div>
+      <div id="progressWrap" style="height:3px;background:var(--border);display:none"><div id="progressBar" style="height:100%;width:0%;background:var(--green);transition:width .3s"></div></div>
+      <div class="log-body" id="logBody"></div>
+    </div>
+  </div>
+  <div id="toast-area" style="position:fixed;top:54px;right:340px;z-index:200;display:flex;flex-direction:column;gap:6px"></div>
+
+  <!-- Inspector -->
+  <div class="inspector" id="inspector">
+    <div class="insp-tabs" id="inspTabs">
+      <div class="tab active" data-tab="inspect" onclick="switchInspTab('inspect')">Inspect</div>
+      <div class="tab" data-tab="files" onclick="switchInspTab('files')" id="tabFiles" style="display:none">Files</div>
+      <div class="tab" data-tab="exec" onclick="switchInspTab('exec')" id="tabExec" style="display:none">Execution <span id="historyBadge" style="display:none;font-size:9px;background:var(--bg-hover);padding:0 4px;border-radius:3px;margin-left:2px"></span></div>
+      <div class="tab" data-tab="report" onclick="switchInspTab('report')" id="tabReport" style="display:none">Report</div>
+    </div>
+    <div id="inspectContent">
+      <div class="empty">Click a resource to inspect</div>
+    </div>
+    <div id="filesContent" style="display:none"></div>
+    <div id="execContent" style="display:none"></div>
+    <div id="reportContent" style="display:none"></div>
+  </div>
+</div>
+<div class="info-bar" id="infoBar"></div>
+</div>
+
+<!-- Autocomplete popup -->
+<div class="ac-popup" id="acPopup"></div>
+<div class="file-picker-backdrop" id="filePickerBackdrop">
+  <div class="file-picker" onclick="event.stopPropagation()">
+    <div class="file-picker-hdr">
+      <span style="color:var(--accent)">Open Graph</span>
+      <span style="margin-left:auto;color:var(--text3);font-size:10px">Served from workspace only</span>
+      <button class="btn" onclick="closeFilePicker()" style="font-size:10px;padding:2px 8px">Close</button>
+    </div>
+    <input class="file-picker-search" id="filePickerSearch" type="text" placeholder="Filter .cgr / .cg files" oninput="renderFilePicker(this.value)">
+    <div class="file-picker-controls">
+      <label class="file-picker-filter" for="filePickerTagFilter">
+        <span>Show</span>
+        <select id="filePickerTagFilter" onchange="renderFilePicker(filePickerSearch.value)">
+          <option value="all">all files</option>
+        </select>
+      </label>
+    </div>
+    <div class="file-picker-list" id="filePickerList"></div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────
+let currentFile = null;
+let isDirty = false;
+let graphData = null;
+let byId = {};
+let depnts = {};
+let selId = null;
+let lineToRids = {};  // editor line → [resource IDs]
+let ridToLine = {};   // resource ID → editor line
+let editorHlLine = 0; // currently highlighted editor line (from graph hover)
+let resolveTimer = null;
+let templates = [];
+let stepNames = [];
+let collapsedNodes = {};  // node_name → true if collapsed
+let allCollapsed = false; // global collapse state
+let collapseInitDone = false; // true after first auto-collapse decision
+let edgeMode = 'all';    // 'all' | 'selection' | 'off'
+let edgeModeInitDone = false;
+let acIdx = -1;
+let applyPollTimer = null;
+let applyCursor = 0;
+let applyStopClicks = 0;
+let availableGraphFiles = [];
+let availableGraphFileEntries = [];
+let filePickerTagOptions = [];
+
+const codeEl = document.getElementById('code');
+const hlEl = document.getElementById('highlight');
+const lineNumEl = document.getElementById('lineNumbers');
+const problemsPanel = document.getElementById('problemsPanel');
+const wavesEl = document.getElementById('waves');
+const emptyMsg = document.getElementById('emptyMsg');
+const infoBar = document.getElementById('infoBar');
+const inspEl = document.getElementById('inspectContent');
+const execEl = document.getElementById('execContent');
+const reportEl = document.getElementById('reportContent');
+const statusBadge = document.getElementById('statusBadge');
+const filenameEl = document.getElementById('filename');
+const dirtyEl = document.getElementById('dirty');
+const acPopup = document.getElementById('acPopup');
+const applyBtn = document.getElementById('applyBtn');
+const rerunBtn = document.getElementById('rerunBtn');
+const filePickerBackdrop = document.getElementById('filePickerBackdrop');
+const filePickerSearch = document.getElementById('filePickerSearch');
+const filePickerTagFilter = document.getElementById('filePickerTagFilter');
+const filePickerList = document.getElementById('filePickerList');
+const filePickerBtn = document.getElementById('filePickerBtn');
+let execInputWrap = null;
+let execInputEl = null;
+let execInputToggleBtn = null;
+let csrfToken = null;
+let vaultRetryPass = null;
+let execInputTargetRid = null;
+let execInputTargetName = null;
+let runningStepMeta = new Map();
+let runningStepTicker = null;
+let applyHeartbeatTs = null;
+let applyPollErrorTs = null;
+
+// ── API helpers ────────────────────────────────────────
+// Compute base path so API calls work through path-prefixed proxies (e.g. Coder).
+// If served at /proxy/8420/ the base is "/proxy/8420"; if at / the base is "".
+const _API_BASE = window.location.pathname.endsWith('/')
+  ? window.location.pathname.slice(0, -1)
+  : window.location.pathname.replace(/\/[^/]*$/, '');
+
+async function api(method, path, body) {
+  const opts = { method, headers: {'Content-Type':'application/json'} };
+  const upper = String(method || 'GET').toUpperCase();
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(upper)) {
+    if (!csrfToken) {
+      const tr = await fetch(_API_BASE + '/api/csrf', { method: 'GET' });
+      const tj = await tr.json();
+      if (tj.error) return tj;
+      csrfToken = tj.csrf_token || null;
+    }
+    if (csrfToken) opts.headers['X-CSRF-Token'] = csrfToken;
+  }
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const r = await fetch(_API_BASE + path, opts);
+  const text = await r.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = null;
+    }
+  }
+  if (!r.ok) {
+    const msg = (data && data.error) ? data.error : (text ? text.slice(0, 300) : `${r.status} ${r.statusText}`);
+    return { error: `HTTP ${r.status}: ${msg}` };
+  }
+  if (data !== null) return data;
+  if (!text) return {};
+  return { error: `Invalid JSON response from ${path}: ${text.slice(0, 300)}` };
+}
+
+// ── File operations ────────────────────────────────────
+async function loadFile(name) {
+  if (name) {
+    const openResp = await api('POST', '/api/file/open', { name });
+    if (openResp.error) { setStatus('err', openResp.error); return; }
+  }
+  const r = await api('GET', '/api/file' + (name ? '?name=' + encodeURIComponent(name) : ''));
+  if (r.error) { setStatus('err', r.error); return; }
+  currentFile = r.name;
+  codeEl.value = r.content;
+  filenameEl.textContent = r.name;
+  isDirty = false;
+  collapsedNodes = {}; collapseInitDone = false; allCollapsed = false;
+  edgeModeInitDone = false;
+  dirtyEl.style.display = 'none';
+  updateHighlight();
+  triggerResolve();
+}
+
+function renderFilePicker(filter = '') {
+  const q = String(filter || '').toLowerCase().trim();
+  const activeTag = filePickerTagFilter ? filePickerTagFilter.value : 'all';
+  const files = availableGraphFileEntries.filter(f => {
+    const matchesSearch = !q || f.name.toLowerCase().includes(q);
+    const tags = Array.isArray(f.tags) ? f.tags : [];
+    const matchesTag = activeTag === 'all' || tags.includes(activeTag);
+    return matchesSearch && matchesTag;
+  });
+  filePickerList.innerHTML = '';
+  if (!files.length) {
+    filePickerList.innerHTML = '<div class="file-picker-empty">No matching graph files</div>';
+    return;
+  }
+  files.forEach(file => {
+    const name = file.name;
+    const isActive = currentFile === name;
+    const label = name.split('/').pop();
+    const tags = Array.isArray(file.tags) ? file.tags : [];
+    const tagsHtml = tags.map(tag => `<span class="file-picker-tag ${esc(tag)}">${esc(tag)}</span>`).join('');
+    const item = document.createElement('div');
+    item.className = 'file-picker-item' + (isActive ? ' active' : '');
+    item.innerHTML = `<div class="file-picker-path"><span>${esc(label)}</span>${tagsHtml}</div><div class="file-picker-meta">${esc(name)}${isActive ? ' · current file' : ''}</div>`;
+    item.addEventListener('click', () => { void chooseFileFromPicker(name); });
+    filePickerList.appendChild(item);
+  });
+}
+
+function filePickerTagLabel(tag) {
+  const labels = {
+    all: 'all files',
+    root: 'root files',
+    example: 'examples',
+    testing: 'testing',
+    template: 'templates',
+    cgr: '.cgr',
+    cg: '.cg',
+  };
+  return labels[tag] || tag;
+}
+
+function refreshFilePickerTagOptions() {
+  if (!filePickerTagFilter) return;
+  const current = filePickerTagFilter.value || 'all';
+  const preferredOrder = ['root', 'example', 'testing', 'template', 'cgr', 'cg'];
+  const available = new Set();
+  availableGraphFileEntries.forEach(file => {
+    (file.tags || []).forEach(tag => available.add(tag));
+  });
+  filePickerTagOptions = preferredOrder.filter(tag => available.has(tag));
+  available.forEach(tag => {
+    if (!filePickerTagOptions.includes(tag)) filePickerTagOptions.push(tag);
+  });
+  const nextValue = current === 'all' || available.has(current) ? current : 'all';
+  filePickerTagFilter.innerHTML = `<option value="all">${esc(filePickerTagLabel('all'))}</option>`
+    + filePickerTagOptions.map(tag => `<option value="${esc(tag)}">${esc(filePickerTagLabel(tag))}</option>`).join('');
+  filePickerTagFilter.value = nextValue;
+}
+
+function openFilePicker() {
+  if (!availableGraphFiles.length) return;
+  filePickerBackdrop.style.display = 'flex';
+  renderFilePicker(filePickerSearch.value || '');
+  filePickerSearch.focus();
+  filePickerSearch.select();
+}
+
+function closeFilePicker() {
+  filePickerBackdrop.style.display = 'none';
+  filePickerSearch.value = '';
+}
+
+async function chooseFileFromPicker(name) {
+  closeFilePicker();
+  await loadFile(name);
+}
+
+async function doSave() {
+  if (!currentFile) return;
+  const r = await api('PUT', '/api/file', { name: currentFile, content: codeEl.value });
+  if (r.ok) {
+    isDirty = false;
+    dirtyEl.style.display = 'none';
+    setStatus('ok', 'Saved');
+  } else {
+    setStatus('err', r.error || 'Save failed');
+  }
+}
+
+async function doCheck() {
+  const pp = document.getElementById('problemsPanel');
+  // Step 1: validate (resolve)
+  const r = await apiWithVaultRetry('POST', '/api/resolve', { source: codeEl.value });
+  if (r.error) {
+    setStatus('err', 'Invalid');
+    showProblems([{ severity: 'error', line: r.line || 0, name: 'parse', msg: r.error }]);
+    return;
+  }
+  // Step 2: lint (best-practice warnings)
+  try {
+    const lr = await apiWithVaultRetry('POST', '/api/lint', { source: codeEl.value });
+    const warnings = (lr.warnings || []);
+    if (warnings.length === 0) {
+      setStatus('ok', r.resources + ' resources, ' + r.waves + ' waves — no warnings');
+      hideProblems();
+    } else {
+      setStatus('warn', r.resources + ' res, ' + warnings.length + ' warning(s)');
+      showProblems(warnings);
+    }
+  } catch (e) {
+    // Lint failed but validation passed
+    setStatus('ok', r.resources + ' resources, ' + r.waves + ' waves');
+    hideProblems();
+  }
+}
+
+function linkifyFilePaths(msgHtml) {
+  // Make file paths in warning messages clickable if they match known external files
+  if (!currentExternalFiles.length) return msgHtml;
+  for (const f of currentExternalFiles) {
+    if (!f.exists) continue;
+    const escaped = f.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp("'" + escaped + "'", 'g');
+    const replacement = "'<span class=\"prob-file-link\" data-resolved=\"" + esc(f.resolved)
+      + "\" data-type=\"" + esc(f.type)
+      + "\" data-path=\"" + esc(f.path)
+      + "\">" + esc(f.path) + " &#8599;</span>'";
+    msgHtml = msgHtml.replace(re, replacement);
+  }
+  return msgHtml;
+}
+
+function showProblems(items) {
+  const pp = document.getElementById('problemsPanel');
+  const errs = items.filter(i => i.severity === 'error');
+  const warns = items.filter(i => i.severity !== 'error');
+  let html = '<div class="prob-summary"><span>';
+  if (errs.length) html += '<span style="color:var(--red)">' + errs.length + ' error(s)</span> ';
+  if (warns.length) html += '<span style="color:var(--amber)">' + warns.length + ' warning(s)</span>';
+  if (!errs.length && !warns.length) html += 'No problems';
+  html += '</span><span class="prob-close" onclick="hideProblems()">&times;</span></div>';
+  // Build provenance lookup: step name → template path
+  const provMap = {};
+  if (graphData && graphData.graph && graphData.graph.resources) {
+    for (const r of graphData.graph.resources) {
+      if (r.provenance) provMap[r.short_name] = r.provenance;
+    }
+  }
+  for (const item of items) {
+    const cls = item.severity === 'error' ? 'prob-err' : (item.severity === 'warn' ? 'prob-warn' : 'prob-info');
+    const icon = item.severity === 'error' ? '&#10006;' : (item.severity === 'warn' ? '&#9888;' : '&#9432;');
+    const loc = item.line ? 'line ' + item.line : '';
+    let msgHtml = linkifyFilePaths(esc(item.msg));
+    // If this step comes from a template, add a "View template" link
+    const tplPath = provMap[item.name];
+    const ef = tplPath ? currentExternalFiles.find(f => f.path === tplPath && f.exists) : null;
+    if (ef) {
+      msgHtml += ' <span class="prob-file-link" data-resolved="' + esc(ef.resolved)
+        + '" data-type="' + esc(ef.type) + '" data-path="' + esc(ef.path)
+        + '" data-step="' + esc(item.name || '')
+        + '">View template &#8599;</span>';
+    }
+    html += '<div class="prob-item" onclick="scrollToLine(' + (item.line || 1) + ')">'
+      + '<span class="prob-icon ' + cls + '">' + icon + '</span>'
+      + '<span class="prob-msg">' + msgHtml + '</span>'
+      + '<span class="prob-loc">' + esc(item.name || '') + (loc ? ' :' + item.line : '') + '</span>'
+      + '</div>';
+  }
+  pp.innerHTML = html;
+  pp.style.display = 'block';
+  // Highlight error lines in gutter
+  if (errs.length && errs[0].line) {
+    lineNumEl.querySelectorAll('div').forEach(d => d.classList.remove('ln-err'));
+    const errDiv = lineNumEl.children[errs[0].line - 1];
+    if (errDiv) errDiv.classList.add('ln-err');
+  }
+}
+
+function hideProblems() {
+  document.getElementById('problemsPanel').style.display = 'none';
+  lineNumEl.querySelectorAll('div').forEach(d => d.classList.remove('ln-err'));
+}
+
+function scrollToLine(line) {
+  const lineHeight = 13 * 1.6;
+  codeEl.focus();
+  const container = document.getElementById('editorContainer');
+  const pos = (line - 1) * lineHeight;
+  container.scrollTop = Math.max(0, pos - container.clientHeight / 3);
+}
+
+// ── Resolve (live graph update) ────────────────────────
+async function triggerResolve() {
+  clearTimeout(resolveTimer);
+  resolveTimer = setTimeout(async () => {
+    try {
+      const r = await apiWithVaultRetry('POST', '/api/resolve', { source: codeEl.value });
+      if (r.error) {
+        showError(r.error, r.line);
+        setStatus('err', 'Parse error');
+      } else {
+        hideError();
+        graphData = r;
+        renderGraph(r);
+        setStatus('ok', r.resources + ' res, ' + r.waves_count + ' waves');
+        // Update Files tab if there are external files
+        const ef = r.external_files || [];
+        if (ef.length > 0) {
+          document.getElementById('tabFiles').style.display = '';
+          renderFilesTab(ef);
+          // Auto-show Files tab on first load when inspector is at default state
+          // but NOT if the user is currently viewing the Execution tab
+          const inspDefault = document.querySelector('#inspectContent .empty');
+          const execTabActive = document.querySelector('.insp-tabs .tab[data-tab="exec"].active');
+          if (inspDefault && !execTabActive) switchInspTab('files');
+        } else {
+          document.getElementById('tabFiles').style.display = 'none';
+        }
+      }
+    } catch (e) {
+      console.error('Resolve failed:', e);
+      setStatus('err', 'Resolve failed: ' + (e.message || e));
+    }
+  }, 400);
+}
+
+function setStatus(type, text) {
+  statusBadge.className = 'status status-' + type;
+  statusBadge.textContent = text;
+}
+
+function promptForVaultPass(status) {
+  const msg = status === 'invalid'
+    ? 'Vault passphrase was rejected. Enter the vault passphrase:'
+    : 'This graph needs a vault passphrase. Enter the vault passphrase:';
+  return window.prompt(msg, '');
+}
+
+async function apiWithVaultRetry(method, path, body) {
+  const payload = body ? { ...body } : {};
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (vaultRetryPass && payload.vault_pass === undefined) payload.vault_pass = vaultRetryPass;
+    const r = await api(method, path, payload);
+    if (!r || !r.needs_vault_pass) {
+      vaultRetryPass = null;
+      return r;
+    }
+    vaultRetryPass = null;
+    const entered = promptForVaultPass(r.vault_status || 'missing');
+    if (entered === null) return { error: r.error || 'Vault passphrase required', line: r.line || 0 };
+    vaultRetryPass = entered;
+    payload.vault_pass = entered;
+  }
+  return { error: 'Vault passphrase was rejected.' };
+}
+
+// ── Syntax highlighting ────────────────────────────────
+function highlightSyntax(src) {
+  // Use marker tokens (\x01type\x02 ... \x03) so regex passes don't match
+  // the HTML class attributes generated by earlier passes.
+  let out = src
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Comments
+  out = out.replace(/^(\s*)(#.*)$/gm, '$1\x01comment\x02$2\x03');
+  // Title
+  out = out.replace(/^(---.+---)$/gm, '\x01title\x02$1\x03');
+  // Variables ${...}
+  out = out.replace(/(\$\{[^}]+\})/g, '\x01var\x02$1\x03');
+  // Strings "..."
+  out = out.replace(/"([^"]*)"/g, '\x01str\x02"$1"\x03');
+  // Step names [...]
+  out = out.replace(/\[([^\]]+)\]/g, '\x01step\x02[$1]\x03');
+  // Using lines: underline the path to hint it's clickable
+  out = out.replace(/^(\s*)(using)\s+(\S+)/gm, '$1\x01kw\x02$2\x03 \x01upath\x02$3\x03');
+  // from template lines: underline the template path
+  out = out.replace(/\b(from)\s+(\S+)\s*:/g, '\x01kw\x02$1\x03 \x01upath\x02$2\x03:');
+  // Keywords at line start
+  out = out.replace(/^(\s*)(set|target|template|verify|parallel|race|race into|each|stage|phase|first|needs|skip if|run|always run|env|when|description|as|timeout|retry|if fails|collect|tags|secrets|inventory|gather facts|get|post|put|patch|delete|auth|header|body|expect)\b/gm,
+    '$1\x01kw\x02$2\x03');
+  // $ command prefix
+  out = out.replace(/(\$\s)/g, '\x01prop\x02$1\x03');
+  // from keyword
+  out = out.replace(/\b(from)\s/g, '\x01kw\x02$1\x03 ');
+  // Convert markers to real spans
+  out = out.replace(/\x01(\w+)\x02/g, '<span class="hl-$1">').replace(/\x03/g, '</span>');
+  return out;
+}
+
+function updateHighlight() {
+  hlEl.innerHTML = highlightSyntax(codeEl.value) + '\n';
+  updateLineNumbers();
+  // Sync textarea height to highlight layer so clicks work after scrolling
+  requestAnimationFrame(() => {
+    codeEl.style.height = hlEl.offsetHeight + 'px';
+  });
+}
+
+function updateLineNumbers() {
+  const lines = codeEl.value.split('\n').length;
+  let html = '';
+  for (let i = 1; i <= lines; i++) {
+    html += '<div>' + i + '</div>';
+  }
+  lineNumEl.innerHTML = html;
+}
+
+function showError(msg, line) {
+  showProblems([{ severity: 'error', line: line || 0, name: 'parse', msg: msg }]);
+}
+
+function hideError() {
+  hideProblems();
+}
+
+function cycleEdgeMode() {
+  const modes = ['all', 'selection', 'off'];
+  edgeMode = modes[(modes.indexOf(edgeMode) + 1) % modes.length];
+  const btn = document.getElementById('bedges');
+  btn.innerHTML = '&#x27CB; Edges: ' + edgeMode;
+  drawA();
+}
+
+function toggleCollapseAll() {
+  if (!graphData || !graphData.graph) return;
+  const nodeNames = Object.keys(graphData.graph.nodes || {});
+  allCollapsed = !allCollapsed;
+  collapsedNodes = {};
+  if (allCollapsed) nodeNames.forEach(nn => { collapsedNodes[nn] = true; });
+  renderGraph(graphData);
+}
+
+// ── Graph diff tracking ───────────────────────────────
+let prevGraphSnapshot = {};  // id → {run, check, needs_str}
+let diffAdded = new Set();
+let diffChanged = new Set();
+
+// ── Graph rendering ────────────────────────────────────
+function renderGraph(data) {
+  wavesEl.innerHTML = '';
+  emptyMsg.style.display = 'none';
+  document.getElementById('graphToolbar').style.display = 'flex';
+  if (typeof demo !== 'undefined' && demo.state !== 'idle') demo.reset();
+
+  // Build current snapshot for diff (before overwriting byId)
+  const curSnapshot = {};
+  data.graph.resources.forEach(r => {
+    curSnapshot[r.id] = { run: r.run || '', check: r.check || '', needs: (r.needs||[]).join(',') };
+  });
+  // Compute diffs: added, removed, changed
+  diffAdded = new Set();
+  diffChanged = new Set();
+  const hasPrev = Object.keys(prevGraphSnapshot).length > 0;
+  if (hasPrev) {
+    for (const id of Object.keys(curSnapshot)) {
+      if (!(id in prevGraphSnapshot)) diffAdded.add(id);
+      else {
+        const p = prevGraphSnapshot[id], c = curSnapshot[id];
+        if (p.run !== c.run || p.check !== c.check || p.needs !== c.needs) diffChanged.add(id);
+      }
+    }
+  }
+  prevGraphSnapshot = curSnapshot;
+
+  byId = {};
+  depnts = {};
+  selId = null;
+  inspEl.innerHTML = '<div class="empty">Click a resource to inspect</div>';
+
+  data.graph.resources.forEach(r => { byId[r.id] = r; });
+  data.graph.resources.forEach(r => {
+    r.needs.forEach(d => { if (!depnts[d]) depnts[d] = []; depnts[d].push(r.id); });
+  });
+
+  // Build bidirectional line↔resource maps for editor↔graph linking
+  lineToRids = {};
+  ridToLine = {};
+  data.graph.resources.forEach(r => {
+    const ln = r.source_line;
+    if (ln && ln > 0) {
+      if (!lineToRids[ln]) lineToRids[ln] = [];
+      lineToRids[ln].push(r.id);
+      ridToLine[r.id] = ln;
+    }
+  });
+
+  // Determine if we should use node grouping (multi-node graphs)
+  const nodeNames = Object.keys(data.graph.nodes || {});
+  const multiNode = nodeNames.length > 1;
+  const nR = data.graph.resources.length;
+
+  // Clean up stale collapsed state: remove nodes that no longer exist, add new ones if allCollapsed
+  const nodeSet = new Set(nodeNames);
+  Object.keys(collapsedNodes).forEach(nn => { if (!nodeSet.has(nn)) delete collapsedNodes[nn]; });
+  if (allCollapsed) nodeNames.forEach(nn => { collapsedNodes[nn] = true; });
+
+  // Auto-collapse: if >50 resources and multi-node, start collapsed (first render only)
+  if (!collapseInitDone && multiNode && nR > 50) {
+    collapseInitDone = true;
+    allCollapsed = true;
+    nodeNames.forEach(nn => { collapsedNodes[nn] = true; });
+  }
+
+  // Auto edge mode: default to 'selection' for large graphs (first render only)
+  if (!edgeModeInitDone) {
+    edgeModeInitDone = true;
+    edgeMode = nR > 50 ? 'selection' : 'all';
+    const eBtn = document.getElementById('bedges');
+    if (eBtn) eBtn.innerHTML = '&#x27CB; Edges: ' + edgeMode;
+  }
+
+  // Show/hide collapse button
+  const colBtn = document.getElementById('bcollapse');
+  if (multiNode) {
+    colBtn.style.display = '';
+    colBtn.innerHTML = allCollapsed ? '&#9654; Expand' : '&#9660; Collapse';
+  } else {
+    colBtn.style.display = 'none';
+  }
+
+  // Info bar
+  const nW = data.graph.waves.length;
+  const nG = new Set(data.graph.resources.filter(r => r.parallel_group).map(r => r.parallel_group)).size;
+  const nHosts = nodeNames.filter(n => (data.graph.nodes[n] || {}).via === 'ssh').length;
+  const nLocal = nodeNames.length - nHosts;
+  let ib = `<span class="st"><span class="stn">${nR}</span> resources</span>`;
+  ib += `<span class="st"><span class="stn">${nW}</span> waves</span>`;
+  if (nG) ib += `<span class="st"><span class="stn">${nG}</span> groups</span>`;
+  if (nHosts) ib += `<span class="st"><span class="stn">${nHosts}</span> hosts</span>`;
+  if (nHosts && nLocal) ib += `<span class="st">+ <span class="stn">${nLocal}</span> local</span>`;
+  infoBar.innerHTML = ib;
+
+  // Render waves
+  data.graph.waves.forEach((w, wi) => {
+    const wc = document.createElement('div'); wc.className = 'wc';
+    const wl = document.createElement('div'); wl.className = 'wl';
+
+    // Build a summary from bracket names
+    const descs = w.map(rid => {
+      const r = byId[rid]; if (!r) return null;
+      return bracketName(rid, r);
+    }).filter(Boolean);
+    const unique = [...new Set(descs)];
+    const maxShow = 3;
+    let summary = unique.length <= maxShow
+      ? unique.join(', ')
+      : unique.slice(0, maxShow).join(', ') + ` +${unique.length - maxShow} more`;
+
+    const isFirst = wi === 0;
+    const hasVerify = w.some(rid => byId[rid] && byId[rid].is_verify);
+    let phase = '';
+    if (hasVerify) phase = 'verify';
+    else if (isFirst && w.every(rid => byId[rid] && byId[rid].needs.length === 0)) phase = 'roots';
+
+    const phaseTag = phase ? `<span class="wl-phase">${phase}</span> ` : '';
+    wl.innerHTML = `${phaseTag}WAVE ${wi + 1} <span class="wl-count">(${w.length})</span> <span class="wl-summary">${esc(summary)}</span>`;
+    wc.appendChild(wl);
+    const wr = document.createElement('div'); wr.className = 'wr';
+
+    if (multiNode) {
+      // Group resources by node_name, then by parallel_group within each node
+      const byNode = {};
+      w.forEach(rid => {
+        const res = byId[rid]; if (!res) return;
+        const nn = res.node_name || '_local';
+        if (!byNode[nn]) byNode[nn] = [];
+        byNode[nn].push(rid);
+      });
+
+      Object.entries(byNode).forEach(([nn, rids]) => {
+        const nodeInfo = (data.graph.nodes || {})[nn];
+        const isCollapsed = !!collapsedNodes[nn];
+
+        // Build state summary for this node's resources in this wave
+        let nOk = 0, nFail = 0, nPend = 0;
+        rids.forEach(rid => {
+          const r = byId[rid];
+          if (r && r.state) {
+            if (r.state.status === 'success' || r.state.status === 'skip_check') nOk++;
+            else if (r.state.status === 'failed') nFail++;
+            else nPend++;
+          } else nPend++;
+        });
+
+        // Only show node group if there are non-barrier resources, or all are barriers
+        const nonBarrier = rids.filter(rid => byId[rid] && !byId[rid].is_barrier);
+        const showGroup = nonBarrier.length > 0 || rids.length <= 2;
+
+        if (!showGroup) {
+          // Just render barrier cards directly (don't wrap in node group)
+          rids.forEach(rid => { const c = mkCard(rid); if (c) wr.appendChild(c); });
+          return;
+        }
+
+        const ng = document.createElement('div');
+        ng.className = 'ng' + (isCollapsed ? ' collapsed' : '');
+        ng.dataset.node = nn;
+
+        // Header
+        const hdr = document.createElement('div'); hdr.className = 'ng-hdr';
+        const toggle = document.createElement('span'); toggle.className = 'ng-toggle';
+        toggle.textContent = isCollapsed ? '\u25B6' : '\u25BC';
+        hdr.appendChild(toggle);
+        const name = document.createElement('span'); name.className = 'ng-name';
+        name.textContent = nn;
+        hdr.appendChild(name);
+        if (nodeInfo) {
+          const via = document.createElement('span'); via.className = 'ng-via';
+          via.textContent = nodeInfo.via === 'ssh'
+            ? `ssh ${nodeInfo.user ? nodeInfo.user + '@' : ''}${nodeInfo.host}${nodeInfo.port && nodeInfo.port !== '22' ? ':' + nodeInfo.port : ''}`
+            : 'local';
+          hdr.appendChild(via);
+        }
+        const count = document.createElement('span'); count.className = 'ng-count';
+        count.textContent = nonBarrier.length + ' steps';
+        hdr.appendChild(count);
+        // State summary
+        const stateEl = document.createElement('span'); stateEl.className = 'ng-state';
+        if (nOk) { const s = document.createElement('span'); s.className = 'ns-ok'; s.textContent = '\u2713 ' + nOk; stateEl.appendChild(s); }
+        if (nFail) { const s = document.createElement('span'); s.className = 'ns-fail'; s.textContent = '\u2717 ' + nFail; stateEl.appendChild(s); }
+        if (nPend && (nOk || nFail)) { const s = document.createElement('span'); s.className = 'ns-pend'; s.textContent = '\u25CB ' + nPend; stateEl.appendChild(s); }
+        hdr.appendChild(stateEl);
+
+        hdr.onclick = () => {
+          collapsedNodes[nn] = !collapsedNodes[nn];
+          // Update global collapse state
+          const nodeNames = Object.keys(data.graph.nodes || {});
+          allCollapsed = nodeNames.every(n => collapsedNodes[n]);
+          renderGraph(graphData);
+        };
+        ng.appendChild(hdr);
+
+        // Body (cards) — only created if expanded
+        if (!isCollapsed) {
+          const body = document.createElement('div'); body.className = 'ng-body';
+          // Sub-group by parallel_group within this node
+          const pgroups = {}; const ungrouped = [];
+          rids.forEach(rid => {
+            const res = byId[rid]; if (!res) return;
+            if (res.parallel_group) {
+              if (!pgroups[res.parallel_group]) pgroups[res.parallel_group] = [];
+              pgroups[res.parallel_group].push(rid);
+            } else { ungrouped.push(rid); }
+          });
+          ungrouped.forEach(rid => { const c = mkCard(rid); if (c) body.appendChild(c); });
+          Object.entries(pgroups).forEach(([gkey, gids]) => {
+            const info = describeGroup(gkey, gids);
+            const grp = document.createElement('div'); grp.className = 'grp ' + info.cls;
+            const lbl = document.createElement('div'); lbl.className = 'grp-lbl';
+            lbl.textContent = info.icon + ' ' + info.label;
+            grp.appendChild(lbl);
+            const cards = document.createElement('div'); cards.className = 'grp-cards';
+            gids.forEach(rid => { const c = mkCard(rid); if (c) cards.appendChild(c); });
+            grp.appendChild(cards);
+            body.appendChild(grp);
+          });
+          ng.appendChild(body);
+        }
+        wr.appendChild(ng);
+      });
+    } else {
+      // Single-node graph: original flat layout
+      const groups = {}; const ungrouped = [];
+      w.forEach(rid => {
+        const res = byId[rid]; if (!res) return;
+        if (res.parallel_group) {
+          if (!groups[res.parallel_group]) groups[res.parallel_group] = [];
+          groups[res.parallel_group].push(rid);
+        } else { ungrouped.push(rid); }
+      });
+      ungrouped.forEach(rid => { const c = mkCard(rid); if (c) wr.appendChild(c); });
+      Object.entries(groups).forEach(([gkey, gids]) => {
+        const info = describeGroup(gkey, gids);
+        const grp = document.createElement('div'); grp.className = 'grp ' + info.cls;
+        const lbl = document.createElement('div'); lbl.className = 'grp-lbl';
+        lbl.textContent = info.icon + ' ' + info.label;
+        grp.appendChild(lbl);
+        const cards = document.createElement('div'); cards.className = 'grp-cards';
+        gids.forEach(rid => { const c = mkCard(rid); if (c) cards.appendChild(c); });
+        grp.appendChild(cards);
+        wr.appendChild(grp);
+      });
+    }
+
+    wc.appendChild(wr);
+    wavesEl.appendChild(wc);
+  });
+  setTimeout(() => drawA(), 60);
+}
+
+// ── SVG dependency arrows ──────────────────────────────
+function drawA(hDeps, hDepnts) {
+  const svg = document.getElementById('svg');
+  const gp = document.getElementById('graphPanel');
+  if (!svg || !gp || !graphData || !graphData.graph) return;
+  svg.setAttribute('width', gp.scrollWidth);
+  svg.setAttribute('height', gp.scrollHeight);
+  svg.innerHTML = '';
+  // Edge mode: 'off' draws nothing, 'selection' only draws when highlighting
+  if (edgeMode === 'off') return;
+  if (edgeMode === 'selection' && !hDeps && !hDepnts) return;
+  const NS = 'http://www.w3.org/2000/svg';
+  const defs = document.createElementNS(NS, 'defs');
+  ['a-d','a-t','a-n'].forEach(id => {
+    const m = document.createElementNS(NS, 'marker');
+    m.setAttribute('id', id); m.setAttribute('viewBox', '0 0 10 10');
+    m.setAttribute('refX', '9'); m.setAttribute('refY', '5');
+    m.setAttribute('markerWidth', '6'); m.setAttribute('markerHeight', '6');
+    m.setAttribute('orient', 'auto-start-reverse');
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', 'M2 2L8 5L2 8');
+    p.setAttribute('fill', id === 'a-d' ? 'var(--green)' : id === 'a-t' ? 'var(--purple)' : 'var(--border-hi)');
+    m.appendChild(p); defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+  const hd = new Set(hDeps || []), ht = new Set(hDepnts || []);
+  const gr = gp.getBoundingClientRect();
+  const resources = graphData.graph.resources || [];
+
+  // Build set of collapsed node names for fast lookup
+  const collSet = new Set(Object.keys(collapsedNodes).filter(k => collapsedNodes[k]));
+
+  resources.forEach(res => {
+    // Skip edges where both ends are within the same collapsed node
+    const resNode = res.node_name || '';
+    (res.needs || []).forEach(dep => {
+      const depRes = byId[dep];
+      if (depRes && collSet.has(resNode) && collSet.has(depRes.node_name || '') && resNode === (depRes.node_name || '')) return;
+      const from = document.getElementById('c-' + dep.replace(/[^a-zA-Z0-9]/g, '_'));
+      const to = document.getElementById('c-' + res.id.replace(/[^a-zA-Z0-9]/g, '_'));
+      if (!from || !to || from.offsetParent === null || to.offsetParent === null) return;
+      const fr = from.getBoundingClientRect(), tr = to.getBoundingClientRect();
+      const x1 = fr.left + fr.width / 2 - gr.left + gp.scrollLeft;
+      const y1 = fr.bottom - gr.top + gp.scrollTop;
+      const x2 = tr.left + tr.width / 2 - gr.left + gp.scrollLeft;
+      const y2 = tr.top - gr.top + gp.scrollTop;
+      const my = (y1 + y2) / 2;
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', `M${x1} ${y1} C${x1} ${my} ${x2} ${my} ${x2} ${y2}`);
+      const isDep = hd.has(dep) && hd.has(res.id);
+      const isDepnt = ht.has(dep) && ht.has(res.id);
+      p.setAttribute('class', 'ap' + (isDep ? ' hd' : isDepnt ? ' ht' : ''));
+      p.setAttribute('marker-end', `url(#${isDep ? 'a-d' : isDepnt ? 'a-t' : 'a-n'})`);
+      svg.appendChild(p);
+    });
+  });
+}
+
+function describeGroup(gkey, items) {
+  const parts = gkey.split('.'); const ct = parts[parts.length - 1];
+  let parent = '';
+  for (let i = parts.length - 2; i >= 0; i--) { if (!parts[i].startsWith('__')) { parent = parts[i].replace(/_/g, ' '); break; } }
+  const n = items.length;
+  if (ct.includes('race')) {
+    const sample = items[0] && byId[items[0]];
+    const into = sample && sample.race_into ? ` into ${sample.race_into}` : '';
+    return { cls: 'grp-race', icon: '\u26A1', label: `race${into}: ${parent} (${n} branches)` };
+  }
+  if (ct.includes('each')) return { cls: 'grp-each', icon: '\u2194', label: `each: ${parent} (${n} items)` };
+  if (ct.includes('phase')) return { cls: 'grp-phase', icon: '\u25C6', label: `phase: ${parent} (${n} items)` };
+  return { cls: 'grp-par', icon: '\u2551', label: `parallel: ${parent} (${n} branches)` };
+}
+
+function mkCard(rid) {
+  const res = byId[rid]; if (!res) return null;
+  const card = document.createElement('div');
+  let cls = 'nc'; if (res.is_barrier) cls += ' barrier';
+  if (res.state) {
+    if (res.state.status === 'success' || res.state.status === 'skip_check') cls += ' st-success';
+    else if (res.state.status === 'failed') cls += ' st-failed';
+    else if (res.state.status === 'warned') cls += ' st-warned';
+  }
+  card.className = cls;
+  card.id = 'c-' + rid.replace(/[^a-zA-Z0-9]/g, '_');
+  card.dataset.id = rid;
+  card.onclick = () => selectResource(rid);
+  card.onmouseenter = () => highlightEditorLine(rid);
+  card.onmouseleave = () => clearEditorHighlight();
+  // Primary: bracket name derived from ID (matches what user wrote in editor)
+  const bname = bracketName(rid, res);
+  const nm = document.createElement('div'); nm.className = 'nn'; nm.textContent = bname;
+  card.appendChild(nm);
+  // Secondary: template description (only if it adds info beyond the bracket name)
+  const desc = res.description || '';
+  const bnameClean = bname.replace(/[\[\]›]/g, '').trim().toLowerCase();
+  const descClean = desc.toLowerCase();
+  if (desc && descClean !== bnameClean && !descClean.startsWith(bnameClean)) {
+    const dd = document.createElement('div'); dd.className = 'nd'; dd.textContent = desc;
+    card.appendChild(dd);
+  }
+  if (res.state) {
+    const sb = document.createElement('span'); sb.className = 'stb';
+    if (res.state.status === 'success') { sb.className += ' stb-success'; sb.textContent = res.state.ms + 'ms'; }
+    else if (res.state.status === 'failed') { sb.className += ' stb-failed'; sb.textContent = 'FAIL'; }
+    card.appendChild(sb);
+  }
+  const badges = document.createElement('div'); badges.className = 'nb';
+  if (res.is_verify) { const b = document.createElement('span'); b.className = 'bg bg-v'; b.textContent = 'verify'; badges.appendChild(b); }
+  if (res.http_method) { const b = document.createElement('span'); b.className = 'bg'; b.style.cssText = 'background:rgba(210,153,34,.15);color:var(--amber);font-weight:700'; b.textContent = res.http_method; badges.appendChild(b); }
+  if (res.collect_key) { const b = document.createElement('span'); b.className = 'bg'; b.style.cssText = 'background:rgba(88,166,255,.15);color:var(--accent)'; b.textContent = '📋 ' + res.collect_key; badges.appendChild(b); }
+  if (res.needs.length === 0 && !res.is_barrier) { const b = document.createElement('span'); b.className = 'bg bg-r'; b.textContent = 'root'; badges.appendChild(b); }
+  if (res.provenance) { const b = document.createElement('span'); b.className = 'bg bg-p'; b.textContent = res.provenance.split('/').pop(); badges.appendChild(b); }
+  if (badges.children.length) card.appendChild(badges);
+  // Graph diff highlighting
+  if (diffAdded.has(rid)) card.classList.add('diff-added');
+  else if (diffChanged.has(rid)) card.classList.add('diff-changed');
+  return card;
+}
+
+// ── Inspector ──────────────────────────────────────────
+function selectResource(rid) {
+  document.querySelectorAll('.nc').forEach(c => c.classList.remove('sel', 'dep', 'depnt', 'cdim'));
+  if (selId === rid) { selId = null; inspEl.innerHTML = '<div class="empty">Click a resource to inspect</div>'; drawA(); updateExecInputTarget(); return; }
+  selId = rid;
+  const card = document.getElementById('c-' + rid.replace(/[^a-zA-Z0-9]/g, '_'));
+  if (card) card.classList.add('sel');
+
+  // Highlight deps
+  const allUp = new Set(), allDn = new Set();
+  function wU(id) { const r = byId[id]; if (!r) return; r.needs.forEach(d => { allUp.add(d); wU(d); }); }
+  function wD(id) { (depnts[id] || []).forEach(d => { allDn.add(d); wD(d); }); }
+  wU(rid); wD(rid);
+  document.querySelectorAll('.nc').forEach(c => {
+    const cid = c.dataset.id; if (cid === rid) return;
+    if (allUp.has(cid)) c.classList.add('dep');
+    else if (allDn.has(cid)) c.classList.add('depnt');
+    else c.classList.add('cdim');
+  });
+  drawA([...allUp, rid], [...allDn, rid]);
+
+  renderInspector(rid);
+  updateExecInputTarget();
+
+  // Scroll log pane to this resource's entry (if it exists)
+  scrollLogToResource(rid);
+
+  // Scroll editor to the source line and highlight it
+  scrollEditorToLine(rid);
+}
+
+function esc(s) {
+  return s ? String(s).replace(/&/g,'&amp;')
+                      .replace(/</g,'&lt;')
+                      .replace(/>/g,'&gt;')
+                      .replace(/"/g,'&quot;')
+                      .replace(/'/g,'&#x27;') : '';
+}
+
+
+function termClassList(state) {
+  const cls = [];
+  if (state.bold) cls.push('term-bold');
+  if (state.fg) cls.push('term-fg-' + state.fg);
+  return cls.join(' ');
+}
+
+function normalizeTerminalText(raw) {
+  const s = String(raw || '');
+  let out = '';
+  let line = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\x1b') {
+      const m = s.slice(i).match(/^\x1b\[[0-9;?]*[A-Za-z]/);
+      if (m) {
+        const seq = m[0];
+        const op = seq[seq.length - 1];
+        if (op === 'm') line += seq;
+        i += seq.length - 1;
+        continue;
+      }
+    }
+    if (ch === '\r') {
+      line = '';
+      continue;
+    }
+    if (ch === '\n') {
+      out += line + '\n';
+      line = '';
+      continue;
+    }
+    if (ch === '\b') {
+      line = line.slice(0, -1);
+      continue;
+    }
+    if (ch < ' ' && ch !== '\t') continue;
+    line += ch;
+  }
+  return out + line;
+}
+
+function ansiToHtml(raw) {
+  const text = normalizeTerminalText(raw);
+  const state = { bold: false, fg: null };
+  let html = '';
+  let buf = '';
+  const flush = () => {
+    if (!buf) return;
+    const cls = termClassList(state);
+    const escBuf = esc(buf);
+    html += cls ? `<span class="${cls}">${escBuf}</span>` : escBuf;
+    buf = '';
+  };
+  for (let i = 0; i < text.length; ) {
+    if (text[i] === '\x1b') {
+      const m = text.slice(i).match(/^\x1b\[([0-9;]*)m/);
+      if (m) {
+        flush();
+        const codes = m[1] ? m[1].split(';').map(n => parseInt(n || '0', 10)) : [0];
+        for (const code of codes) {
+          if (code === 0) {
+            state.bold = false;
+            state.fg = null;
+          } else if (code === 1) {
+            state.bold = true;
+          } else if (code === 22) {
+            state.bold = false;
+          } else if (code === 39) {
+            state.fg = null;
+          } else if (30 <= code && code <= 37) {
+            state.fg = ['black','red','green','yellow','blue','magenta','cyan','white'][code - 30];
+          } else if (90 <= code && code <= 97) {
+            state.fg = ['black','red','green','yellow','blue','magenta','cyan','white'][code - 90];
+          }
+        }
+        i += m[0].length;
+        continue;
+      }
+    }
+    buf += text[i];
+    i += 1;
+  }
+  flush();
+  return html;
+}
+
+function renderTerminalInto(el, raw) {
+  if (!el) return;
+  el.dataset.raw = String(raw || '');
+  el.innerHTML = ansiToHtml(el.dataset.raw);
+}
+
+function appendTerminalChunk(el, chunk) {
+  if (!el) return;
+  const next = (el.dataset.raw || '') + String(chunk || '');
+  renderTerminalInto(el, next);
+}
+
+function formatDurationShort(ms) {
+  const totalSeconds = Math.max(0, Math.floor((ms || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function isoToMs(ts) {
+  const parsed = Date.parse(ts || '');
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function runningMetaSummary(meta) {
+  const now = Date.now();
+  const startedMs = isoToMs(meta.startedAt);
+  const lastOutputMs = isoToMs(meta.lastOutputAt);
+  const parts = [];
+  if (startedMs !== null) parts.push(`running ${formatDurationShort(now - startedMs)}`);
+  if (meta.timeoutS) parts.push(`timeout ${formatDurationShort(meta.timeoutS * 1000)}`);
+  if (meta.pid) {
+    if (meta.procAlive === false) {
+      const rc = meta.returnCode === null || meta.returnCode === undefined ? '?' : meta.returnCode;
+      parts.push(`pid ${meta.pid} exited rc=${rc}`);
+    } else {
+      parts.push(`pid ${meta.pid}`);
+    }
+  }
+  if (lastOutputMs !== null) parts.push(`last output ${formatDurationShort(now - lastOutputMs)} ago`);
+  else parts.push('no output yet');
+  if (meta.interactive) parts.push('waiting for input is possible');
+  if (meta.procAlive === false) parts.push('step has not reported completion yet');
+  return parts.join(' | ');
+}
+
+function updateRunningMetaDisplay(rid) {
+  const meta = runningStepMeta.get(rid);
+  if (!meta) return;
+  const summary = runningMetaSummary(meta);
+  document.querySelectorAll(`[data-running-meta="${rid}"]`).forEach(el => {
+    el.textContent = summary;
+    el.classList.toggle('waiting', !!meta.interactive);
+  });
+  document.querySelectorAll(`[data-running-elapsed="${rid}"]`).forEach(el => {
+    const startedMs = isoToMs(meta.startedAt);
+    el.textContent = startedMs === null ? 'running...' : formatDurationShort(Date.now() - startedMs);
+  });
+}
+
+function startRunningStepTicker() {
+  if (runningStepTicker) return;
+  runningStepTicker = setInterval(() => {
+    for (const rid of runningStepMeta.keys()) updateRunningMetaDisplay(rid);
+  }, 1000);
+}
+
+function stopRunningStepTicker() {
+  if (!runningStepTicker) return;
+  clearInterval(runningStepTicker);
+  runningStepTicker = null;
+}
+
+function refreshExecInputAvailability() {
+  const hasInteractive = [...runningStepMeta.values()].some(meta => meta.interactive);
+  setExecInputVisible(hasInteractive);
+}
+
+function updateApplyConnectionStatus() {
+  if (!applyPollTimer) return;
+  const now = Date.now();
+  if (applyPollErrorTs && now - applyPollErrorTs < 4000) {
+    logTitle.textContent = 'Executing... (polling lost)';
+    return;
+  }
+  if (!applyHeartbeatTs) {
+    logTitle.textContent = 'Executing... (waiting for heartbeat)';
+    return;
+  }
+  const age = now - applyHeartbeatTs;
+  if (age > 4000) {
+    logTitle.textContent = `Executing... (heartbeat stale: ${formatDurationShort(age)})`;
+    return;
+  }
+  logTitle.textContent = `Executing... (connected, last heartbeat ${formatDurationShort(age)} ago)`;
+}
+
+// Extract human-readable bracket name from resource ID
+// web-1.install_nginx → [install nginx]
+// web-1.install_nginx.update_cache → [install nginx] › update cache
+// web-1.__verify_68 → (use description instead)
+function bracketName(rid, res) {
+  const parts = rid.split('.');
+  parts.shift(); // remove node name
+  if (parts.length === 0) return res.description || res.short_name;
+  // Verify blocks use their description
+  if (parts[0].startsWith('__verify')) return res.description || 'verify';
+  // Format: replace underscores with spaces
+  const humanize = s => s.replace(/_/g, ' ');
+  if (parts.length === 1) {
+    return '[' + humanize(parts[0]) + ']';
+  }
+  // Child of a parent: [parent] › child
+  return '[' + humanize(parts[0]) + '] › ' + humanize(parts[parts.length - 1]);
+}
+
+function renderInspector(rid) {
+  const r = byId[rid];
+  const deps = r.needs.map(d => byId[d]).filter(Boolean);
+  const dn = (depnts[rid] || []).map(d => byId[d]).filter(Boolean);
+  let h = `<h2>${esc(r.short_name)}</h2>`;
+  h += `<div class="ds"><h3>Description</h3><div style="font-size:12px">${esc(r.description) || '<em style="color:var(--text3)">none</em>'}</div></div>`;
+
+  let tb = '';
+  if (r.is_verify) tb = `<span class="dbadge" style="background:rgba(247,120,186,.15);color:var(--pink)">verify</span>`;
+  else if (r.check && r.check !== 'false') tb = `<span class="dbadge" style="background:rgba(88,166,255,.15);color:var(--accent)">check → run</span>`;
+  else tb = `<span class="dbadge" style="background:rgba(63,185,80,.15);color:var(--green)">run</span>`;
+  if (r.run_as) tb += ` <span class="dbadge" style="background:rgba(210,153,34,.15);color:var(--amber)">as ${esc(r.run_as)}</span>`;
+  if (r.is_race && r.race_into) tb += ` <span class="dbadge" style="background:rgba(240,136,62,.15);color:var(--coral)">race into ${esc(r.race_into)}</span>`;
+  else if (r.is_race) tb += ` <span class="dbadge" style="background:rgba(240,136,62,.15);color:var(--coral)">race branch</span>`;
+  if (r.is_barrier) tb += ` <span class="dbadge" style="background:var(--bg3);color:var(--text3)">barrier</span>`;
+  h += `<div class="ds"><h3>Execution</h3>${tb}</div>`;
+
+  h += `<div class="ds"><h3>Commands</h3>`;
+  if (r.check && r.check !== 'false') h += `<div style="font-size:10px;color:var(--text3);margin:3px 0">check</div><div class="dcmd">${esc(r.check)}</div>`;
+  h += `<div style="font-size:10px;color:var(--text3);margin:3px 0">run</div><div class="dcmd">${esc(r.run)}</div></div>`;
+
+  if (deps.length) {
+    h += `<div class="ds"><h3>Depends on (${deps.length})</h3><div class="ddeps">`;
+    deps.forEach(d => { h += `<span class="dchip" data-action="select-resource" data-rid="${esc(d.id)}" style="border-left:2px solid var(--green)">${esc(d.short_name)}</span>`; });
+    h += `</div></div>`;
+  }
+  if (dn.length) {
+    h += `<div class="ds"><h3>Required by (${dn.length})</h3><div class="ddeps">`;
+    dn.forEach(d => { h += `<span class="dchip" data-action="select-resource" data-rid="${esc(d.id)}" style="border-left:2px solid var(--purple)">${esc(d.short_name)}</span>`; });
+    h += `</div></div>`;
+  }
+  if (r.state) {
+    const s = r.state;
+    let sc = `<span class="dbadge" style="background:rgba(63,185,80,.15);color:var(--green)">${s.status} (${s.ms}ms)</span>`;
+    if (s.ts) sc += ` <span style="font-size:10px;color:var(--text3)">${s.ts}</span>`;
+    h += `<div class="ds"><h3>Last Run</h3>${sc}</div>`;
+  }
+  if (r.collect_key) {
+    h += `<div class="ds"><h3>Collect</h3><div><span class="dbadge" style="background:rgba(88,166,255,.15);color:var(--accent)">📋 ${esc(r.collect_key)}</span></div></div>`;
+  }
+  h += `<div class="ds"><h3>Resource ID</h3><div style="font-family:var(--mono);font-size:10px;color:var(--text3);word-break:break-all">${esc(rid)}</div></div>`;
+  // Link to log pane if an entry exists
+  h += `<div class="ds"><span style="font-size:10px;color:var(--accent);cursor:pointer;text-decoration:underline" data-action="scroll-log-resource" data-rid="${esc(rid)}">Show in execution log &#8599;</span></div>`;
+  inspEl.innerHTML = h;
+}
+
+// ── Bidirectional editor↔graph linking ────────────────
+
+// Graph card hover → highlight editor line
+function highlightEditorLine(rid) {
+  const ln = ridToLine[rid];
+  if (!ln || ln <= 0) return;
+  editorHlLine = ln;
+  // Highlight line number in gutter
+  const divs = lineNumEl.querySelectorAll('div');
+  divs.forEach(d => d.classList.remove('ln-hl'));
+  if (divs[ln - 1]) divs[ln - 1].classList.add('ln-hl');
+  // Add/move highlight strip in editor
+  let strip = document.getElementById('editorLineHl');
+  if (!strip) {
+    strip = document.createElement('div');
+    strip.id = 'editorLineHl';
+    strip.className = 'editor-line-hl';
+    document.getElementById('editorArea').appendChild(strip);
+  }
+  const lineHeight = 13 * 1.6; // font-size * line-height
+  strip.style.top = (10 + (ln - 1) * lineHeight) + 'px'; // 10px = padding-top
+  strip.style.display = '';
+}
+
+function clearEditorHighlight() {
+  editorHlLine = 0;
+  lineNumEl.querySelectorAll('.ln-hl').forEach(d => d.classList.remove('ln-hl'));
+  const strip = document.getElementById('editorLineHl');
+  if (strip) strip.style.display = 'none';
+  // Clear graph card highlights from editor hover
+  document.querySelectorAll('.nc.editor-hl').forEach(c => c.classList.remove('editor-hl'));
+}
+
+// Graph card click → scroll editor to source line
+function scrollEditorToLine(rid) {
+  const ln = ridToLine[rid];
+  if (!ln || ln <= 0) return;
+  highlightEditorLine(rid);
+  // Scroll the editor container so the line is visible
+  const container = document.getElementById('editorContainer');
+  const lineHeight = 13 * 1.6;
+  const targetY = (ln - 1) * lineHeight;
+  const viewH = container.clientHeight;
+  container.scrollTop = Math.max(0, targetY - viewH / 3);
+}
+
+// Editor hover → highlight graph cards
+let editorHoverTimer = null;
+function onEditorHover(e) {
+  clearTimeout(editorHoverTimer);
+  editorHoverTimer = setTimeout(() => {
+    // Determine which line the cursor is on
+    const container = document.getElementById('editorContainer');
+    const area = document.getElementById('editorArea');
+    const rect = area.getBoundingClientRect();
+    const lineHeight = 13 * 1.6;
+    const y = e.clientY - rect.top + container.scrollTop;
+    const ln = Math.floor((y - 10) / lineHeight) + 1; // 10px padding
+    if (ln <= 0) return;
+
+    // Clear previous highlights
+    document.querySelectorAll('.nc.editor-hl').forEach(c => c.classList.remove('editor-hl'));
+
+    // Find resources on this line (or nearby — within 5 lines for multi-line steps)
+    let rids = lineToRids[ln] || [];
+    if (rids.length === 0) {
+      // Search nearby lines (the step body may span several lines)
+      for (let offset = 1; offset <= 5; offset++) {
+        rids = lineToRids[ln - offset] || [];
+        if (rids.length > 0) break;
+      }
+    }
+
+    // Highlight matching cards
+    rids.forEach(rid => {
+      const safeId = 'c-' + rid.replace(/[^a-zA-Z0-9]/g, '_');
+      const card = document.getElementById(safeId);
+      if (card) card.classList.add('editor-hl');
+    });
+  }, 80); // small debounce
+}
+
+function onEditorLeave() {
+  clearTimeout(editorHoverTimer);
+  document.querySelectorAll('.nc.editor-hl').forEach(c => c.classList.remove('editor-hl'));
+}
+
+// Wire up editor hover tracking
+document.getElementById('editorArea').addEventListener('mousemove', onEditorHover);
+document.getElementById('editorArea').addEventListener('mouseleave', onEditorLeave);
+
+// ── Editor events ──────────────────────────────────────
+codeEl.addEventListener('input', () => {
+  isDirty = true;
+  dirtyEl.style.display = '';
+  updateHighlight();
+  triggerResolve();
+});
+
+codeEl.addEventListener('keydown', e => {
+  // Autocomplete navigation
+  if (acPopup.classList.contains('show')) {
+    const items = acPopup._items || [];
+    if (e.key === 'ArrowDown') { e.preventDefault(); acIdx = Math.min(acIdx + 1, items.length - 1); renderAc(items); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); acIdx = Math.max(acIdx - 1, 0); renderAc(items); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); if (acIdx >= 0) pickAc(acIdx); else hideAc(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); hideAc(); return; }
+  }
+  if (e.key === 'Escape') {
+    codeEl.blur();
+    return;
+  }
+  if (e.key === 'Tab' && !e.shiftKey) {
+    e.preventDefault();
+    const s = codeEl.selectionStart, end = codeEl.selectionEnd;
+    codeEl.value = codeEl.value.substring(0, s) + '  ' + codeEl.value.substring(end);
+    codeEl.selectionStart = codeEl.selectionEnd = s + 2;
+    codeEl.dispatchEvent(new Event('input'));
+  }
+  if (e.key === 'Tab' && e.shiftKey) {
+    e.preventDefault();
+    const s = codeEl.selectionStart;
+    const text = codeEl.value;
+    const lineStart = text.lastIndexOf('\n', s - 1) + 1;
+    const lineText = text.substring(lineStart, s);
+    const spaces = lineText.match(/^ {1,2}/);
+    if (spaces) {
+      codeEl.value = text.substring(0, lineStart) + text.substring(lineStart + spaces[0].length);
+      codeEl.selectionStart = codeEl.selectionEnd = s - spaces[0].length;
+      codeEl.dispatchEvent(new Event('input'));
+    }
+  }
+  if (e.ctrlKey && e.key === 's') { e.preventDefault(); doSave(); }
+  if (e.ctrlKey && e.shiftKey && e.key === 'V') { e.preventDefault(); doCheck(); }
+  if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); doApply(); }
+  if (e.ctrlKey && e.key === 'l') { e.preventDefault(); toggleLogCollapse(); }
+});
+
+// Click on using/from template lines opens side editor
+// Uses cursor position (reliable) rather than mouse coordinate math
+codeEl.addEventListener('click', e => {
+  // Use a short delay so selectionStart reflects the click position
+  setTimeout(() => {
+    const pos = codeEl.selectionStart;
+    const textBefore = codeEl.value.substring(0, pos);
+    const lineIdx = textBefore.split('\n').length - 1;
+    const lines = codeEl.value.split('\n');
+    if (lineIdx < 0 || lineIdx >= lines.length) return;
+    const line = lines[lineIdx].trim();
+    // Match "using path/template" or "from path/template:"
+    let tplPath = null;
+    const usingMatch = line.match(/^using\s+(\S+)/);
+    if (usingMatch) tplPath = usingMatch[1].replace(/\s.*$/, '');
+    const fromMatch = line.match(/from\s+(\S+)\s*:/);
+    if (fromMatch) tplPath = fromMatch[1];
+    if (!tplPath) return;
+    // Find matching external file
+    const ef = currentExternalFiles.find(f => f.path === tplPath && f.exists);
+    if (ef) openSideEditor(ef.resolved, ef.type, ef.path);
+  }, 10);
+});
+
+// Trigger autocomplete on [ or after "from "
+codeEl.addEventListener('keyup', e => {
+  if (e.key === '[' || e.key === '/' || e.key === ' ') {
+    updateStepNames(codeEl.value);
+    showAutocomplete();
+  } else if (acPopup.classList.contains('show') && e.key.length === 1) {
+    showAutocomplete();
+  }
+});
+
+// Hide autocomplete on blur
+codeEl.addEventListener('blur', () => { setTimeout(hideAc, 200); });
+
+// Line numbers scroll naturally as part of editor-container flex layout
+
+// ── Report tab ─────────────────────────────────────────
+async function loadReport() {
+  reportEl.innerHTML = '<div class="empty">Loading...</div>';
+  try {
+    const r = await api('GET', '/api/report');
+    const outputs = r.outputs || [];
+    if (!outputs.length) {
+      reportEl.innerHTML = '<div class="empty">No collected outputs yet.<br><span style="font-size:10px;color:var(--text3)">Add <code>collect "key"</code> to steps and run apply.</span></div>';
+      return;
+    }
+    let html = '<div style="margin-bottom:8px;display:flex;gap:6px;align-items:center">';
+    html += '<span style="font-size:11px;font-weight:600;color:var(--accent);font-family:var(--mono)">Collected Outputs</span>';
+    html += '<span style="color:var(--text3);font-size:10px">(' + outputs.length + ')</span>';
+    html += '<span style="flex:1"></span>';
+    html += '<button class="btn" style="font-size:10px;padding:2px 6px" onclick="exportReport(\'json\')">JSON</button>';
+    html += '<button class="btn" style="font-size:10px;padding:2px 6px" onclick="exportReport(\'csv\')">CSV</button>';
+    html += '</div>';
+    for (const o of outputs) {
+      const status = (o.rc === 0 || o.rc === null) ? '<span style="color:var(--green)">ok</span>' : '<span style="color:var(--red)">exit=' + o.rc + '</span>';
+      html += '<div style="margin-bottom:10px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">';
+      html += '<div style="padding:4px 8px;background:var(--bg3);display:flex;align-items:center;gap:6px;font-size:11px;font-family:var(--mono)">';
+      html += '<span style="color:var(--accent);font-weight:600">' + esc(o.key) + '</span>';
+      html += '<span style="color:var(--text3)">on</span>';
+      html += '<span style="font-weight:600">' + esc(o.node) + '</span>';
+      html += '<span style="flex:1"></span>';
+      html += status;
+      html += '<span style="color:var(--text3);font-size:10px">' + (o.ms||0) + 'ms</span>';
+      html += '</div>';
+      const stdout = (o.stdout || '').trim();
+      if (stdout) {
+        html += '<pre style="padding:6px 8px;font-size:10px;font-family:var(--mono);color:var(--text2);white-space:pre-wrap;word-break:break-all;max-height:120px;overflow-y:auto;margin:0">' + esc(stdout) + '</pre>';
+      }
+      html += '</div>';
+    }
+    reportEl.innerHTML = html;
+  } catch (e) {
+    reportEl.innerHTML = '<div class="empty" style="color:var(--red)">' + esc(String(e)) + '</div>';
+  }
+}
+
+async function exportReport(fmt) {
+  try {
+    const r = await api('GET', '/api/report');
+    const outputs = r.outputs || [];
+    let text, mimeType, ext;
+    if (fmt === 'json') {
+      text = JSON.stringify(outputs, null, 2);
+      mimeType = 'application/json'; ext = 'json';
+    } else {
+      // CSV
+      const keys = [...new Set(outputs.map(o => o.key))].sort();
+      const nodes = [...new Set(outputs.map(o => o.node))].sort();
+      let lines = [];
+      if (nodes.length > 1) {
+        lines.push(['node', ...keys].join(','));
+        const byNode = {};
+        for (const o of outputs) {
+          if (!byNode[o.node]) byNode[o.node] = {};
+          byNode[o.node][o.key] = (o.stdout||'').trim().replace(/"/g,'""');
+        }
+        for (const n of nodes) {
+          lines.push([n, ...keys.map(k => '"' + (byNode[n]?.[k]||'') + '"')].join(','));
+        }
+      } else {
+        lines.push('key,node,value,status,ms');
+        for (const o of outputs) {
+          const s = (o.rc===0||o.rc===null) ? 'ok' : 'exit='+o.rc;
+          lines.push([o.key, o.node, '"'+(o.stdout||'').trim().replace(/"/g,'""')+'"', s, o.ms||0].join(','));
+        }
+      }
+      text = lines.join('\n') + '\n';
+      mimeType = 'text/csv'; ext = 'csv';
+    }
+    const blob = new Blob([text], {type: mimeType});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'report.' + ext;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    alert('Export failed: ' + e);
+  }
+}
+
+// ── File viewer (tabbed in graph area) ─────────────────
+let currentExternalFiles = [];
+let sideFilePath = null;    // resolved path of the open file
+let sideFileType = null;    // 'template' | 'inventory' | 'secrets'
+let sideEditing = false;    // true when user has enabled editing
+let sideOrigContent = '';   // original content for dirty detection
+const fvCodeEl = document.getElementById('fvCode');
+const fvHlEl = document.getElementById('fvHighlight');
+const fvLineNumsEl = document.getElementById('fvLineNumbers');
+
+function switchGraphTab(tab) {
+  document.querySelectorAll('.graph-tabs .gtab').forEach(t => t.classList.toggle('active', t.dataset.gtab === tab));
+  document.getElementById('graphPanel').style.display = tab === 'graph' ? '' : 'none';
+  document.getElementById('fileviewPanel').style.display = tab === 'fileview' ? '' : 'none';
+}
+
+function renderFilesTab(files) {
+  currentExternalFiles = files;
+  const el = document.getElementById('filesContent');
+  if (!files.length) { el.innerHTML = '<div class="empty">No external files</div>'; return; }
+  const icons = { template: '📦', inventory: '📋', secrets: '🔒' };
+  const colors = { template: 'var(--accent)', inventory: 'var(--green)', secrets: 'var(--amber)' };
+  let h = '<div style="padding:12px">';
+  const byType = {};
+  files.forEach(f => { (byType[f.type] = byType[f.type] || []).push(f); });
+  for (const [type, group] of Object.entries(byType)) {
+    h += '<div class="ds"><h3>' + esc(icons[type] || '📄') + ' ' + esc(type) + 's (' + group.length + ')</h3>';
+    for (const f of group) {
+      if (f.exists) {
+        const isOpen = sideFilePath === f.resolved;
+        h += '<div style="cursor:pointer;padding:4px 8px;margin:2px 0;border-radius:var(--radius);border:1px solid '
+          + (isOpen ? colors[type] : 'var(--border)') + ';background:' + (isOpen ? 'var(--bg-hover)' : 'var(--bg3)')
+          + ';display:flex;align-items:center;gap:6px;transition:all .15s"'
+          + ' data-action="open-side-editor" data-resolved="' + esc(f.resolved) + '" data-type="' + esc(f.type) + '" data-path="' + esc(f.path) + '"'
+          + ' onmouseover="this.style.borderColor=\'' + colors[type] + '\'" onmouseout="if(' + !isOpen + ')this.style.borderColor=\'var(--border)\'">'
+          + '<span style="font-family:var(--mono);font-size:11px;color:' + colors[type] + '">' + esc(f.path) + '</span>'
+          + (isOpen ? '<span style="font-size:9px;color:var(--text3);margin-left:auto">open</span>'
+                    : '<span style="font-size:9px;color:var(--text3);margin-left:auto">click to open</span>')
+          + '</div>';
+      } else {
+        h += '<div style="padding:4px 8px;margin:2px 0;border-radius:var(--radius);border:1px solid var(--border);background:var(--bg3);opacity:.5;display:flex;align-items:center;gap:6px">'
+          + '<span style="font-family:var(--mono);font-size:11px;color:var(--red)">' + esc(f.path) + '</span>'
+          + '<span style="font-size:9px;color:var(--red);margin-left:auto">not found</span>'
+          + '</div>';
+      }
+    }
+    if (type === 'template') {
+      h += '<div style="font-size:10px;color:var(--text3);margin-top:4px;font-style:italic">Loaded from repo directory</div>';
+    }
+    h += '</div>';
+  }
+  h += '</div>';
+  el.innerHTML = h;
+}
+
+function updateFvHighlight() {
+  fvHlEl.innerHTML = highlightSyntax(fvCodeEl.value) + '\n';
+  const lines = fvCodeEl.value.split('\n').length;
+  let lnHtml = '';
+  for (let i = 1; i <= lines; i++) lnHtml += '<div>' + i + '</div>';
+  fvLineNumsEl.innerHTML = lnHtml;
+  // Sync textarea height
+  requestAnimationFrame(() => { fvCodeEl.style.height = fvHlEl.offsetHeight + 'px'; });
+}
+
+// Keep file viewer highlight in sync when editing
+fvCodeEl.addEventListener('input', updateFvHighlight);
+fvCodeEl.addEventListener('scroll', () => {
+  fvHlEl.scrollTop = fvCodeEl.scrollTop;
+  fvHlEl.scrollLeft = fvCodeEl.scrollLeft;
+});
+
+async function openSideEditor(resolvedPath, type, displayPath, scrollToStep) {
+  const icons = { template: '📦', inventory: '📋', secrets: '🔒' };
+  const badgeColors = { template: 'background:rgba(88,166,255,.15);color:var(--accent)',
+    inventory: 'background:rgba(63,185,80,.15);color:var(--green)',
+    secrets: 'background:rgba(210,153,34,.15);color:var(--amber)' };
+
+  sideFilePath = resolvedPath;
+  sideFileType = type;
+  sideEditing = false;
+
+  // Update tab
+  const tabFile = document.getElementById('gtabFile');
+  document.getElementById('gtabFileIcon').textContent = icons[type] || '📄';
+  document.getElementById('gtabFileLabel').textContent = displayPath || resolvedPath.split('/').slice(-2).join('/');
+  tabFile.style.display = '';
+  switchGraphTab('fileview');
+
+  // Update header
+  document.getElementById('fvLock').textContent = '🔒';
+  document.getElementById('fvLock').title = 'Read-only';
+  document.getElementById('fvLock').style.color = '';
+  document.getElementById('fvPath').textContent = resolvedPath;
+  document.getElementById('fvPath').title = resolvedPath;
+  const badge = document.getElementById('fvBadge');
+  badge.textContent = type;
+  badge.style.cssText = badgeColors[type] || '';
+  document.getElementById('fvMsg').textContent = 'Read-only';
+  document.getElementById('fvMsg').style.color = '';
+  const editBtn = document.getElementById('fvEditBtn');
+  editBtn.textContent = 'Enable editing';
+  editBtn.onclick = toggleSideEdit;
+  editBtn.className = 'btn';
+  editBtn.style.display = '';
+  // Remove any leftover cancel/save buttons
+  const oldCancel = document.getElementById('fvCancelBtn');
+  if (oldCancel) oldCancel.remove();
+  const oldSave = document.getElementById('fvSaveBtn');
+  if (oldSave) oldSave.remove();
+
+  // Set textarea to loading, readonly
+  fvCodeEl.value = 'Loading...';
+  fvCodeEl.readOnly = true;
+  updateFvHighlight();
+
+  // Re-render files tab to highlight open file
+  if (currentExternalFiles.length) renderFilesTab(currentExternalFiles);
+
+  try {
+    const r = await api('GET', '/api/file/view?path=' + encodeURIComponent(resolvedPath));
+    if (r.error) {
+      fvCodeEl.value = 'Error: ' + r.error;
+      updateFvHighlight();
+      editBtn.style.display = 'none';
+    } else {
+      sideOrigContent = r.content;
+      fvCodeEl.value = r.content;
+      updateFvHighlight();
+      // Scroll to a specific step if requested
+      if (scrollToStep) {
+        requestAnimationFrame(() => scrollFvToStep(scrollToStep));
+      }
+    }
+  } catch (e) {
+    fvCodeEl.value = 'Failed to load: ' + e;
+    updateFvHighlight();
+    editBtn.style.display = 'none';
+  }
+}
+
+function scrollFvToStep(stepName) {
+  const lines = fvCodeEl.value.split('\n');
+  const lineHeight = 20.8; // 13px * 1.6 line-height
+  // Search for [step_name]: pattern or closest match
+  let targetLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    // Match [step name]: exactly
+    if (trimmed.startsWith('[' + stepName + ']')) { targetLine = i; break; }
+    // Match partial — step name contained in bracket
+    if (trimmed.startsWith('[') && trimmed.includes(stepName)) { targetLine = i; break; }
+    // Match "run $" or "check $" lines containing the step context
+    if (trimmed.includes(stepName)) { if (targetLine < 0) targetLine = i; }
+  }
+  if (targetLine >= 0) {
+    const scrollContainer = document.getElementById('fvBody');
+    const scrollPos = targetLine * lineHeight - scrollContainer.clientHeight / 3;
+    scrollContainer.scrollTop = Math.max(0, scrollPos);
+    // Highlight the line in the line numbers
+    const lnDivs = fvLineNumsEl.children;
+    if (lnDivs[targetLine]) {
+      lnDivs[targetLine].style.background = 'rgba(88,166,255,.2)';
+      lnDivs[targetLine].style.fontWeight = '700';
+      lnDivs[targetLine].style.color = 'var(--accent)';
+    }
+  }
+}
+
+function closeSideEditor() {
+  if (sideEditing && fvCodeEl.value !== sideOrigContent) {
+    if (!confirm('Discard unsaved changes to this file?')) return;
+  }
+  document.getElementById('gtabFile').style.display = 'none';
+  document.getElementById('fileviewPanel').style.display = 'none';
+  switchGraphTab('graph');
+  sideFilePath = null;
+  sideFileType = null;
+  sideEditing = false;
+  if (currentExternalFiles.length) renderFilesTab(currentExternalFiles);
+}
+
+function toggleSideEdit() {
+  if (!sideEditing) {
+    if (!confirm('This is a shared file. Changes will affect all graphs that import it.\n\nEnable editing?')) return;
+    sideEditing = true;
+    fvCodeEl.readOnly = false;
+    fvCodeEl.focus();
+    document.getElementById('fvLock').textContent = '✎';
+    document.getElementById('fvLock').title = 'Editing';
+    document.getElementById('fvLock').style.color = 'var(--amber)';
+    document.getElementById('fvMsg').textContent = 'Editing — changes affect all graphs';
+    document.getElementById('fvMsg').style.color = 'var(--amber)';
+    // Replace edit button with save + cancel
+    const editBtn = document.getElementById('fvEditBtn');
+    editBtn.textContent = 'Save';
+    editBtn.className = 'btn btn-green';
+    editBtn.onclick = saveSideEditor;
+    // Add cancel
+    const cancel = document.createElement('button');
+    cancel.className = 'btn';
+    cancel.textContent = 'Cancel';
+    cancel.id = 'fvCancelBtn';
+    cancel.onclick = cancelSideEdit;
+    editBtn.parentElement.appendChild(cancel);
+  }
+}
+
+async function saveSideEditor() {
+  const msg = document.getElementById('fvMsg');
+  const text = fvCodeEl.value;
+  try {
+    const result = await api('POST', '/api/file/save', { path: sideFilePath, content: text });
+    if (result.error) {
+      msg.textContent = 'Save failed: ' + result.error;
+      msg.style.color = 'var(--red)';
+    } else {
+      sideOrigContent = text;
+      msg.textContent = 'Saved';
+      msg.style.color = 'var(--green)';
+      setTimeout(() => resetSideToReadOnly(), 1500);
+      triggerResolve();
+    }
+  } catch (e) {
+    msg.textContent = 'Save failed: ' + e;
+    msg.style.color = 'var(--red)';
+  }
+}
+
+function cancelSideEdit() {
+  if (fvCodeEl.value !== sideOrigContent) {
+    if (!confirm('Discard changes?')) return;
+  }
+  fvCodeEl.value = sideOrigContent;
+  updateFvHighlight();
+  resetSideToReadOnly();
+}
+
+function resetSideToReadOnly() {
+  sideEditing = false;
+  fvCodeEl.readOnly = true;
+  document.getElementById('fvLock').textContent = '🔒';
+  document.getElementById('fvLock').title = 'Read-only';
+  document.getElementById('fvLock').style.color = '';
+  document.getElementById('fvMsg').textContent = 'Read-only';
+  document.getElementById('fvMsg').style.color = '';
+  const editBtn = document.getElementById('fvEditBtn');
+  editBtn.textContent = 'Enable editing';
+  editBtn.className = 'btn';
+  editBtn.onclick = toggleSideEdit;
+  const cancel = document.getElementById('fvCancelBtn');
+  if (cancel) cancel.remove();
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  // Escape: close side panels
+  if (e.key === 'Escape') {
+    if (sideFilePath) { closeSideEditor(); return; }
+  }
+  // Ctrl+Enter: Apply (or Stop if running)
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    e.preventDefault(); doApply(); return;
+  }
+  // Ctrl+Shift+Enter: Re-run All
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+    e.preventDefault(); doApplyFresh(); return;
+  }
+  // Ctrl+Shift+P: Plan (switch to exec tab + show plan)
+  if ((e.key === 'p' || e.key === 'P') && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+    e.preventDefault(); switchInspTab('exec'); return;
+  }
+});
+
+// ── Inspector tabs ─────────────────────────────────────
+function switchInspTab(tab) {
+  document.querySelectorAll('.insp-tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.getElementById('inspectContent').style.display = tab === 'inspect' ? '' : 'none';
+  document.getElementById('filesContent').style.display = tab === 'files' ? '' : 'none';
+  document.getElementById('execContent').style.display = tab === 'exec' ? '' : 'none';
+  document.getElementById('reportContent').style.display = tab === 'report' ? '' : 'none';
+  if (tab === 'report') loadReport();
+  if (tab === 'exec') loadHistory();
+}
+
+// ── Execution history ─────────────────────────────────
+async function loadHistory() {
+  try {
+    const r = await api('GET', '/api/history');
+    if (!r.runs || !r.runs.length) return;
+    const badge = document.getElementById('historyBadge');
+    badge.textContent = r.runs.length;
+    badge.style.display = '';
+    // Add history dropdown to exec content if not already present
+    let hdr = document.getElementById('historyDropdown');
+    if (!hdr) {
+      hdr = document.createElement('div');
+      hdr.id = 'historyDropdown';
+      hdr.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;display:flex;align-items:center;gap:6px';
+      hdr.innerHTML = '<span style="color:var(--text3)">History:</span><select id="historySel" style="flex:1;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:var(--radius);padding:2px 4px;font-size:11px;font-family:var(--mono)" onchange="showHistoryRun(this.value)"><option value="">— current run —</option></select>';
+      execEl.insertBefore(hdr, execEl.firstChild);
+    }
+    const sel = document.getElementById('historySel');
+    const oldVal = sel.value;
+    sel.innerHTML = '<option value="">— current run —</option>';
+    r.runs.forEach((run, i) => {
+      const total = run.ok + run.fail + run.skip + run.timeout;
+      const icon = run.fail || run.timeout ? '✗' : '✓';
+      const ts = run.ts ? run.ts.replace('T', ' ').substring(0, 19) : '?';
+      sel.innerHTML += `<option value="${i}">${icon} ${ts} — ${total} steps (${run.ok}✓ ${run.fail}✗ ${run.skip}↷)</option>`;
+    });
+    sel.value = oldVal;
+    window._historyRuns = r.runs;
+  } catch(e) {}
+}
+
+function showHistoryRun(idx) {
+  if (idx === '' || !window._historyRuns) return;
+  const run = window._historyRuns[parseInt(idx)];
+  if (!run) return;
+  let log = document.getElementById('execLog');
+  if (!log) {
+    execEl.innerHTML += '<div class="exec-log" id="execLog"></div>';
+    log = document.getElementById('execLog');
+  }
+  let h = `<div class="ev-wave" style="margin-bottom:4px">Run: ${esc(run.ts || '?')}</div>`;
+  run.entries.forEach(e => {
+    const cls = e.status === 'success' ? 'ev-ok' : e.status === 'failed' ? 'ev-fail' : e.status === 'timeout' ? 'ev-fail' : 'ev-skip';
+    const icon = e.status === 'success' ? '✓' : e.status === 'failed' ? '✗' : e.status === 'timeout' ? '⏱' : '↷';
+    h += `<div class="ev ${cls}"><span class="ev-icon">${icon}</span><span class="ev-name">${esc(e.id)}</span><span class="ev-time">${e.ms}ms</span></div>`;
+  });
+  const total = run.ok + run.fail + run.skip + run.timeout;
+  const hasFail = run.fail > 0 || run.timeout > 0;
+  h += `<div class="ev-done ${hasFail ? 'fail' : 'ok'}">${hasFail ? '✗ FAILED' : '✓ COMPLETE'} (${total} steps)</div>`;
+  log.innerHTML = h;
+}
+
+// ── Log pane controls ──────────────────────────────────
+const logPane = document.getElementById('logPane');
+const logResizeH = document.getElementById('logResizeH');
+const logBody = document.getElementById('logBody');
+const logTitle = document.getElementById('logTitle');
+const logCollapseBtn = document.getElementById('logCollapseBtn');
+let logAllExpanded = true;
+
+function showLogPane(expanded) {
+  // Make log visible (may be display:none on first use)
+  logPane.style.display = '';
+  logResizeH.style.display = '';
+  if (expanded) {
+    logPane.classList.remove('collapsed');
+    // Restore default height if no inline override, or keep current if resized
+    if (!logPane.style.height || logPane.classList.contains('collapsed')) {
+      logPane.style.height = '';  // let CSS default take over
+    }
+    logCollapseBtn.innerHTML = '&#9660;';
+    logCollapseBtn.title = 'Collapse log';
+  } else {
+    logPane.classList.add('collapsed');
+    logPane.style.height = '';  // CRITICAL: clear inline height from resize drag
+    logResizeH.style.display = 'none';
+    logCollapseBtn.innerHTML = '&#9650;';
+    logCollapseBtn.title = 'Expand log';
+  }
+}
+
+function toggleLogCollapse() {
+  if (logPane.style.display === 'none') {
+    showLogPane(true); return;
+  }
+  const isCollapsed = logPane.classList.contains('collapsed');
+  showLogPane(isCollapsed);
+}
+
+function clearLog() { logBody.innerHTML = ''; logTitle.textContent = 'Execution log'; }
+
+function toggleLogExpand() {
+  logAllExpanded = !logAllExpanded;
+  document.getElementById('logExpandBtn').innerHTML = logAllExpanded ? '&#8863; Collapse All' : '&#8862; Expand All';
+  logBody.querySelectorAll('.log-detail').forEach(d => d.classList.toggle('open', logAllExpanded));
+}
+
+// Scroll log to a specific resource entry and flash it
+function scrollLogToResource(rid) {
+  // Always open the log pane first — even if no entry exists yet
+  showLogPane(true);
+  const entry = logBody.querySelector(`.log-entry[data-id="${rid}"]`);
+  if (!entry) {
+    // No log entry yet — log is now visible but nothing to scroll to
+    return;
+  }
+  // Expand this entry's detail
+  const detail = entry.querySelector('.log-detail');
+  if (detail) detail.classList.add('open');
+  // Scroll into view
+  entry.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Flash highlight
+  entry.classList.remove('flash');
+  void entry.offsetWidth; // force reflow
+  entry.classList.add('flash');
+}
+
+// Log resize drag
+logResizeH.addEventListener('mousedown', e => {
+  e.preventDefault();
+  const area = document.querySelector('.graph-log-area');
+  const startY = e.clientY;
+  const startH = logPane.offsetHeight;
+  function onMove(ev) { const dy = startY - ev.clientY; logPane.style.height = Math.max(80, startH + dy) + 'px'; }
+  function onUp() { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
+
+function addLogWave(wave, count) {
+  logBody.innerHTML += `<div class="log-wave-hdr">── Wave ${wave} (${count}) ──</div>`;
+  logBody.scrollTop = logBody.scrollHeight;
+}
+
+function addRunningLogEntry(ev) {
+  runningStepMeta.set(ev.id, {
+    id: ev.id,
+    name: ev.name,
+    startedAt: ev.ts || new Date().toISOString(),
+    timeoutS: ev.timeout_s || 0,
+    interactive: false,
+    pid: null,
+    procAlive: null,
+    returnCode: null,
+    lastOutputAt: null,
+  });
+  startRunningStepTicker();
+  const entry = document.createElement('div');
+  entry.className = 'log-entry running';
+  entry.dataset.id = ev.id;
+  entry.innerHTML = `
+    <div class="log-entry-hdr">
+      <span class="log-icon">&#9655;</span>
+      <span class="log-name">[${ev.idx || '?'} / ${ev.total || '?'}] ${esc(ev.name)}</span>
+      <span class="log-time" style="color:var(--amber)" data-running-elapsed="${esc(ev.id)}">running...</span>
+    </div>
+    <div class="log-detail open">
+      <div class="log-detail-section">
+        <span class="log-detail-label">Status</span>
+        <div class="log-detail-cmd" data-running-meta="${esc(ev.id)}">starting...</div>
+      </div>
+      ${ev.check ? `<div class="log-detail-section"><span class="log-detail-label">Check</span><div class="log-detail-cmd">$ ${esc(ev.check)}</div></div>` : ''}
+      ${ev.run ? `<div class="log-detail-section"><span class="log-detail-label">Run${ev.run_as ? ' (as ' + esc(ev.run_as) + ')' : ''}</span><div class="log-detail-cmd">$ ${esc(ev.run)}</div></div>` : ''}
+      <div class="log-detail-section" data-stream="stdout" style="display:none">
+        <span class="log-detail-label">stdout</span>
+        <div class="log-detail-cmd cmd-stdout"></div>
+      </div>
+      <div class="log-detail-section" data-stream="stderr" style="display:none">
+        <span class="log-detail-label">stderr</span>
+        <div class="log-detail-cmd cmd-stderr"></div>
+      </div>
+    </div>`;
+  logBody.appendChild(entry);
+  logBody.scrollTop = logBody.scrollHeight;
+  updateRunningMetaDisplay(ev.id);
+}
+
+function appendRunningLogOutput(rid, stream, chunk) {
+  const entry = logBody.querySelector(`.log-entry.running[data-id="${rid}"]`);
+  if (!entry) return;
+  const meta = runningStepMeta.get(rid);
+  if (meta) {
+    meta.lastOutputAt = new Date().toISOString();
+    meta.interactive = false;
+    updateRunningMetaDisplay(rid);
+    refreshExecInputAvailability();
+  }
+  const section = entry.querySelector(`.log-detail-section[data-stream="${stream}"]`);
+  const box = section ? section.querySelector('.log-detail-cmd') : null;
+  if (!section || !box) return;
+  section.style.display = '';
+  appendTerminalChunk(box, chunk);
+  box.scrollTop = box.scrollHeight;
+  if (document.getElementById('logFollowCb').checked) logBody.scrollTop = logBody.scrollHeight;
+}
+
+function addLogEntry(ev) {
+  const isSkip = ev.status === 'skip' || ev.status === 'skip_check' || ev.status === 'skip_when';
+  const isCancelled = ev.status === 'cancelled';
+  const isFail = ev.status === 'failed' || ev.status === 'timeout';
+  const isWarn = ev.status === 'warned';
+  const iconCls = isFail ? 'fail' : isCancelled ? 'warn' : isWarn ? 'warn' : isSkip ? 'skip' : 'ok';
+  const icon = isFail ? '✗' : isCancelled ? '■' : isWarn ? '⚠' : isSkip ? '↷' : '✓';
+  const rcCls = isFail ? 'rc-fail' : 'rc-ok';
+  const rcText = ev.rc !== undefined && ev.rc !== null ? `exit=${ev.rc}` : '';
+
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.dataset.id = ev.id;
+
+  // Header row — click toggles detail AND highlights graph card
+  let hdrHTML = `<div class="log-entry-hdr" data-action="toggle-log-detail" data-rid="${esc(ev.id)}">`;
+  hdrHTML += `<span class="log-icon ${iconCls}">${icon}</span>`;
+  hdrHTML += `<span class="log-name">[${ev.idx}/${ev.total}] ${esc(ev.name)}</span>`;
+  if (ev.desc) hdrHTML += `<span class="log-desc">${esc(ev.desc)}</span>`;
+  if (rcText && (isFail || isWarn)) hdrHTML += `<span class="log-rc ${rcCls}">${rcText}</span>`;
+  hdrHTML += `<span class="log-time">${ev.ms}ms</span>`;
+  if (isFail || isCancelled) hdrHTML += `<span class="ev-rerun" data-action="rerun-step" data-step="${esc(ev.name)}">rerun</span>`;
+  hdrHTML += `</div>`;
+
+  // Detail section (expandable)
+  let detHTML = `<div class="log-detail${logAllExpanded || isFail || isCancelled ? ' open' : ''}">`;
+  if (ev.reason) detHTML += `<div class="log-detail-section"><span class="log-detail-label">Reason</span><div class="log-detail-cmd">${esc(ev.reason)}</div></div>`;
+  if (ev.check) detHTML += `<div class="log-detail-section"><span class="log-detail-label">Check</span><div class="log-detail-cmd">$ ${esc(ev.check)}</div></div>`;
+  if (ev.run) detHTML += `<div class="log-detail-section"><span class="log-detail-label">Run${ev.run_as ? ' (as ' + esc(ev.run_as) + ')' : ''}</span><div class="log-detail-cmd">$ ${esc(ev.run)}</div></div>`;
+  if (ev.stdout) detHTML += `<div class="log-detail-section"><span class="log-detail-label">stdout</span><div class="log-detail-cmd cmd-stdout">${ansiToHtml(ev.stdout)}</div></div>`;
+  if (ev.stderr) detHTML += `<div class="log-detail-section"><span class="log-detail-label">stderr</span><div class="log-detail-cmd cmd-stderr">${ansiToHtml(ev.stderr)}</div></div>`;
+  if (ev.attempts && ev.attempts > 1) detHTML += `<div class="log-detail-section"><span class="log-detail-label">Attempts</span><div class="log-detail-cmd">${ev.attempts} attempts</div></div>`;
+  detHTML += `</div>`;
+
+  entry.innerHTML = hdrHTML + detHTML;
+  logBody.appendChild(entry);
+  logBody.scrollTop = logBody.scrollHeight;
+}
+
+function replaceRunningLogEntry(ev) {
+  const existing = logBody.querySelector(`.log-entry.running[data-id="${ev.id}"]`);
+  if (!existing) {
+    addLogEntry(ev);
+    return;
+  }
+  const temp = document.createElement('div');
+  temp.innerHTML = '';
+  const oldScroll = logBody.scrollTop;
+  addLogEntry(ev);
+  const inserted = logBody.lastElementChild;
+  existing.replaceWith(inserted);
+  if (document.getElementById('logFollowCb').checked) logBody.scrollTop = logBody.scrollHeight;
+  else logBody.scrollTop = oldScroll;
+}
+
+function ensureExecShell() {
+  if (!document.getElementById('execLog')) {
+    execEl.innerHTML = `
+      <div class="exec-log" id="execLog"></div>
+      <div class="exec-input" id="execInputWrap">
+        <span class="exec-input-label" id="execInputLabel">Input</span>
+        <input class="exec-input-box" id="execInputEl" type="password" placeholder="Send input to the running command and press Enter" autocomplete="off" spellcheck="false">
+        <button class="btn exec-input-toggle" id="execInputToggleBtn" onclick="toggleExecInputMode()">Show</button>
+        <button class="btn exec-input-send" id="execInputSendBtn" onclick="sendExecInput()">Send</button>
+      </div>`;
+  }
+  execInputWrap = document.getElementById('execInputWrap');
+  execInputEl = document.getElementById('execInputEl');
+  execInputToggleBtn = document.getElementById('execInputToggleBtn');
+  if (execInputEl && !execInputEl.dataset.bound) {
+    execInputEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        sendExecInput();
+      }
+    });
+    execInputEl.dataset.bound = '1';
+  }
+}
+
+function updateExecInputTarget() {
+  ensureExecShell();
+  const label = document.getElementById('execInputLabel');
+  if (!label || !execInputEl) return;
+  const targetRid = (selId && document.querySelector(`.ev-block.ev-running[data-rid="${CSS.escape(selId)}"]`))
+    ? selId
+    : execInputTargetRid;
+  const targetName = (targetRid === selId && selId && byId[selId])
+    ? byId[selId].short_name
+    : execInputTargetName;
+  if (targetRid && targetName) {
+    label.textContent = `Input → ${targetName}`;
+    execInputEl.placeholder = `Send input to ${targetName} and press Enter`;
+  } else {
+    label.textContent = 'Input';
+    execInputEl.placeholder = 'Select a running step, then send input';
+  }
+}
+
+function toggleExecInputMode() {
+  ensureExecShell();
+  if (!execInputEl || !execInputToggleBtn) return;
+  const show = execInputEl.type === 'password';
+  execInputEl.type = show ? 'text' : 'password';
+  execInputToggleBtn.textContent = show ? 'Hide' : 'Show';
+  execInputEl.focus();
+}
+
+function setExecInputVisible(show) {
+  ensureExecShell();
+  if (!execInputWrap) return;
+  execInputWrap.classList.toggle('show', !!show);
+  if (execInputEl) {
+    if (!show) execInputEl.value = '';
+    execInputEl.type = 'password';
+  }
+  if (execInputToggleBtn) execInputToggleBtn.textContent = 'Show';
+  if (!show) {
+    execInputTargetRid = null;
+    execInputTargetName = null;
+  }
+  updateExecInputTarget();
+}
+
+async function sendExecInput() {
+  ensureExecShell();
+  if (!execInputEl) return;
+  const value = execInputEl.value;
+  if (!value) return;
+  const targetRid = (selId && document.querySelector(`.ev-block.ev-running[data-rid="${CSS.escape(selId)}"]`))
+    ? selId
+    : execInputTargetRid;
+  const r = await api('POST', '/api/apply/input', { text: value + '\n', target_step: targetRid || undefined });
+  if (r && r.error) {
+    setStatus('err', r.error);
+    return;
+  }
+  execInputEl.value = '';
+  execInputEl.focus();
+}
+
+function ensureExecLog() {
+  let log = document.getElementById('execLog');
+  if (!log) {
+    execEl.innerHTML = '<div class="exec-log" id="execLog"></div>';
+    log = document.getElementById('execLog');
+  }
+  return log;
+}
+
+function addExecRunningEntry(ev) {
+  const log = ensureExecLog();
+  const block = document.createElement('div');
+  block.className = 'ev-block ev-running';
+  block.dataset.rid = ev.id;
+  block.innerHTML = `
+    <div class="ev">
+      <span class="ev-icon" style="animation:demo-pulse .8s infinite">&#9655;</span>
+      <span class="ev-name">${esc(ev.name)}</span>
+      <span class="ev-time" style="color:var(--amber)" data-running-elapsed="${esc(ev.id)}">running...</span>
+    </div>
+    <div class="ev-meta" data-running-meta="${esc(ev.id)}">starting...</div>
+    ${ev.check ? `<pre class="ev-cmd">$ ${esc(ev.check)}</pre>` : ''}
+    ${ev.run ? `<pre class="ev-cmd">$ ${esc(ev.run)}</pre>` : ''}
+    <pre class="ev-stream stdout"></pre>
+    <pre class="ev-stream stderr"></pre>`;
+  log.appendChild(block);
+  execInputTargetRid = ev.id;
+  execInputTargetName = ev.name;
+  updateExecInputTarget();
+  updateRunningMetaDisplay(ev.id);
+}
+
+function appendExecOutput(rid, stream, chunk) {
+  const log = document.getElementById('execLog');
+  if (!log) return;
+  const block = log.querySelector(`.ev-block.ev-running[data-rid="${rid}"]`);
+  if (!block) return;
+  const meta = runningStepMeta.get(rid);
+  if (meta) {
+    meta.lastOutputAt = new Date().toISOString();
+    meta.interactive = false;
+    updateRunningMetaDisplay(rid);
+    refreshExecInputAvailability();
+  }
+  const box = block.querySelector(`.ev-stream.${stream}`);
+  if (!box) return;
+  execInputTargetRid = rid;
+  execInputTargetName = (byId[rid] && byId[rid].short_name) || execInputTargetName || rid;
+  updateExecInputTarget();
+  appendTerminalChunk(box, chunk);
+  box.scrollTop = box.scrollHeight;
+}
+
+function finishExecEntry(ev) {
+  const log = ensureExecLog();
+  const existing = log.querySelector(`.ev-block[data-rid="${ev.id}"]`);
+  const isSkip = ev.status === 'skip' || ev.status === 'skip_check' || ev.status === 'skip_when';
+  const isCancelled = ev.status === 'cancelled';
+  const isFail = ev.status === 'failed' || ev.status === 'timeout';
+  const cls = ev.status === 'success' ? 'ev-ok' : isSkip ? 'ev-skip' : isFail ? 'ev-fail' : 'ev-warn';
+  const icon = ev.status === 'success' ? '✓' : isSkip ? '↷' : isFail ? '✗' : isCancelled ? '■' : '⚠';
+  let rerun = (isFail || isCancelled) ? `<span class="ev-rerun" data-action="rerun-step" data-step="${esc(ev.name)}">rerun</span>` : '';
+  const block = document.createElement('div');
+  block.className = `ev-block ${cls}`;
+  block.dataset.rid = ev.id;
+  block.innerHTML = `
+    <div class="ev ${cls}">
+      <span class="ev-icon">${icon}</span>
+      <span class="ev-name">[${ev.idx}/${ev.total}] ${esc(ev.name)}${rerun}</span>
+      <span class="ev-time">${ev.ms}ms</span>
+    </div>
+    <pre class="ev-stream stdout">${ansiToHtml(ev.stdout || '')}</pre>
+    <pre class="ev-stream stderr">${ansiToHtml(ev.stderr || '')}</pre>`;
+  if (existing) existing.replaceWith(block);
+  else log.appendChild(block);
+  runningStepMeta.delete(ev.id);
+  if (runningStepMeta.size === 0) stopRunningStepTicker();
+  if (execInputTargetRid === ev.id) {
+    execInputTargetRid = null;
+    execInputTargetName = null;
+    const remaining = document.querySelector('.ev-block.ev-running[data-rid]');
+    if (remaining) {
+      execInputTargetRid = remaining.dataset.rid;
+      execInputTargetName = (byId[execInputTargetRid] && byId[execInputTargetRid].short_name) || execInputTargetRid;
+    }
+  }
+  updateExecInputTarget();
+  refreshExecInputAvailability();
+}
+
+function addLogSummary(hasFail, wasStopped) {
+  const div = document.createElement('div');
+  div.className = 'log-summary ' + (hasFail || wasStopped ? 'fail' : 'ok');
+  div.textContent = wasStopped ? '■ EXECUTION STOPPED' : (hasFail ? '✗ EXECUTION FAILED' : '✓ EXECUTION COMPLETE');
+  logBody.appendChild(div);
+  logBody.scrollTop = logBody.scrollHeight;
+}
+
+// ── Apply execution ────────────────────────────────────
+async function doApply() {
+  if (applyPollTimer) { doApplyStop(); return; }
+  applyBtn.textContent = '■ Stop';
+  applyBtn.className = 'btn';
+  applyBtn.style.background = 'var(--red)'; applyBtn.style.color = '#fff'; applyBtn.style.borderColor = 'var(--red)';
+  rerunBtn.disabled = true;
+
+  // Open log pane expanded and clear it
+  clearLog();
+  showLogPane(true);
+  logTitle.textContent = 'Executing...';
+  // Default to expanded view so all detail is visible
+  logAllExpanded = true;
+  document.getElementById('logExpandBtn').innerHTML = '&#8863; Collapse All';
+  applyCursor = 0;
+  applyStopClicks = 0;
+  applyHeartbeatTs = null;
+  applyPollErrorTs = null;
+
+  // Show progress bar, reset to 0
+  document.getElementById('progressWrap').style.display = '';
+  document.getElementById('progressBar').style.width = '0%';
+
+  // Show and switch to exec tab
+  document.getElementById('tabExec').style.display = '';
+  switchInspTab('exec');
+  ensureExecShell();
+  document.getElementById('execLog').innerHTML = '<div style="color:var(--text3)">Starting apply...</div>';
+  setExecInputVisible(false);
+
+  const r = await apiWithVaultRetry('POST', '/api/apply', { source: codeEl.value });
+  if (r.error) {
+    logBody.innerHTML = `<div class="log-entry"><div class="log-entry-hdr"><span class="log-icon fail">✗</span><span class="log-name">${esc(r.error)}</span></div></div>`;
+    ensureExecShell();
+    document.getElementById('execLog').innerHTML = `<div class="ev ev-fail">${esc(r.error)}</div>`;
+    setExecInputVisible(false);
+    logTitle.textContent = 'Failed';
+    resetApplyBtn(); return;
+  }
+  applyPollTimer = setInterval(pollApplyEvents, 300);
+}
+
+async function doApplyStop() {
+  if (!applyPollTimer) return;
+  applyStopClicks += 1;
+  const force = applyStopClicks > 1;
+  await api('POST', '/api/apply/stop', { force });
+  applyBtn.textContent = force ? '✕ Killing...' : '✕ Kill';
+  applyBtn.className = 'btn';
+  applyBtn.style.background = force ? 'var(--red)' : 'var(--amber)';
+  applyBtn.style.color = '#fff';
+  applyBtn.style.borderColor = force ? 'var(--red)' : 'var(--amber)';
+}
+
+function resetApplyBtn() {
+  clearInterval(applyPollTimer); applyPollTimer = null;
+  applyStopClicks = 0;
+  applyHeartbeatTs = null;
+  applyPollErrorTs = null;
+  runningStepMeta.clear();
+  stopRunningStepTicker();
+  setExecInputVisible(false);
+  applyBtn.textContent = '▶ Apply';
+  applyBtn.className = 'btn btn-green';
+  applyBtn.style.background = ''; applyBtn.style.color = ''; applyBtn.style.borderColor = '';
+  rerunBtn.disabled = false;
+  document.getElementById('progressWrap').style.display = 'none';
+}
+
+async function pollApplyEvents() {
+  try {
+    const r = await api('GET', '/api/apply/events?since=' + applyCursor);
+    if (r.error) throw new Error(r.error);
+    if (!r.events) return;
+    let stepCount = 0, failCount = 0;
+    let skipCount = 0, cancelCount = 0;
+    r.events.forEach(ev => {
+      if (ev.type === 'apply_heartbeat') {
+        applyHeartbeatTs = Date.parse(ev.ts || '') || Date.now();
+        applyPollErrorTs = null;
+        updateApplyConnectionStatus();
+      } else if (ev.type === 'wave') {
+        const log = document.getElementById('execLog');
+        if (log) {
+          const tw = ev.total_waves || '?', dn = ev.done || 0, tot = ev.total || '?';
+          log.innerHTML += `<div class="ev-wave">── Wave ${ev.wave}/${tw} (${dn}/${tot} done, ${ev.count} to run) ──</div>`;
+        }
+        addLogWave(ev.wave, ev.count);
+      } else if (ev.type === 'step_start') {
+        // Step is starting execution — highlight card as in-progress
+        if (document.getElementById('logFollowCb').checked) {
+          const cardId = ev.id || ev.name;
+          const card = document.querySelector(`.nc[data-id="${CSS.escape(cardId)}"]`);
+          if (card) {
+            card.classList.add('follow-hl');
+            if (document.getElementById('graphPanel').style.display !== 'none') {
+              card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          }
+        }
+        addExecRunningEntry(ev);
+        addRunningLogEntry(ev);
+      } else if (ev.type === 'step_proc') {
+        const meta = runningStepMeta.get(ev.id);
+        if (meta) {
+          meta.pid = ev.pid || null;
+          meta.interactive = !!ev.interactive;
+          meta.procAlive = true;
+          meta.returnCode = null;
+          updateRunningMetaDisplay(ev.id);
+          refreshExecInputAvailability();
+        }
+      } else if (ev.type === 'step_proc_state') {
+        const meta = runningStepMeta.get(ev.id);
+        if (meta) {
+          meta.procAlive = !!ev.alive;
+          meta.returnCode = ev.returncode;
+          updateRunningMetaDisplay(ev.id);
+        }
+      } else if (ev.type === 'step_output') {
+        appendExecOutput(ev.id, ev.stream, ev.chunk || '');
+        appendRunningLogOutput(ev.id, ev.stream, ev.chunk || '');
+        if (document.getElementById('logFollowCb').checked) {
+          const log = document.getElementById('execLog');
+          if (log) log.scrollTop = log.scrollHeight;
+        }
+      } else if (ev.type === 'step') {
+        stepCount++;
+        if (ev.status === 'skip' || ev.status === 'skip_check') skipCount++;
+        if (ev.status === 'failed' || ev.status === 'timeout') failCount++;
+        if (ev.status === 'cancelled') cancelCount++;
+        // Update progress bar
+        if (ev.idx && ev.total) {
+          const pct = Math.round(ev.idx / ev.total * 100);
+          document.getElementById('progressBar').style.width = pct + '%';
+        }
+        finishExecEntry(ev);
+        // Log pane (rich detail)
+        replaceRunningLogEntry(ev);
+        logTitle.textContent = `Executing... [${ev.idx}/${ev.total}]`;
+        // Auto-follow: remove highlight from completed card, scroll log
+        if (document.getElementById('logFollowCb').checked) {
+          const cardId = ev.id || ev.name;
+          const card = document.querySelector(`.nc[data-id="${CSS.escape(cardId)}"]`);
+          if (card) card.classList.remove('follow-hl');
+          logBody.scrollTop = logBody.scrollHeight;
+        }
+      } else if (ev.type === 'error') {
+        const log = document.getElementById('execLog');
+        if (log) log.innerHTML += `<div class="ev ev-fail"><span class="ev-icon">✗</span><span class="ev-name">${esc(ev.msg)}</span></div>`;
+        const entry = document.createElement('div'); entry.className = 'log-entry';
+        entry.innerHTML = `<div class="log-entry-hdr"><span class="log-icon fail">✗</span><span class="log-name">${esc(ev.msg)}</span></div>`;
+        logBody.appendChild(entry);
+      } else if (ev.type === 'failed') {
+        // Separate failed event — already handled by the step event
+      } else if (ev.type === 'done') {
+        const hasFail = !!logBody.querySelector('.log-icon.fail') || failCount > 0;
+        const wasStopped = cancelCount > 0 && failCount === 0;
+        const log = document.getElementById('execLog');
+        if (log) {
+          // Show skip banner at the TOP of the exec log so it's immediately visible
+          if (skipCount > 0 && skipCount === stepCount) {
+            log.insertAdjacentHTML('afterbegin', `<div class="ev-wave" style="color:var(--yellow);border-color:var(--yellow);margin-bottom:6px">⚠ All ${skipCount} steps skipped — completed previously. Click ⟳ Re-run All to start fresh.</div>`);
+          } else if (stepCount > 0 && skipCount > stepCount * 0.8) {
+            log.insertAdjacentHTML('afterbegin', `<div class="ev-wave" style="color:var(--yellow);border-color:var(--yellow);margin-bottom:6px">⚠ ${skipCount}/${stepCount} steps skipped from state. Click ⟳ Re-run All to re-execute all.</div>`);
+          }
+          log.innerHTML += `<div class="ev-done ${(hasFail || wasStopped) ? 'fail' : 'ok'}">${wasStopped ? '■ STOPPED' : (hasFail ? '✗ FAILED' : '✓ COMPLETE')}</div>`;
+        }
+        addLogSummary(hasFail, wasStopped);
+        logTitle.textContent = wasStopped ? 'Execution stopped' : (hasFail ? 'Execution failed' : (skipCount === stepCount && stepCount > 0 ? 'All skipped (state)' : 'Execution complete'));
+        // Clear follow highlight
+        document.querySelectorAll('.nc.follow-hl').forEach(c => c.classList.remove('follow-hl'));
+        resetApplyBtn();
+        triggerResolve();
+        // Show Report tab if there's collect data
+        loadReport().then(() => {
+          const rEl = document.getElementById('reportContent');
+          if (rEl && !rEl.querySelector('.empty')) {
+            document.getElementById('tabReport').style.display = '';
+          }
+        }).catch(() => {});
+      }
+    });
+    applyCursor = r.cursor;
+    const log = document.getElementById('execLog');
+    if (log && document.getElementById('logFollowCb').checked) log.scrollTop = log.scrollHeight;
+    updateApplyConnectionStatus();
+  } catch(e) {
+    applyPollErrorTs = Date.now();
+    const msg = e && e.message ? e.message : String(e);
+    logTitle.textContent = `Executing... (polling lost: ${msg})`;
+    setStatus('err', 'Apply polling failed: ' + msg);
+    const log = document.getElementById('execLog');
+    if (log) log.innerHTML += `<div class="ev ev-fail"><span class="ev-icon">✗</span><span class="ev-name">${esc('Apply polling failed: ' + msg)}</span></div>`;
+    resetApplyBtn();
+  }
+}
+
+async function doApplyFresh() {
+  if (applyPollTimer) { doApplyStop(); return; }
+  const resp = await api('POST', '/api/state/reset', {});
+  if (resp && resp.error) { appendLog('ev-fail', '✗ Failed to reset state: ' + resp.error); return; }
+  doApply();
+}
+
+async function doRerun(stepName) {
+  await api('POST', '/api/state/set', { step: stepName, action: 'redo' });
+  doApply();
+}
+
+// ── Autocomplete ───────────────────────────────────────
+async function loadTemplates() {
+  try {
+    const r = await api('GET', '/api/templates');
+    templates = r.templates || [];
+  } catch(e) {}
+}
+
+function updateStepNames(src) {
+  stepNames = [];
+  const re = /\[([^\]]+)\]/g; let m;
+  while ((m = re.exec(src)) !== null) stepNames.push(m[1]);
+}
+
+function showAutocomplete() {
+  const pos = codeEl.selectionStart;
+  const before = codeEl.value.substring(0, pos);
+  const lineStart = before.lastIndexOf('\n') + 1;
+  const line = before.substring(lineStart);
+
+  let items = [];
+  // After "first [" or "needs [" — suggest step names
+  const stepMatch = line.match(/(?:first|needs)\s+(?:\[([^\]]*,\s*)?)\[?([^\]]*)?$/);
+  if (stepMatch) {
+    const partial = (stepMatch[2] || '').toLowerCase();
+    items = stepNames.filter(s => s.toLowerCase().includes(partial)).slice(0, 8)
+      .map(s => ({ text: s, insert: `[${s}]`, icon: '□' }));
+  }
+  // After "from " — suggest templates
+  const fromMatch = line.match(/from\s+([\w/]*)$/);
+  if (fromMatch) {
+    const partial = fromMatch[1].toLowerCase();
+    items = templates.filter(t => t.path.toLowerCase().includes(partial)).slice(0, 8)
+      .map(t => ({ text: t.path, insert: t.path, icon: '◇', desc: t.params.map(p => p.name).join(', ') }));
+  }
+
+  if (items.length === 0) { hideAc(); return; }
+  acIdx = 0;
+  renderAc(items);
+}
+
+function renderAc(items) {
+  // Position popup near cursor
+  const rect = codeEl.getBoundingClientRect();
+  const pos = codeEl.selectionStart;
+  const lines = codeEl.value.substring(0, pos).split('\n');
+  const lineH = 21; // approximate
+  const top = rect.top + (lines.length * lineH) - codeEl.scrollTop + 4;
+  const col = lines[lines.length - 1].length;
+  const left = rect.left + 50 + (col * 7.8) - codeEl.scrollLeft;
+
+  acPopup.style.top = Math.min(top, window.innerHeight - 180) + 'px';
+  acPopup.style.left = Math.min(left, window.innerWidth - 220) + 'px';
+  acPopup.innerHTML = items.map((it, i) =>
+    `<div class="ac-item${i === acIdx ? ' sel' : ''}" data-idx="${i}" onmousedown="pickAc(${i})"><span class="ac-icon">${it.icon}</span>${esc(it.text)}${it.desc ? '<span style="margin-left:auto;color:var(--text3);font-size:9px">' + esc(it.desc) + '</span>' : ''}</div>`
+  ).join('');
+  acPopup._items = items;
+  acPopup.classList.add('show');
+}
+
+function hideAc() { acPopup.classList.remove('show'); acPopup._items = null; acIdx = -1; }
+
+function pickAc(idx) {
+  const items = acPopup._items;
+  if (!items || !items[idx]) return;
+  const it = items[idx];
+  const pos = codeEl.selectionStart;
+  const before = codeEl.value.substring(0, pos);
+  const after = codeEl.value.substring(pos);
+  // Find what to replace: last partial match
+  const lineStart = before.lastIndexOf('\n') + 1;
+  const line = before.substring(lineStart);
+  let replaceFrom = pos;
+  if (it.icon === '□') { // step name
+    const m = line.match(/\[([^\]]*)$/);
+    if (m) replaceFrom = pos - m[1].length - 1;
+    codeEl.value = before.substring(0, replaceFrom) + it.insert + after;
+    codeEl.selectionStart = codeEl.selectionEnd = replaceFrom + it.insert.length;
+  } else { // template path
+    const m = line.match(/from\s+([\w/]*)$/);
+    if (m) replaceFrom = pos - m[1].length;
+    let ins = it.insert + ':\n';
+    const item = templates.find(t => t.path === it.text);
+    if (item) {
+      const indent = line.match(/^(\s*)/)[1] + '  ';
+      item.params.forEach(p => { ins += `${indent}${p.name} = "${p.default || ''}"\n`; });
+    }
+    codeEl.value = before.substring(0, replaceFrom) + ins + after;
+    codeEl.selectionStart = codeEl.selectionEnd = replaceFrom + ins.length;
+  }
+  hideAc();
+  codeEl.dispatchEvent(new Event('input'));
+}
+
+// ── Resize handle ──────────────────────────────────────
+const resizeH = document.getElementById('resizeH');
+const editorPanel = document.getElementById('editorPanel');
+let resizing = false;
+resizeH.addEventListener('mousedown', e => { resizing = true; resizeH.classList.add('active'); e.preventDefault(); });
+document.addEventListener('mousemove', e => { if (!resizing) return; editorPanel.style.width = Math.max(200, e.clientX) + 'px'; });
+document.addEventListener('mouseup', () => { resizing = false; resizeH.classList.remove('active'); setTimeout(() => drawA(), 50); });
+window.addEventListener('resize', () => drawA());
+document.addEventListener('click', e => {
+  const fileLink = e.target.closest('.prob-file-link[data-resolved]');
+  if (fileLink) {
+    e.stopPropagation();
+    openSideEditor(
+      fileLink.dataset.resolved,
+      fileLink.dataset.type,
+      fileLink.dataset.path,
+      fileLink.dataset.step || undefined
+    );
+    return;
+  }
+  const actionEl = e.target.closest('[data-action]');
+  if (!actionEl) return;
+  const action = actionEl.dataset.action;
+  if (action === 'open-side-editor') {
+    openSideEditor(
+      actionEl.dataset.resolved,
+      actionEl.dataset.type,
+      actionEl.dataset.path,
+      actionEl.dataset.step || undefined
+    );
+    return;
+  }
+  if (action === 'select-resource') {
+    e.stopPropagation();
+    selectResource(actionEl.dataset.rid);
+    return;
+  }
+  if (action === 'scroll-log-resource') {
+    e.stopPropagation();
+    scrollLogToResource(actionEl.dataset.rid);
+    return;
+  }
+  if (action === 'toggle-log-detail') {
+    const detail = actionEl.nextElementSibling;
+    if (detail) detail.classList.toggle('open');
+    selectResource(actionEl.dataset.rid);
+    return;
+  }
+  if (action === 'rerun-step') {
+    e.stopPropagation();
+    doRerun(actionEl.dataset.step);
+  }
+});
+// Close more-menu on outside click
+document.addEventListener('click', e => {
+  const mm = document.getElementById('moreMenu');
+  if (mm && mm.classList.contains('show') && !e.target.closest('#moreMenu') && !e.target.closest('[onclick*="moreMenu"]')) {
+    mm.classList.remove('show');
+  }
+});
+filenameEl.addEventListener('click', () => { if (availableGraphFiles.length) openFilePicker(); });
+filePickerBtn.addEventListener('click', () => { if (availableGraphFiles.length) openFilePicker(); });
+filePickerBackdrop.addEventListener('click', closeFilePicker);
+document.addEventListener('keydown', e => {
+  if (filePickerBackdrop.style.display !== 'none' && e.key === 'Escape') {
+    closeFilePicker();
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+    e.preventDefault();
+    openFilePicker();
+  }
+});
+
+
+// ── Static GitHub Pages demo shim ──────────────────────
+const STATIC_DEMO_SOURCE = "--- README-style web app rollout ---\n\ntarget \"demo\" local:\n\n  [install nginx]:\n    skip if $ test -x /tmp/cgr-pages-demo/bin/nginx\n    run    $ mkdir -p /tmp/cgr-pages-demo/bin && printf '#!/bin/sh\\nexit 0\\n' > /tmp/cgr-pages-demo/bin/nginx && chmod +x /tmp/cgr-pages-demo/bin/nginx\n\n  [write site config]:\n    first [install nginx]\n    content > /tmp/cgr-pages-demo/nginx.conf:\n      server {\n          listen 8080;\n          server_name demo.local;\n          root /tmp/cgr-pages-demo/www;\n          index index.html;\n          location / { try_files $uri $uri/ =404; }\n      }\n    validate $ /tmp/cgr-pages-demo/bin/nginx -t\n\n  [enable site]:\n    first [write site config]\n    skip if $ test -L /tmp/cgr-pages-demo/sites-enabled/myapp\n    run    $ mkdir -p /tmp/cgr-pages-demo/sites-enabled && ln -sf /tmp/cgr-pages-demo/nginx.conf /tmp/cgr-pages-demo/sites-enabled/myapp\n\n  [deploy code]:\n    first [install nginx]\n    skip if $ test -f /tmp/cgr-pages-demo/www/index.html\n    run    $ mkdir -p /tmp/cgr-pages-demo/www && printf '<h1>Hello from CommandGraph</h1>\\n' > /tmp/cgr-pages-demo/www/index.html\n\n  [start nginx]:\n    first [enable site], [deploy code]\n    run $ printf 'nginx would reload here\\n'\n\n  verify \"site is live\":\n    first [start nginx]\n    run $ test -f /tmp/cgr-pages-demo/www/index.html\n    retry 3x wait 2s\n";
+const STATIC_DEMO_FILE = "readme-style-webapp.cgr";
+const STATIC_DEMO_RESOLVE = {"graph": {"resources": [{"id": "demo.install_nginx", "short_name": "install_nginx", "node_name": "demo", "description": "install nginx", "needs": [], "check": "test -x /tmp/cgr-pages-demo/bin/nginx", "run": "mkdir -p /tmp/cgr-pages-demo/bin && printf '#!/bin/sh\\nexit 0\\n' > /tmp/cgr-pages-demo/bin/nginx && chmod +x /tmp/cgr-pages-demo/bin/nginx", "script_path": "", "run_as": "", "timeout": 300, "timeout_reset_on_output": false, "retries": 0, "retry_delay": 5, "on_fail": "stop", "is_verify": false, "provenance": null, "identity_hash": "4170b424c04edf1a", "parallel_group": null, "concurrency_limit": null, "is_race": false, "race_into": null, "is_barrier": false, "source_line": 5, "collect_key": null, "http_method": null, "wait_kind": null, "subgraph_path": null}, {"id": "demo.write_site_config", "short_name": "write_site_config", "node_name": "demo", "description": "write site config", "needs": ["demo.install_nginx"], "check": "", "run": "", "script_path": "", "run_as": "", "timeout": 300, "timeout_reset_on_output": false, "retries": 0, "retry_delay": 5, "on_fail": "stop", "is_verify": false, "provenance": null, "identity_hash": "35e3b81f35b769e3", "parallel_group": null, "concurrency_limit": null, "is_race": false, "race_into": null, "is_barrier": false, "source_line": 9, "collect_key": null, "http_method": null, "wait_kind": null, "subgraph_path": null}, {"id": "demo.enable_site", "short_name": "enable_site", "node_name": "demo", "description": "enable site", "needs": ["demo.write_site_config"], "check": "test -L /tmp/cgr-pages-demo/sites-enabled/myapp", "run": "mkdir -p /tmp/cgr-pages-demo/sites-enabled && ln -sf /tmp/cgr-pages-demo/nginx.conf /tmp/cgr-pages-demo/sites-enabled/myapp", "script_path": "", "run_as": "", "timeout": 300, "timeout_reset_on_output": false, "retries": 0, "retry_delay": 5, "on_fail": "stop", "is_verify": false, "provenance": null, "identity_hash": "6700a9afbc43ce5f", "parallel_group": null, "concurrency_limit": null, "is_race": false, "race_into": null, "is_barrier": false, "source_line": 21, "collect_key": null, "http_method": null, "wait_kind": null, "subgraph_path": null}, {"id": "demo.deploy_code", "short_name": "deploy_code", "node_name": "demo", "description": "deploy code", "needs": ["demo.install_nginx"], "check": "test -f /tmp/cgr-pages-demo/www/index.html", "run": "mkdir -p /tmp/cgr-pages-demo/www && printf '<h1>Hello from CommandGraph</h1>\\n' > /tmp/cgr-pages-demo/www/index.html", "script_path": "", "run_as": "", "timeout": 300, "timeout_reset_on_output": false, "retries": 0, "retry_delay": 5, "on_fail": "stop", "is_verify": false, "provenance": null, "identity_hash": "12d49ea429d6890e", "parallel_group": null, "concurrency_limit": null, "is_race": false, "race_into": null, "is_barrier": false, "source_line": 26, "collect_key": null, "http_method": null, "wait_kind": null, "subgraph_path": null}, {"id": "demo.start_nginx", "short_name": "start_nginx", "node_name": "demo", "description": "start nginx", "needs": ["demo.enable_site", "demo.deploy_code"], "check": "", "run": "printf 'nginx would reload here\\n'", "script_path": "", "run_as": "", "timeout": 300, "timeout_reset_on_output": false, "retries": 0, "retry_delay": 5, "on_fail": "stop", "is_verify": false, "provenance": null, "identity_hash": "fe6f71951dad307b", "parallel_group": null, "concurrency_limit": null, "is_race": false, "race_into": null, "is_barrier": false, "source_line": 31, "collect_key": null, "http_method": null, "wait_kind": null, "subgraph_path": null}, {"id": "demo.__verify_35", "short_name": "__verify_35", "node_name": "demo", "description": "site is live", "needs": ["demo.start_nginx"], "check": "", "run": "test -f /tmp/cgr-pages-demo/www/index.html", "script_path": "", "run_as": "", "timeout": 30, "timeout_reset_on_output": false, "retries": 3, "retry_delay": 2, "on_fail": "warn", "is_verify": true, "provenance": null, "identity_hash": "48a0a8e3130f2cf5", "parallel_group": null, "concurrency_limit": null, "is_race": false, "race_into": null, "is_barrier": false, "source_line": 35, "collect_key": null, "http_method": null, "wait_kind": null, "subgraph_path": null}], "waves": [["demo.install_nginx"], ["demo.deploy_code", "demo.write_site_config"], ["demo.enable_site"], ["demo.start_nginx"], ["demo.__verify_35"]], "nodes": {"demo": {"via": "local", "host": "", "user": "", "port": "22"}}, "provenance": [], "dedup": {}, "variables": {}}, "resources": 6, "waves_count": 5, "waves": 5, "variables": {}, "external_files": []};
+
+function staticDemoNotice() {
+  const changed = codeEl.value !== STATIC_DEMO_SOURCE;
+  setStatus(changed ? 'warn' : 'ok', changed ? 'Static graph demo' : (STATIC_DEMO_RESOLVE.resources + ' res, ' + STATIC_DEMO_RESOLVE.waves_count + ' waves'));
+  statusBadge.title = 'GitHub Pages static IDE demo: editing text updates highlighting only; the graph is precomputed.';
+}
+
+api = async function(method, path, body) {
+  const cleanPath = String(path || '').split('?')[0];
+  if (cleanPath === '/api/info') {
+    return {
+      file: STATIC_DEMO_FILE,
+      files: [STATIC_DEMO_FILE],
+      file_entries: [{ name: STATIC_DEMO_FILE, is_template: false, tags: ['example', 'cgr'] }],
+      read_only: true,
+      static_demo: true
+    };
+  }
+  if (cleanPath === '/api/file/open') return { ok: true };
+  if (cleanPath === '/api/file') return { name: STATIC_DEMO_FILE, content: STATIC_DEMO_SOURCE };
+  if (cleanPath === '/api/resolve') return STATIC_DEMO_RESOLVE;
+  if (cleanPath === '/api/lint') return { warnings: [] };
+  if (cleanPath === '/api/templates') return { templates: [] };
+  if (cleanPath === '/api/report') return { report: {}, items: [] };
+  if (cleanPath === '/api/apply/events') return { events: [], cursor: 0, running: false };
+  return { error: 'This GitHub Pages IDE demo is static. Run cgr serve locally for ' + cleanPath + '.' };
+};
+
+apiWithVaultRetry = async function(method, path, body) {
+  return api(method, path, body);
+};
+
+triggerResolve = function() {
+  clearTimeout(resolveTimer);
+  resolveTimer = setTimeout(() => {
+    hideError();
+    graphData = STATIC_DEMO_RESOLVE;
+    renderGraph(STATIC_DEMO_RESOLVE);
+    document.getElementById('tabFiles').style.display = 'none';
+    staticDemoNotice();
+  }, 120);
+};
+
+doSave = async function() {
+  setStatus('warn', 'Static demo: Save disabled');
+  statusBadge.title = 'Run cgr serve locally to save files.';
+};
+
+doCheck = async function() {
+  hideProblems();
+  graphData = STATIC_DEMO_RESOLVE;
+  renderGraph(STATIC_DEMO_RESOLVE);
+  setStatus('warn', 'Static graph demo');
+  statusBadge.title = 'This page uses a precomputed graph. Run cgr serve locally for live Check.';
+};
+
+doApply = async function() {
+  if (typeof demoToggle === 'function') demoToggle();
+};
+
+doApplyFresh = async function() {
+  if (typeof demoToggle === 'function') demoToggle();
+};
+
+doRerun = async function() {
+  if (typeof demoToggle === 'function') demoToggle();
+};
+
+// ── Init ───────────────────────────────────────────────
+(async function init() {
+  try {
+    const info = await api('GET', '/api/info');
+    availableGraphFiles = info.files || [];
+    availableGraphFileEntries = info.file_entries || availableGraphFiles.map(name => ({ name, is_template: false, tags: [] }));
+    refreshFilePickerTagOptions();
+    filenameEl.title = availableGraphFiles.length ? 'Click to choose file' : 'No graph files available';
+    filePickerBtn.classList.toggle('disabled', !availableGraphFiles.length);
+    filePickerBtn.title = availableGraphFiles.length ? 'Open graph file (Ctrl+O)' : 'No graph files available';
+    if (info.file) {
+      await loadFile(info.file);
+    } else {
+      setStatus('info', 'No file loaded');
+      filenameEl.textContent = '(no file)';
+    }
+    await loadTemplates();
+  } catch (e) {
+    setStatus('err', 'Server not reachable');
+  }
+})();
+
+// ═════════════════════════════════════════════════════════════════════════
+// Demo Runner — simulates graph execution wave by wave
+// ═════════════════════════════════════════════════════════════════════════
+
+class DemoRunner {
+  constructor() {
+    this.speed = 1.0;
+    this.state = 'idle';
+    this.completed = new Set();
+    this.failed = new Set();
+    this.failTarget = null;
+    this.failRecovered = false;
+    this.timeouts = [];
+    this.waveProg = {};
+    this.origBadges = new Map();
+    this.origClasses = new Map();
+  }
+
+  get waves() { return graphData && graphData.graph ? graphData.graph.waves : []; }
+
+  setSpeed(s) { this.speed = s; }
+  _t(ms) { return Math.round(ms / this.speed); }
+  _delay(fn, ms) { const id = setTimeout(fn, this._t(ms)); this.timeouts.push(id); return id; }
+
+  pickFailTarget() {
+    const waves = this.waves;
+    const minWave = Math.max(0, Math.floor(waves.length * 0.6));
+    const candidates = [];
+    for (let wi = minWave; wi < waves.length; wi++) {
+      for (const rid of waves[wi]) {
+        const r = byId[rid];
+        if (r && !r.is_verify && !r.is_barrier && r.needs.length > 0) candidates.push(rid);
+      }
+    }
+    if (candidates.length) this.failTarget = candidates[Math.floor(Math.random() * candidates.length)];
+  }
+
+  getCard(rid) { return document.getElementById('c-' + rid.replace(/[^a-zA-Z0-9]/g, '_')); }
+
+  setBadge(card, cls, text) {
+    let badge = card.querySelector('.stb');
+    if (!badge) { badge = document.createElement('span'); badge.className = 'stb'; card.appendChild(badge); }
+    badge.className = 'stb ' + cls; badge.textContent = text;
+  }
+
+  removeBadge(card) { const b = card.querySelector('.stb'); if (b) b.remove(); }
+
+  clearDemoClasses(card) {
+    card.classList.remove('demo-checking', 'demo-running', 'demo-failed-shake',
+      'demo-resuming', 'st-success', 'st-skip_check', 'st-failed', 'st-warned');
+  }
+
+  showToast(text, cls, duration) {
+    const area = document.getElementById('toast-area');
+    if (!area) return;
+    const t = document.createElement('div'); t.className = 'toast ' + (cls || ''); t.textContent = text;
+    area.appendChild(t);
+    this._delay(() => { if (t.parentNode) t.remove(); }, duration || 3000);
+  }
+
+  _initLog() {
+    document.getElementById('tabExec').style.display = '';
+    switchInspTab('exec');
+    execEl.innerHTML = '<div class="exec-log" id="execLog"><div style="color:var(--text3)">Demo starting...</div></div>';
+  }
+
+  _log(html) {
+    const log = document.getElementById('execLog');
+    if (log) { log.innerHTML += html; log.scrollTop = log.scrollHeight; }
+  }
+
+  initWaveProgress() {
+    document.querySelectorAll('.wl').forEach((wl, wi) => {
+      let pg = wl.querySelector('.wprog');
+      if (!pg) { pg = document.createElement('span'); pg.className = 'wprog'; wl.appendChild(pg); }
+      const total = this.waves[wi] ? this.waves[wi].length : 0;
+      pg.innerHTML = '<span class="wprog-bar"><span class="wprog-fill" style="width:0%"></span></span>0/' + total;
+      this.waveProg[wi] = { el: pg, done: 0, total: total };
+    });
+  }
+
+  updateWaveProgress(wi) {
+    const wp = this.waveProg[wi]; if (!wp) return;
+    wp.done++;
+    const pct = Math.round((wp.done / wp.total) * 100);
+    wp.el.innerHTML = '<span class="wprog-bar"><span class="wprog-fill" style="width:' + pct + '%"></span></span>' + wp.done + '/' + wp.total;
+  }
+
+  saveCardState() {
+    document.querySelectorAll('.nc').forEach(card => {
+      this.origClasses.set(card.dataset.id, card.className);
+      const badge = card.querySelector('.stb');
+      this.origBadges.set(card.dataset.id, badge ? badge.outerHTML : null);
+    });
+  }
+
+  restoreCardState() {
+    document.querySelectorAll('.nc').forEach(card => {
+      const rid = card.dataset.id;
+      if (this.origClasses.has(rid)) card.className = this.origClasses.get(rid);
+      const existingBadge = card.querySelector('.stb');
+      if (existingBadge) existingBadge.remove();
+      const origHTML = this.origBadges.get(rid);
+      if (origHTML) card.insertAdjacentHTML('afterbegin', origHTML);
+    });
+    document.querySelectorAll('.wprog').forEach(p => p.remove());
+    const ta = document.getElementById('toast-area'); if (ta) ta.innerHTML = '';
+  }
+
+  start() {
+    if (!graphData || !graphData.graph || !this.waves.length) {
+      this.showToast('No graph loaded — validate first', 'toast-fail', 2000); return;
+    }
+    this.saveCardState();
+    document.querySelectorAll('.nc').forEach(card => { this.clearDemoClasses(card); this.removeBadge(card); });
+    this.completed.clear(); this.failed.clear(); this.failRecovered = false;
+    this.waveProg = {};
+    this.pickFailTarget();
+    this.initWaveProgress();
+    this._initLog();
+    this.state = 'running'; this._updateButton();
+    this.showToast('Starting execution...', '', 2000);
+    this._delay(() => this.runWave(0), 600);
+  }
+
+  pause() { this.state = 'paused'; this.timeouts.forEach(clearTimeout); this.timeouts = []; this._updateButton(); }
+
+  reset() {
+    this.state = 'idle'; this.timeouts.forEach(clearTimeout); this.timeouts = [];
+    this.completed.clear(); this.failed.clear();
+    this.restoreCardState(); this._updateButton();
+  }
+
+  _updateButton() {
+    const btn = document.getElementById('bdemo'); if (!btn) return;
+    btn.classList.remove('demo-active', 'demo-done');
+    if (this.state === 'running') { btn.innerHTML = '\u23F8 Pause'; btn.classList.add('demo-active'); }
+    else if (this.state === 'paused') { btn.innerHTML = '\u25B6 Resume'; }
+    else if (this.state === 'done') { btn.innerHTML = '\u21BA Reset'; btn.classList.add('demo-done'); }
+    else { btn.innerHTML = '\u25B6 Demo'; }
+  }
+
+  runWave(wi) {
+    if (this.state !== 'running' || wi >= this.waves.length) {
+      if (this.state === 'running') {
+        this.state = 'done'; this._updateButton();
+        this._log('<div class="ev-done ok">✓ COMPLETE</div>');
+        this.showToast('All steps completed successfully', 'toast-done', 4000);
+      }
+      return;
+    }
+    const wave = this.waves[wi];
+    let waveCompleted = 0; const total = wave.length;
+    this._log(`<div class="ev-wave">── Wave ${wi + 1} (${total}) ──</div>`);
+
+    wave.forEach((rid, i) => {
+      const stagger = i * (120 + Math.random() * 180);
+      this._delay(() => {
+        if (this.state !== 'running') return;
+        this.simulateResource(rid, wi, () => {
+          waveCompleted++; this.updateWaveProgress(wi);
+          if (waveCompleted >= total) this._delay(() => this.runWave(wi + 1), 400);
+        });
+      }, stagger);
+    });
+  }
+
+  simulateResource(rid, wi, onDone) {
+    const card = this.getCard(rid); const res = byId[rid];
+    if (!card || !res) { onDone(); return; }
+    selectResource(rid);
+
+    const hasCheck = res.check && res.check !== 'false';
+    const isFail = rid === this.failTarget && !this.failRecovered;
+
+    if (hasCheck && !isFail) {
+      this.clearDemoClasses(card); card.classList.add('demo-checking');
+      this.setBadge(card, 'stb-checking', 'checking...');
+      this._delay(() => {
+        this.clearDemoClasses(card); card.classList.add('st-skip_check');
+        this.setBadge(card, 'stb-skip', 'skip'); this.completed.add(rid);
+        this._log(`<div class="ev ev-skip"><span class="ev-icon">↷</span><span class="ev-name">[${res.short_name}]</span><span class="ev-time">skip</span></div>`);
+        onDone();
+      }, 200 + Math.random() * 300);
+      return;
+    }
+
+    this.clearDemoClasses(card); card.classList.add('demo-checking');
+    this.setBadge(card, 'stb-checking', 'checking...');
+
+    this._delay(() => {
+      this.clearDemoClasses(card); card.classList.add('demo-running');
+      this.setBadge(card, 'stb-running', 'running...');
+      const runTime = res.is_verify ? (800 + Math.random() * 700) : (500 + Math.random() * 1500);
+
+      this._delay(() => {
+        if (isFail) {
+          this.clearDemoClasses(card); card.classList.add('st-failed', 'demo-failed-shake');
+          this.setBadge(card, 'stb-failed', 'FAIL'); this.failed.add(rid);
+          this._log(`<div class="ev ev-fail"><span class="ev-icon">✗</span><span class="ev-name">[${res.short_name}] failed (exit=1)</span></div>`);
+          this.showToast('\u2717 ' + res.short_name + ' failed (exit=1)', 'toast-fail', 5000);
+          this._delay(() => {
+            this.showToast('Resuming from [' + res.short_name + ']...', 'toast-resume', 3000);
+            this._delay(() => {
+              this.clearDemoClasses(card); card.classList.add('demo-resuming');
+              this.setBadge(card, 'stb-resuming', 'retrying...');
+              this._delay(() => {
+                this.clearDemoClasses(card); card.classList.add('st-success');
+                const ms = Math.round(400 + Math.random() * 800);
+                this.setBadge(card, 'stb-success', ms + 'ms');
+                this._log(`<div class="ev ev-ok"><span class="ev-icon">✓</span><span class="ev-name">[${res.short_name}] (retry)</span><span class="ev-time">${ms}ms</span></div>`);
+                this.failed.delete(rid); this.completed.add(rid); this.failRecovered = true;
+                this.showToast('\u2713 ' + res.short_name + ' succeeded on retry', 'toast-done', 3000);
+                onDone();
+              }, 800 + Math.random() * 600);
+            }, 800);
+          }, 1800);
+          return;
+        }
+        this.clearDemoClasses(card); card.classList.add('st-success');
+        const successMs = Math.round(runTime);
+        this.setBadge(card, 'stb-success', successMs + 'ms');
+        this._log(`<div class="ev ev-ok"><span class="ev-icon">✓</span><span class="ev-name">[${res.short_name}]</span><span class="ev-time">${successMs}ms</span></div>`);
+        this.completed.add(rid); onDone();
+      }, runTime);
+    }, 200 + Math.random() * 200);
+  }
+}
+
+const demo = new DemoRunner();
+
+function demoToggle() {
+  if (demo.state === 'idle') demo.start();
+  else if (demo.state === 'running') demo.pause();
+  else if (demo.state === 'paused') { demo.reset(); demo.start(); }
+  else if (demo.state === 'done') demo.reset();
+}
+
+function demoSpeed(val) { demo.setSpeed(parseFloat(val)); }
+
+// ── Theme toggle ───────────────────────────────────────
+function getTheme() {
+  const saved = localStorage.getItem('cgr-theme');
+  if (saved) return saved;
+  return window.matchMedia('(prefers-color-scheme:light)').matches ? 'light' : 'dark';
+}
+
+function applyTheme(theme) {
+  document.documentElement.classList.toggle('light', theme === 'light');
+  document.documentElement.classList.toggle('dark', theme === 'dark');
+  document.getElementById('themeBtn').textContent = theme === 'light' ? '\u263E' : '\u2600';
+}
+
+function toggleTheme() {
+  const next = getTheme() === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('cgr-theme', next);
+  applyTheme(next);
+}
+
+applyTheme(getTheme());
+</script>
+</body>
+</html>
