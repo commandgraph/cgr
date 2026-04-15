@@ -1,59 +1,107 @@
 --- Expand README nginx rollout across a fleet ---
 
 set release_id = "2026.04.15"
+set web_names = "web-01,web-02,web-03,web-04,web-05,web-06,web-07,web-08,web-09,web-10,web-11,web-12"
 set web_hosts = "web-01:deploy@10.0.1.11,web-02:deploy@10.0.1.12,web-03:deploy@10.0.1.13,web-04:deploy@10.0.1.14,web-05:deploy@10.0.1.15,web-06:deploy@10.0.1.16,web-07:deploy@10.0.1.17,web-08:deploy@10.0.1.18,web-09:deploy@10.0.1.19,web-10:deploy@10.0.1.20,web-11:deploy@10.0.1.21,web-12:deploy@10.0.1.22"
 
 target "control" local:
 
-  [prepare release bundle]:
-    skip if $ test -f /tmp/cgr-pages-demo/releases/myapp-${release_id}.tar.gz
-    run    $ mkdir -p /tmp/cgr-pages-demo/releases && printf "myapp %s\n" "${release_id}" > /tmp/cgr-pages-demo/releases/myapp-${release_id}.tar.gz
+  [build release]:
+    parallel 3 at a time, if one fails stop all:
+      [render nginx template]:
+        run $ mkdir -p /tmp/cgr-pages-demo/build && printf "server template %s\n" "${release_id}" > /tmp/cgr-pages-demo/build/nginx.conf
 
-  [smoke test release]:
-    first [prepare release bundle]
-    run $ test -s /tmp/cgr-pages-demo/releases/myapp-${release_id}.tar.gz
+      [compile static assets]:
+        run $ mkdir -p /tmp/cgr-pages-demo/build && printf "assets %s\n" "${release_id}" > /tmp/cgr-pages-demo/build/assets.txt
+
+      [write release notes]:
+        run $ mkdir -p /tmp/cgr-pages-demo/build && printf "release %s\n" "${release_id}" > /tmp/cgr-pages-demo/build/notes.txt
+
+    run $ tar -czf /tmp/cgr-pages-demo/myapp-${release_id}.tar.gz -C /tmp/cgr-pages-demo/build .
+
+  [choose artifact mirror]:
+    first [build release]
+
+    race:
+      [mirror us-east]:
+        run $ printf "us-east\n" > /tmp/cgr-pages-demo/mirror.txt
+
+      [mirror us-west]:
+        run $ printf "us-west\n" > /tmp/cgr-pages-demo/mirror.txt
+
+      [mirror eu-central]:
+        run $ printf "eu-central\n" > /tmp/cgr-pages-demo/mirror.txt
+
+  [preload release to fleet]:
+    first [choose artifact mirror]
+
+    each server in ${web_names}, 4 at a time:
+      [preload ${server}]:
+        run $ printf "preloaded ${release_id} for ${server}\n" >> /tmp/cgr-pages-demo/preload.log
+
+  [shift traffic]:
+    first [preload release to fleet]
+
+    stage "traffic shift":
+      phase "canary" 1 from ${web_names}:
+        [enable ${server} in load balancer]:
+          run $ printf "enabled canary ${server}\n" >> /tmp/cgr-pages-demo/lb.log
+
+        verify "canary ${server} healthy":
+          run $ printf "healthy ${server}\n"
+          retry 3x wait 2s
+
+      phase "half" 50% from ${web_names}:
+        each server, 3 at a time:
+          [enable ${server} in load balancer]:
+            run $ printf "enabled half ${server}\n" >> /tmp/cgr-pages-demo/lb.log
+
+      phase "remaining" rest from ${web_names}:
+        each server, 6 at a time:
+          [enable ${server} in load balancer]:
+            run $ printf "enabled remaining ${server}\n" >> /tmp/cgr-pages-demo/lb.log
 
 each name, addr in ${web_hosts}:
   target "${name}" ssh ${addr}:
 
     [install nginx] as root:
-      first [control/smoke test release]
+      first [control/choose artifact mirror]
       skip if $ command -v nginx
       run    $ apt-get update && apt-get install -y nginx
 
-    [write site config] as root:
+    [configure and stage ${name}]:
       first [install nginx]
-      content > /etc/nginx/sites-available/myapp:
-        server {
-            listen 80;
-            server_name ${name}.example.com;
-            root /var/www/myapp;
-            index index.html;
-            location / { try_files $uri $uri/ =404; }
-        }
-      validate $ nginx -t
 
-    [enable site] as root:
-      first [write site config]
-      skip if $ test -L /etc/nginx/sites-enabled/myapp
-      run    $ ln -sf /etc/nginx/sites-available/myapp /etc/nginx/sites-enabled/myapp
+      parallel, if one fails wait for rest:
+        [write site config] as root:
+          content > /etc/nginx/sites-available/myapp:
+            server {
+                listen 80;
+                server_name ${name}.example.com;
+                root /var/www/myapp/current;
+                index index.html;
+                location / { try_files $uri $uri/ =404; }
+            }
+          validate $ nginx -t
 
-    [deploy code]:
-      first [install nginx]
-      skip if $ test -f /var/www/myapp/releases/${release_id}/index.html
-      run    $ mkdir -p /var/www/myapp/releases/${release_id} && printf '<h1>Hello from ${name}</h1>\n' > /var/www/myapp/releases/${release_id}/index.html
+        [deploy code]:
+          skip if $ test -f /var/www/myapp/releases/${release_id}/index.html
+          run    $ mkdir -p /var/www/myapp/releases/${release_id} && printf '<h1>Hello from ${name}</h1>\n' > /var/www/myapp/releases/${release_id}/index.html
+
+        [write health endpoint]:
+          run $ mkdir -p /var/www/myapp/releases/${release_id} && printf 'ok ${name}\n' > /var/www/myapp/releases/${release_id}/health.txt
 
     [activate release] as root:
-      first [deploy code]
+      first [configure and stage ${name}]
       run $ ln -sfn /var/www/myapp/releases/${release_id} /var/www/myapp/current
 
     [start nginx] as root:
-      first [enable site], [activate release]
+      first [activate release]
       skip if $ systemctl is-active nginx
       run    $ systemctl reload-or-restart nginx
 
     verify "site is live on ${name}":
-      first [start nginx]
+      first [start nginx], [control/shift traffic]
       run $ curl -sf http://localhost/
       retry 3x wait 2s
 
