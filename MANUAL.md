@@ -111,6 +111,11 @@ set domain = "example.com"
 set port   = "443"
 ```
 
+**Facts** — populate controller-local system variables:
+```
+gather facts
+```
+
 **Imports** — load templates from the repository:
 ```
 using apt/install_package, tls/certbot, nginx/vhost
@@ -595,10 +600,41 @@ cgr apply audit.cgr -i staging.ini
 
 **Variable precedence** (lowest to highest):
 
-1. Inventory file (`[group:vars]`)
-2. Graph file (`set name = "value"`)
-3. Vars file (`--vars-file`)
-4. CLI flags (`--set KEY=VALUE`)
+1. Gathered facts (`gather facts`)
+2. Inventory file (`[group:vars]`)
+3. Graph file (`set name = "value"`)
+4. Vars file (`--vars-file`)
+5. Secrets file (`secrets "vault.enc"`)
+6. CLI flags (`--set KEY=VALUE`)
+
+### Facts
+
+`gather facts` collects facts from the machine running `cgr` and exposes them as normal variables. These are controller-local facts, not per-SSH-target facts. Override them with inventory, `set`, `--vars-file`, secrets, or `--set` when a graph needs target-specific values.
+
+```cgr
+gather facts
+
+target "local" local:
+  [install packages (apt)]:
+    when os_family == "debian"
+    run $ apt-get install -y nginx
+```
+
+| Variable | Meaning |
+|----------|---------|
+| `os_name` | Lowercase `uname` system name, such as `linux`, `darwin`, or `freebsd`. |
+| `os_release` | OS/kernel release from `uname`. |
+| `os_machine` | Machine type from `uname`, such as `x86_64`, `aarch64`, or `arm64`. |
+| `hostname` | Local hostname from `uname`. |
+| `arch` | CPU architecture from Python `platform.machine()`. |
+| `os_family` | Normalized OS family: `debian`, `redhat`, `suse`, `arch`, `alpine`, `darwin`, `unknown`, or an `/etc/os-release` fallback. |
+| `os_pretty` | `/etc/os-release` `PRETTY_NAME`, when present. |
+| `os_version` | `/etc/os-release` `VERSION_ID`, falling back to Python `platform.version()`. |
+| `os_id` | `/etc/os-release` `ID`, falling back to the lowercase `uname` system name. |
+| `cpu_count` | CPU count from Python `multiprocessing.cpu_count()`. |
+| `memory_mb` | Total memory in MiB from Linux `/proc/meminfo`; `0` when unavailable. |
+| `python_version` | Python runtime version used by `cgr`. |
+| `current_user` | `USER` or `LOGNAME` from the environment, falling back to `unknown`. |
 
 ### How it works
 

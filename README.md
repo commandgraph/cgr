@@ -488,6 +488,12 @@ Categories include: `apt`, `dnf`, `nginx`, `tls`, `firewall`, `systemd`, `servic
 
 ## Cross-distro, conditionals, and runtime detection
 
+Use `gather facts` when you want controller-local runtime facts such as `os_family`, `arch`, and `memory_mb` available as variables:
+
+```python
+gather facts
+```
+
 ```python
 [install packages (apt)]:
   when os_family == "debian"
@@ -511,6 +517,8 @@ Categories include: `apt`, `dnf`, `nginx`, `tls`, `firewall`, `systemd`, `servic
 ```
 
 Override anything at runtime: `cgr apply --set os_family=redhat --set version=2.5.0`
+
+Facts are gathered on the machine running `cgr`, not on each SSH target. Available fact variables include `os_name`, `os_release`, `os_machine`, `hostname`, `arch`, `os_family`, `os_pretty`, `os_version`, `os_id`, `cpu_count`, `memory_mb`, `python_version`, and `current_user`. See `MANUAL.md` for the full facts reference and precedence rules.
 
 ---
 

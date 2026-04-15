@@ -1,38 +1,39 @@
---- README-style web app rollout ---
+--- Install nginx and basic app ---
 
-target "demo" local:
+target "web" ssh deploy@10.0.1.5:
 
-  [install nginx]:
-    skip if $ test -x /tmp/cgr-pages-demo/bin/nginx
-    run    $ mkdir -p /tmp/cgr-pages-demo/bin && printf '#!/bin/sh\nexit 0\n' > /tmp/cgr-pages-demo/bin/nginx && chmod +x /tmp/cgr-pages-demo/bin/nginx
+  [install nginx] as root:
+    skip if $ command -v nginx
+    run    $ apt-get install -y nginx
 
-  [write site config]:
+  [write site config] as root:
     first [install nginx]
-    content > /tmp/cgr-pages-demo/nginx.conf:
+    content > /etc/nginx/sites-available/myapp:
       server {
-          listen 8080;
-          server_name demo.local;
-          root /tmp/cgr-pages-demo/www;
+          listen 80;
+          server_name myapp.example.com;
+          root /var/www/myapp;
           index index.html;
           location / { try_files $uri $uri/ =404; }
       }
-    validate $ /tmp/cgr-pages-demo/bin/nginx -t
+    validate $ nginx -t
 
-  [enable site]:
+  [enable site] as root:
     first [write site config]
-    skip if $ test -L /tmp/cgr-pages-demo/sites-enabled/myapp
-    run    $ mkdir -p /tmp/cgr-pages-demo/sites-enabled && ln -sf /tmp/cgr-pages-demo/nginx.conf /tmp/cgr-pages-demo/sites-enabled/myapp
+    skip if $ test -L /etc/nginx/sites-enabled/myapp
+    run    $ ln -sf /etc/nginx/sites-available/myapp /etc/nginx/sites-enabled/myapp
 
   [deploy code]:
     first [install nginx]
-    skip if $ test -f /tmp/cgr-pages-demo/www/index.html
-    run    $ mkdir -p /tmp/cgr-pages-demo/www && printf '<h1>Hello from CommandGraph</h1>\n' > /tmp/cgr-pages-demo/www/index.html
+    skip if $ test -f /var/www/myapp/index.html
+    run    $ mkdir -p /var/www/myapp && echo "<h1>Hello World</h1>" > /var/www/myapp/index.html
 
-  [start nginx]:
+  [start nginx] as root:
     first [enable site], [deploy code]
-    run $ printf 'nginx would reload here\n'
+    skip if $ systemctl is-active nginx
+    run    $ systemctl reload-or-restart nginx
 
   verify "site is live":
     first [start nginx]
-    run $ test -f /tmp/cgr-pages-demo/www/index.html
+    run $ curl -sf http://localhost/
     retry 3x wait 2s

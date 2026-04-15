@@ -23,13 +23,15 @@ A `.cgr` file describes a **directed acyclic graph (DAG)** of shell commands to 
 
 ## 2. File Structure
 
-A `.cgr` file has four top-level constructs, all optional except `target`:
+A `.cgr` file has top-level constructs, all optional except `target`:
 
 ```
 --- Title ---                          # optional, decorative only
 
 set VAR = "value"                      # 0+ variable declarations
 set VAR2 = "value2"
+
+gather facts                           # optional controller-local fact variables
 
 using category/template_name           # 0+ template imports
 
@@ -66,6 +68,32 @@ set servers = "web-1,web-2,web-3"
 - Variables are referenced as `${name}` in any string field (commands, descriptions, template args).
 - Variables are expanded at resolve time, not parse time.
 - There is no variable interpolation nesting (`${${var}}` is not supported).
+
+#### 2.2.1 Facts (`gather facts`)
+
+```
+gather facts
+```
+
+`gather facts` populates controller-local variables from the machine running `cgr`. These facts have the lowest variable precedence and can be overridden by inventory variables, graph `set` statements, vars files, secrets, and CLI `--set` values.
+
+Available fact variables:
+
+```
+os_name
+os_release
+os_machine
+hostname
+arch
+os_family
+os_pretty
+os_version
+os_id
+cpu_count
+memory_mb
+python_version
+current_user
+```
 
 ### 2.3 Template Imports (`using`)
 
@@ -743,11 +771,13 @@ The `skip if` command is the key to idempotency. Here are reliable patterns:
 ## 10. Formal Grammar (PEG-style)
 
 ```
-program       = (title / set_stmt / using_stmt / template_block / target_block)*
+program       = (title / set_stmt / gather_facts_stmt / using_stmt / template_block / target_block)*
 
 title         = "---" TEXT "---"
 
 set_stmt      = "set" IDENT "=" QUOTED
+
+gather_facts_stmt = "gather" SPACE "facts"
 
 using_stmt    = "using" import_path ("," import_path)*
 import_path   = IDENT ("/" IDENT)*
