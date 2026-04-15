@@ -689,7 +689,7 @@ target "local" local:
 - `phase "install" when "action == 'install'":` groups all install steps. Every step in the block gets `when "action == 'install'"` injected automatically.
 - `phase "rollback" when "action == 'rollback'":` groups rollback steps — they are completely skipped during an install run.
 - `set stateless = true` means the graph has no state file, so a previous install run can't cause rollback steps to be skipped on the next run.
-- `run:` multiline blocks join lines with `&&` — if any line fails, the rest do not run.
+- `run:` multiline blocks run under `set -e; set -o pipefail` — if any line fails, the rest do not run.
 - `skip if:` multiline blocks join conditions with `&&` — all must exit 0 to skip.
 
 **Usage:**
@@ -698,9 +698,74 @@ sudo cgr apply service.cgr --set action=install
 sudo cgr apply service.cgr --set action=rollback
 ```
 
+**`phase` only gates the steps inside it.** Steps outside a `phase` block are not affected by its `when` condition. A skipped step counts as done for `first` purposes, so a step that depends on a phase step will still run even when the phase condition is false:
+
+```
+phase "install" when "action == 'install'":
+  [configure]:
+    ...
+
+[post-configure]:               # outside the phase — runs regardless of action
+  first [configure]
+  ...
+```
+
+If `[post-configure]` should also be gated, put it inside the `phase` block — it will inherit the `when` condition automatically. Or add an explicit `when "action == 'install'"` to it directly.
+
 ---
 
 ## Patterns (continued)
+
+### Conditional branching by runtime value
+
+When the branch to take depends on a fact discovered at runtime (which subnet the host is on, which OS family, etc.), use paired `skip if $` steps — each skips when the host doesn't match, and both converge to a shared downstream step:
+
+```
+[configure for subnet X]:
+  skip if $ ip addr show | grep -qv '10\.0\.1\.'
+  run:
+    ...
+
+[configure for subnet Y]:
+  skip if $ ip addr show | grep -qv '10\.0\.2\.'
+  run:
+    ...
+
+[post-configure]:
+  first [configure for subnet X], [configure for subnet Y]
+  run:
+    ...
+```
+
+On a subnet-X host, `[configure for subnet Y]` is skipped — a skip counts as done for `first` purposes, so `[post-configure]` runs after whichever branch actually executed.
+
+**If the configure step fails:** the default `on_fail = stop` halts the graph, so `[post-configure]` never runs. If you use `if fails warn` to allow the graph to continue past a failure, add a sentinel guard to `[post-configure]`:
+
+```
+[configure for subnet X]:
+  skip if $ ip addr show | grep -qv '10\.0\.1\.'
+  if fails warn
+  run:
+    ...
+    touch /tmp/.subnet-x-done
+
+[configure for subnet Y]:
+  skip if $ ip addr show | grep -qv '10\.0\.2\.'
+  if fails warn
+  run:
+    ...
+    touch /tmp/.subnet-y-done
+
+[post-configure]:
+  first [configure for subnet X], [configure for subnet Y]
+  skip if $ ! { test -f /tmp/.subnet-x-done || test -f /tmp/.subnet-y-done; }
+  run:
+    ...
+```
+
+The sentinel file is only written on success, so `[post-configure]` skips itself when neither configure step completed.
+
+**When to use `phase` instead:** if the branch is driven by a variable known at invocation time (not discovered at runtime), `phase "name" when "COND":` is cleaner — pass `--set action=install` and let the phase block gate the whole group.
 
 ### Multiline commands without shell glue
 
@@ -719,7 +784,7 @@ Long one-liners are hard to review and error-prone to edit. Use `run:` to split 
     chmod 600 /etc/nginx/certs/server.key
 ```
 
-Lines are joined with `&&` — if `openssl` fails, `chmod` does not run. To continue past a failure, append `|| true` to that line.
+Lines run under `set -e; set -o pipefail` — if `openssl` fails, `chmod` does not run. To continue past a failure, append `|| true` to that line.
 
 ### `always run:` for service restarts
 
@@ -754,6 +819,7 @@ Quick lookup: which feature solves your problem?
 | Install/rollback modes | Phase blocks | `phase "name" when "COND":` | MANUAL.md |
 | Multi-line commands | Multiline run | `run:` block | MANUAL.md |
 | Conditional steps | When | `when VAR == "val"` | MANUAL.md |
+| Branch on runtime fact | Paired skip if | `skip if $ cmd` (see Patterns) | MANUAL.md |
 | Subset execution | Tags | `tags x, y` / `--tags` | MANUAL.md |
 | Collect output | Reporting | `collect "key"` / `cgr report` | MANUAL.md |
 | Store secrets | Encryption | `cgr secrets` / `secrets "file"` | MANUAL.md |
