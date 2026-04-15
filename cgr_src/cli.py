@@ -368,6 +368,9 @@ def main():
     ss.add_argument("step",nargs="?",default=None,help="Step name (for set/drop) or second state file (for diff)")
     ss.add_argument("value",nargs="?",default=None,help="'done' or 'redo' (for set)")
     ss.add_argument("--repo",default=None)
+    ss.add_argument("--set",action="append",default=[],metavar="KEY=VALUE",help="Override a variable (repeatable)")
+    ss.add_argument("--vars-file",default=None,metavar="FILE",help="Load variable overrides from a file")
+    ss.add_argument("-i","--inventory",action="append",default=[],metavar="FILE",help="Inventory file (repeatable)")
     _add_vault_pass_args(ss)
 
     sr=sub.add_parser("repo"); sr.add_argument("action",choices=["index"]); sr.add_argument("--repo")
@@ -558,13 +561,15 @@ def main():
         repo=getattr(args,"repo",None)
         graph=None
         vault_passphrase, vault_prompt = _resolve_vault_pass_source(args)
+        extra = _parse_extra_vars(getattr(args,"set",[]), getattr(args,"vars_file",None))
+        inv_files = getattr(args,"inventory",[]) or []
         need_graph_if_present = {"show", "reset", "set", "drop", "compact"}
         if args.action in need_graph_if_present and not Path(args.file).exists():
             graph = None
         else:
             try:
-                graph=_load(args.file, repo_dir=repo, vault_passphrase=vault_passphrase,
-                            vault_prompt=vault_prompt)
+                graph=_load(args.file, repo_dir=repo, extra_vars=extra, inventory_files=inv_files,
+                            vault_passphrase=vault_passphrase, vault_prompt=vault_prompt)
             except SystemExit:
                 pass  # graph may not parse for show/reset
 
