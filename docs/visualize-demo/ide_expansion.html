@@ -3156,6 +3156,22 @@ class DemoRunner {
       'demo-resuming', 'st-success', 'st-skip_check', 'st-failed', 'st-warned');
   }
 
+  shouldFollowGraph() {
+    const cb = document.getElementById('logFollowCb');
+    return !cb || cb.checked;
+  }
+
+  followCard(card) {
+    if (!card || !this.shouldFollowGraph()) return;
+    document.querySelectorAll('.nc.follow-hl').forEach(c => c.classList.remove('follow-hl'));
+    card.classList.add('follow-hl');
+    if (document.getElementById('graphPanel').style.display === 'none') {
+      switchGraphTab('graph');
+    }
+    card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    setTimeout(() => drawA(), 180);
+  }
+
   showToast(text, cls, duration) {
     const area = document.getElementById('toast-area');
     if (!area) return;
@@ -3210,6 +3226,7 @@ class DemoRunner {
       if (origHTML) card.insertAdjacentHTML('afterbegin', origHTML);
     });
     document.querySelectorAll('.wprog').forEach(p => p.remove());
+    document.querySelectorAll('.nc.follow-hl').forEach(c => c.classList.remove('follow-hl'));
     const ta = document.getElementById('toast-area'); if (ta) ta.innerHTML = '';
   }
 
@@ -3250,6 +3267,7 @@ class DemoRunner {
     if (this.state !== 'running' || wi >= this.waves.length) {
       if (this.state === 'running') {
         this.state = 'done'; this._updateButton();
+        document.querySelectorAll('.nc.follow-hl').forEach(c => c.classList.remove('follow-hl'));
         this._log('<div class="ev-done ok">✓ COMPLETE</div>');
         this.showToast('All steps completed successfully', 'toast-done', 4000);
       }
@@ -3275,6 +3293,7 @@ class DemoRunner {
     const card = this.getCard(rid); const res = byId[rid];
     if (!card || !res) { onDone(); return; }
     selectResource(rid);
+    this.followCard(card);
 
     const hasCheck = res.check && res.check !== 'false';
     const isFail = rid === this.failTarget && !this.failRecovered;
@@ -3309,6 +3328,7 @@ class DemoRunner {
             this.showToast('Resuming from [' + res.short_name + ']...', 'toast-resume', 3000);
             this._delay(() => {
               this.clearDemoClasses(card); card.classList.add('demo-resuming');
+              this.followCard(card);
               this.setBadge(card, 'stb-resuming', 'retrying...');
               this._delay(() => {
                 this.clearDemoClasses(card); card.classList.add('st-success');
