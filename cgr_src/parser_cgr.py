@@ -627,6 +627,43 @@ def _is_cgr_keyword(s: str) -> bool:
     return False
 
 
+_CGR_SHELL_CONTROL_WORD_RE = re.compile(
+    r"^\s*(if|then|else|elif\b.*|fi|for\b.*|while\b.*|until\b.*|do|done|case\b.*|esac|select\b.*|\{|\})\s*(?:#.*)?$"
+)
+
+
+def _cgr_command_summary(command: str) -> str:
+    summary = " ".join(command.split())
+    if len(summary) > 240:
+        summary = summary[:237] + "..."
+    return summary or "(empty command)"
+
+
+def _can_instrument_cgr_command_block(commands: list[str]) -> bool:
+    """Only instrument simple command lists; avoid changing shell compound syntax."""
+    for command in commands:
+        if "<<" in command:
+            return False
+        for line in command.splitlines():
+            if _CGR_SHELL_CONTROL_WORD_RE.match(line):
+                return False
+    return True
+
+
+def _instrument_cgr_command_block(commands: list[str]) -> str:
+    preamble = [
+        "__cgr_cmd='before first command'",
+        "__cgr_line=0",
+        "trap '__cgr_rc=$?; if [ \"$__cgr_rc\" -ne 0 ]; then printf \"%s\\n\" \"CommandGraph: run block failed at command $__cgr_line: $__cgr_cmd\" >&2; fi' EXIT",
+        "set -e",
+    ]
+    body: list[str] = []
+    for idx, command in enumerate(commands, 1):
+        body.append(f"__cgr_line={idx}; __cgr_cmd={shlex.quote(_cgr_command_summary(command))}")
+        body.append(command)
+    return "\n".join(preamble + body)
+
+
 def _join_cgr_command_block(lines: list[str]) -> str:
     """Join run: block lines into a fail-fast script, preserving shell continuations."""
     commands: list[str] = []
@@ -639,7 +676,9 @@ def _join_cgr_command_block(lines: list[str]) -> str:
         current = []
     if current:
         commands.append("\n".join(current))
-    return "set -e; set -o pipefail\n" + "\n".join(commands)
+    if _can_instrument_cgr_command_block(commands):
+        return _instrument_cgr_command_block(commands)
+    return "set -e\n" + "\n".join(commands)
 
 
 def _parse_cgr_step_line(text: str):

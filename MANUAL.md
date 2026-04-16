@@ -1961,7 +1961,7 @@ phase "install" when "action == 'install'":
 
 ### Multiline `run:` and `skip if:` blocks
 
-Long shell one-liners can be split into indented blocks. Lines are joined with `&&` — if any line exits non-zero, the remaining lines do not run (fail-fast).
+Long shell one-liners can be split into indented blocks. Lines are run as a POSIX shell script with `set -e`, so if a simple command exits non-zero, the remaining lines do not run (fail-fast). For simple command lists, CommandGraph also reports the failing command when the shell exits without stderr.
 
 **`run:` block:**
 ```
@@ -1971,7 +1971,14 @@ Long shell one-liners can be split into indented blocks. Lines are joined with `
     chown app:app /opt/app
     chmod 750 /opt/app/logs
 ```
-Equivalent to: `run $ mkdir -p /opt/app/logs && chown app:app /opt/app && chmod 750 /opt/app/logs`
+Equivalent to:
+```
+run:
+  set -e
+  mkdir -p /opt/app/logs
+  chown app:app /opt/app
+  chmod 750 /opt/app/logs
+```
 
 To continue past a failure on one line, append `|| true`:
 ```

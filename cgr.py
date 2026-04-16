@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 4317f54d0078651c
+# Built from source hash: 7d52bfdca78816a3
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -1623,6 +1623,43 @@ def _is_cgr_keyword(s: str) -> bool:
     return False
 
 
+_CGR_SHELL_CONTROL_WORD_RE = re.compile(
+    r"^\s*(if|then|else|elif\b.*|fi|for\b.*|while\b.*|until\b.*|do|done|case\b.*|esac|select\b.*|\{|\})\s*(?:#.*)?$"
+)
+
+
+def _cgr_command_summary(command: str) -> str:
+    summary = " ".join(command.split())
+    if len(summary) > 240:
+        summary = summary[:237] + "..."
+    return summary or "(empty command)"
+
+
+def _can_instrument_cgr_command_block(commands: list[str]) -> bool:
+    """Only instrument simple command lists; avoid changing shell compound syntax."""
+    for command in commands:
+        if "<<" in command:
+            return False
+        for line in command.splitlines():
+            if _CGR_SHELL_CONTROL_WORD_RE.match(line):
+                return False
+    return True
+
+
+def _instrument_cgr_command_block(commands: list[str]) -> str:
+    preamble = [
+        "__cgr_cmd='before first command'",
+        "__cgr_line=0",
+        "trap '__cgr_rc=$?; if [ \"$__cgr_rc\" -ne 0 ]; then printf \"%s\\n\" \"CommandGraph: run block failed at command $__cgr_line: $__cgr_cmd\" >&2; fi' EXIT",
+        "set -e",
+    ]
+    body: list[str] = []
+    for idx, command in enumerate(commands, 1):
+        body.append(f"__cgr_line={idx}; __cgr_cmd={shlex.quote(_cgr_command_summary(command))}")
+        body.append(command)
+    return "\n".join(preamble + body)
+
+
 def _join_cgr_command_block(lines: list[str]) -> str:
     """Join run: block lines into a fail-fast script, preserving shell continuations."""
     commands: list[str] = []
@@ -1635,7 +1672,9 @@ def _join_cgr_command_block(lines: list[str]) -> str:
         current = []
     if current:
         commands.append("\n".join(current))
-    return "set -e; set -o pipefail\n" + "\n".join(commands)
+    if _can_instrument_cgr_command_block(commands):
+        return _instrument_cgr_command_block(commands)
+    return "set -e\n" + "\n".join(commands)
 
 
 def _parse_cgr_step_line(text: str):
@@ -4628,6 +4667,32 @@ def _effective_run_cmd(res: Resource, graph_file: str|None = None) -> str:
     return ""
 
 
+def _display_run_cmd(cmd: str) -> str:
+    """Hide CommandGraph's multiline-run instrumentation in user-facing previews."""
+    lines = cmd.splitlines()
+    if len(lines) < 4:
+        return cmd
+    if not (
+        lines[0].startswith("__cgr_cmd=")
+        and lines[1].startswith("__cgr_line=")
+        and lines[2].startswith("trap ")
+        and "CommandGraph: run block failed at command" in lines[2]
+    ):
+        return cmd
+    visible = []
+    for line in lines:
+        if line.startswith("__cgr_cmd="):
+            continue
+        if re.match(r"^__cgr_line=[0-9]+$", line):
+            continue
+        if re.match(r"^__cgr_line=[0-9]+; __cgr_cmd=", line):
+            continue
+        if line.startswith("trap ") and "CommandGraph: run block failed at command" in line:
+            continue
+        visible.append(line)
+    return "\n".join(visible)
+
+
 def _normalize_webhook_path(path: str) -> str:
     if not path:
         return "/"
@@ -5892,7 +5957,7 @@ def _print_exec(idx,total,res,r,graph,verbose=False,indent="",inline=False):
                 rc_str = str(r.check_rc) if r.check_rc is not None else "≠0"
                 print(f"{pad}{dim('check:')} {dim(via + sudo_pfx)}{dim(check_trunc)} {dim(f'→ {rc_str}')}")
         if r.status not in (Status.SKIP_CHECK, Status.SKIP_WHEN, Status.CANCELLED):
-            display_cmd = _effective_run_cmd(res, graph.graph_file)
+            display_cmd = _display_run_cmd(_effective_run_cmd(res, graph.graph_file))
             run_label = "script:" if res.script_path and not res.run else "run:  "
             run_trunc = _redact(display_cmd, _s)[:80] + ("…" if len(display_cmd) > 80 else "")
             rc_color = green if r.run_rc == 0 else red
@@ -7349,6 +7414,43 @@ def cmd_state_diff(file_a: str, file_b: str):
 
     print(f"\n  {dim(f'Summary: {len(added)} added, {len(removed)} removed, {len(changed)} changed, {same} unchanged')}")
     print()
+def _load(filepath, repo_dir=None, extra_vars=None, raise_on_error=False, inventory_files=None,
+          vault_passphrase=None, vault_prompt=False, resolve_deferred_secrets=False):
+    path=Path(filepath)
+    if not path.exists():
+        if raise_on_error: raise ValueError(f"not found: {path}")
+        print(red(f"error: not found: {path}"),file=sys.stderr); sys.exit(1)
+    source=path.read_text()
+
+    # Detect format by extension
+    if path.suffix == ".cgr":
+        try: ast=parse_cgr(source, str(path))
+        except CGRParseError as e:
+            if raise_on_error: raise ValueError(e.msg) from e
+            print(e.pretty(),file=sys.stderr); sys.exit(1)
+    else:
+        try: tokens=lex(source,str(path))
+        except LexError as e:
+            if raise_on_error: raise ValueError(e.msg) from e
+            print(red(f"Lex error: {e.msg}"),file=sys.stderr)
+            if e.src: print(dim(f"  {e.line:>4} │ ")+e.src,file=sys.stderr)
+            sys.exit(1)
+        try: ast=Parser(tokens,source,str(path)).parse()
+        except ParseError as e:
+            if raise_on_error: raise ValueError(e.msg) from e
+            print(e.pretty(),file=sys.stderr); sys.exit(1)
+
+    try:
+        graph = resolve(ast, repo_dir=repo_dir, graph_file=str(path), extra_vars=extra_vars,
+                        inventory_files=inventory_files, vault_passphrase=vault_passphrase,
+                        vault_prompt=vault_prompt,
+                        resolve_deferred_secrets=resolve_deferred_secrets)
+        _validate_script_paths(graph)
+        return graph
+    except ResolveError as e:
+        if raise_on_error: raise ValueError(str(e)) from e
+        print(red(f"error: {e}"),file=sys.stderr); sys.exit(1)
+
 # ── Report command ─────────────────────────────────────────────────────
 
 def cmd_report(graph_file: str, *, fmt: str = "table", output_file: str|None = None,

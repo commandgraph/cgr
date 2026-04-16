@@ -10,6 +10,43 @@ from cgr_src.resolver import *
 from cgr_src.executor import *
 from cgr_src.state import *
 
+def _load(filepath, repo_dir=None, extra_vars=None, raise_on_error=False, inventory_files=None,
+          vault_passphrase=None, vault_prompt=False, resolve_deferred_secrets=False):
+    path=Path(filepath)
+    if not path.exists():
+        if raise_on_error: raise ValueError(f"not found: {path}")
+        print(red(f"error: not found: {path}"),file=sys.stderr); sys.exit(1)
+    source=path.read_text()
+
+    # Detect format by extension
+    if path.suffix == ".cgr":
+        try: ast=parse_cgr(source, str(path))
+        except CGRParseError as e:
+            if raise_on_error: raise ValueError(e.msg) from e
+            print(e.pretty(),file=sys.stderr); sys.exit(1)
+    else:
+        try: tokens=lex(source,str(path))
+        except LexError as e:
+            if raise_on_error: raise ValueError(e.msg) from e
+            print(red(f"Lex error: {e.msg}"),file=sys.stderr)
+            if e.src: print(dim(f"  {e.line:>4} │ ")+e.src,file=sys.stderr)
+            sys.exit(1)
+        try: ast=Parser(tokens,source,str(path)).parse()
+        except ParseError as e:
+            if raise_on_error: raise ValueError(e.msg) from e
+            print(e.pretty(),file=sys.stderr); sys.exit(1)
+
+    try:
+        graph = resolve(ast, repo_dir=repo_dir, graph_file=str(path), extra_vars=extra_vars,
+                        inventory_files=inventory_files, vault_passphrase=vault_passphrase,
+                        vault_prompt=vault_prompt,
+                        resolve_deferred_secrets=resolve_deferred_secrets)
+        _validate_script_paths(graph)
+        return graph
+    except ResolveError as e:
+        if raise_on_error: raise ValueError(str(e)) from e
+        print(red(f"error: {e}"),file=sys.stderr); sys.exit(1)
+
 # ── Report command ─────────────────────────────────────────────────────
 
 def cmd_report(graph_file: str, *, fmt: str = "table", output_file: str|None = None,

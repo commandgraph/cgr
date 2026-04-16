@@ -594,6 +594,32 @@ def _effective_run_cmd(res: Resource, graph_file: str|None = None) -> str:
     return ""
 
 
+def _display_run_cmd(cmd: str) -> str:
+    """Hide CommandGraph's multiline-run instrumentation in user-facing previews."""
+    lines = cmd.splitlines()
+    if len(lines) < 4:
+        return cmd
+    if not (
+        lines[0].startswith("__cgr_cmd=")
+        and lines[1].startswith("__cgr_line=")
+        and lines[2].startswith("trap ")
+        and "CommandGraph: run block failed at command" in lines[2]
+    ):
+        return cmd
+    visible = []
+    for line in lines:
+        if line.startswith("__cgr_cmd="):
+            continue
+        if re.match(r"^__cgr_line=[0-9]+$", line):
+            continue
+        if re.match(r"^__cgr_line=[0-9]+; __cgr_cmd=", line):
+            continue
+        if line.startswith("trap ") and "CommandGraph: run block failed at command" in line:
+            continue
+        visible.append(line)
+    return "\n".join(visible)
+
+
 def _normalize_webhook_path(path: str) -> str:
     if not path:
         return "/"
@@ -1858,7 +1884,7 @@ def _print_exec(idx,total,res,r,graph,verbose=False,indent="",inline=False):
                 rc_str = str(r.check_rc) if r.check_rc is not None else "≠0"
                 print(f"{pad}{dim('check:')} {dim(via + sudo_pfx)}{dim(check_trunc)} {dim(f'→ {rc_str}')}")
         if r.status not in (Status.SKIP_CHECK, Status.SKIP_WHEN, Status.CANCELLED):
-            display_cmd = _effective_run_cmd(res, graph.graph_file)
+            display_cmd = _display_run_cmd(_effective_run_cmd(res, graph.graph_file))
             run_label = "script:" if res.script_path and not res.run else "run:  "
             run_trunc = _redact(display_cmd, _s)[:80] + ("…" if len(display_cmd) > 80 else "")
             rc_color = green if r.run_rc == 0 else red

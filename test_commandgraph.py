@@ -2768,6 +2768,19 @@ class TestLint:
         # Should work (lint produces warnings, doesn't raise)
         cg.cmd_lint(str(f))
 
+    def test_lint_works_from_source_module(self, tmp_path):
+        from cgr_src import commands
+
+        f = tmp_path / "test.cgr"
+        f.write_text(textwrap.dedent('''\
+            target "local" local:
+              [step]:
+                skip if $ test -f /tmp/done
+                run $ touch /tmp/done
+        '''))
+
+        commands.cmd_lint(str(f))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Package B: CLI polish features
@@ -4597,7 +4610,11 @@ class TestMultilineRunBlock:
         """)
         g = _resolve_cgr(src)
         res = g.all_resources["t.step"]
-        assert res.run == "set -e; set -o pipefail\nmkdir -p /foo\ncp bar /foo\nchmod 755 /foo"
+        assert "CommandGraph: run block failed at command" in res.run
+        assert "__cgr_line=1; __cgr_cmd='mkdir -p /foo'" in res.run
+        assert "__cgr_line=2; __cgr_cmd='cp bar /foo'" in res.run
+        assert "__cgr_line=3; __cgr_cmd='chmod 755 /foo'" in res.run
+        assert res.run.endswith("chmod 755 /foo")
 
     def test_run_block_preserves_backslash_continuations(self):
         """run: block does not insert '&&' inside shell backslash continuations."""
@@ -4615,9 +4632,10 @@ class TestMultilineRunBlock:
         res = g.all_resources["t.step"]
         assert "rsa:2048 \\\n-keyout" in res.run
         assert "vnc.crt \\\n-subj" in res.run
-        assert "local\"\nchmod 600" in res.run
+        assert 'subj "/CN=$(hostname).local"' in res.run
+        assert "chmod 600 /etc/nginx/certs/vnc.key" in res.run
         assert "\\ &&" not in res.run
-        assert res.run.startswith("set -e; set -o pipefail\n")
+        assert "CommandGraph: run block failed at command" in res.run
 
     def test_run_block_single_line(self):
         """run: block with one line still gets the set -e preamble."""
@@ -4628,7 +4646,9 @@ class TestMultilineRunBlock:
                   echo hello
         """)
         g = _resolve_cgr(src)
-        assert g.all_resources["t.step"].run == "set -e; set -o pipefail\necho hello"
+        run = g.all_resources["t.step"].run
+        assert "__cgr_line=1; __cgr_cmd='echo hello'" in run
+        assert run.endswith("echo hello")
 
     def test_always_run_block(self):
         """always run: block sets always_run and produces set -e preamble + newline-joined lines."""
@@ -4641,7 +4661,8 @@ class TestMultilineRunBlock:
         """)
         ast = cg.parse_cgr(src)
         res = ast.nodes[0].resources[0]
-        assert res.run == "set -e; set -o pipefail\nsystemctl daemon-reload\nsystemctl restart nginx"
+        assert "__cgr_line=1; __cgr_cmd='systemctl daemon-reload'" in res.run
+        assert "__cgr_line=2; __cgr_cmd='systemctl restart nginx'" in res.run
         # always_run is encoded as check == "false" in the resolver
         g = _resolve_cgr(src)
         assert g.all_resources["t.step"].check == "false"
@@ -4658,7 +4679,8 @@ class TestMultilineRunBlock:
         """)
         g = _resolve_cgr(src)
         res = g.all_resources["t.step"]
-        assert res.run == "set -e; set -o pipefail\necho one\necho two"
+        assert "__cgr_line=1; __cgr_cmd='echo one'" in res.run
+        assert "__cgr_line=2; __cgr_cmd='echo two'" in res.run
         assert res.timeout == 45
 
     def test_run_block_empty_raises(self):
@@ -4683,8 +4705,46 @@ class TestMultilineRunBlock:
         """)
         g = _resolve_cgr(src)
         res = g.all_resources["t.setup"]
-        assert res.run == "set -e; set -o pipefail\nmkdir -p /opt/app\nchown app:app /opt/app"
+        assert "__cgr_line=1; __cgr_cmd='mkdir -p /opt/app'" in res.run
+        assert "__cgr_line=2; __cgr_cmd='chown app:app /opt/app'" in res.run
         assert res.cgr_phase_name == "install"
+
+    def test_run_block_failure_reports_failing_command(self, tmp_path):
+        """Silent failures in simple run: blocks identify the failing command."""
+        marker = tmp_path / "marker"
+        src = textwrap.dedent(f"""\
+            target "t" local:
+              [step]:
+                run:
+                  echo ok
+                  test -f {marker}
+                  echo unreachable
+        """)
+        g = _resolve_cgr(src)
+        node = g.nodes["t"]
+        res = g.all_resources["t.step"]
+        result = cg.exec_resource(res, node, dry_run=False)
+        assert result.status == cg.Status.FAILED
+        assert result.run_rc == 1
+        assert "CommandGraph: run block failed at command 2" in result.stderr
+        assert f"test -f {marker}" in result.stderr
+
+    def test_run_block_control_flow_keeps_plain_script(self):
+        """Instrumentation does not rewrite shell compound syntax."""
+        src = textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                run:
+                  if test -f /tmp/nope; then
+                    echo yes
+                  else
+                    echo no
+                  fi
+        """)
+        g = _resolve_cgr(src)
+        run = g.all_resources["t.step"].run
+        assert run.startswith("set -e\n")
+        assert "CommandGraph: run block failed at command" not in run
 
 
 class TestMultilineSkipIfBlock:
