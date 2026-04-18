@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 1266b6989d0b87b7
+# Built from source hash: e685c557e95c42f5
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -10835,6 +10835,27 @@ _EMBEDDED_IDE_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="
 
 _IDE_HTML = None  # lazy-loaded
 
+_SERVE_GRAPH_EXTENSIONS = {".cgr", ".cg"}
+
+
+def _resolve_initial_serve_file(filepath):
+    if filepath is None:
+        return None
+    try:
+        path = Path(filepath)
+    except TypeError:
+        return None
+    if any(ch in str(path) for ch in "\x00\r\n"):
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+    except Exception:
+        return None
+    if not resolved.is_file() or resolved.suffix.lower() not in _SERVE_GRAPH_EXTENSIONS:
+        return None
+    return resolved
+
+
 def _get_ide_html():
     """Return the IDE HTML, preferring a sibling file in dev and embedded HTML in releases."""
     global _IDE_HTML
@@ -10930,7 +10951,10 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             print(yellow(line), file=sys.stderr)
 
     work_dir = Path.cwd()
-    current_file = Path(filepath).resolve() if filepath else None
+    current_file = _resolve_initial_serve_file(filepath)
+    if filepath and current_file is None:
+        print(red(f"error: serve file must be an existing .cg or .cgr graph: {filepath}"), file=sys.stderr)
+        raise SystemExit(1)
     current_repo = repo_dir
 
     # Execution state for live apply streaming
