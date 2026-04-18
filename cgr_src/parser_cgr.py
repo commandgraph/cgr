@@ -178,13 +178,14 @@ def parse_cgr(source: str, filename: str = "") -> ASTProgram:
             if not inc_m:
                 raise err(f"Invalid include statement (expected: include \"path.cgr\")", ln, text)
             inc_path = inc_m.group(1)
-            # Resolve relative to the current file's directory
-            if filename:
-                inc_path = os.path.join(os.path.dirname(os.path.abspath(filename)), inc_path)
-            if not os.path.isfile(inc_path):
-                raise err(f"Included file not found: {inc_path}", ln, text)
-            inc_source = open(inc_path).read()
-            inc_ast = parse_cgr(inc_source, inc_path)
+            try:
+                resolved_include = _resolve_include_path(inc_path, filename)
+            except ValueError as exc:
+                raise err(str(exc), ln, text)
+            if not resolved_include.is_file():
+                raise err(f"Included file not found: {resolved_include}", ln, text)
+            inc_source = resolved_include.read_text()
+            inc_ast = parse_cgr(inc_source, str(resolved_include))
             # Merge: variables (don't overwrite existing), uses, nodes
             existing_var_names = {v.name for v in variables}
             for v in inc_ast.variables:

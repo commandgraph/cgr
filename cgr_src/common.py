@@ -54,6 +54,20 @@ def _html_esc(s: str) -> str:
              .replace('"', "&quot;")
              .replace("'", "&#x27;"))
 
+def _resolve_include_path(include_path: str, current_filename: str = "") -> Path:
+    """Resolve an include path without allowing it to escape the graph directory."""
+    if "\x00" in include_path:
+        raise ValueError("include path contains a null byte")
+    if current_filename and not (current_filename.startswith("<") and current_filename.endswith(">")):
+        base_dir = Path(current_filename).resolve().parent
+    else:
+        base_dir = Path.cwd().resolve()
+    raw_path = Path(include_path).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base_dir / raw_path).resolve()
+    if os.path.commonpath([str(base_dir), str(candidate)]) != str(base_dir):
+        raise ValueError(f"include path escapes graph directory: {include_path}")
+    return candidate
+
 __all__ = [
     "Any",
     "Enum",
@@ -109,5 +123,6 @@ __all__ = [
     "_html_esc",
     "_parse_duration_str",
     "_parse_timeout_text",
+    "_resolve_include_path",
     "_strip_ansi",
 ]

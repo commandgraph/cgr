@@ -3,6 +3,7 @@ from __future__ import annotations
 from cgr_src.common import *
 from cgr_src.lexer import *
 from cgr_src.ast_nodes import *
+from cgr_src.parser_cgr import parse_cgr
 
 class ParseError(Exception):
     def __init__(self, msg, token=None, source_lines=None, filename=""):
@@ -64,14 +65,17 @@ class Parser:
             elif self._at_id("include"):
                 self._advance()
                 inc_path = self._expect(TT.STRING).value
-                if self.fn and os.path.exists(self.fn):
-                    inc_path = os.path.join(os.path.dirname(os.path.abspath(self.fn)), inc_path)
-                if os.path.isfile(inc_path):
-                    inc_source = open(inc_path).read()
-                    if inc_path.endswith(".cg"):
-                        inc_ast = Parser(lex(inc_source, inc_path), inc_path).parse()
+                try:
+                    resolved_include = _resolve_include_path(inc_path, self.fn)
+                except ValueError as exc:
+                    raise self._err(str(exc))
+                if resolved_include.is_file():
+                    inc_source = resolved_include.read_text()
+                    inc_filename = str(resolved_include)
+                    if resolved_include.suffix == ".cg":
+                        inc_ast = Parser(lex(inc_source, inc_filename), inc_source, inc_filename).parse()
                     else:
-                        inc_ast = parse_cgr(inc_source, inc_path)
+                        inc_ast = parse_cgr(inc_source, inc_filename)
                     existing = {v.name for v in vs}
                     for v in inc_ast.variables:
                         if v.name not in existing: vs.append(v)

@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 7d52bfdca78816a3
+# Built from source hash: d98548b1962d3ff6
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -71,6 +71,20 @@ def _html_esc(s: str) -> str:
              .replace(">", "&gt;")
              .replace('"', "&quot;")
              .replace("'", "&#x27;"))
+
+def _resolve_include_path(include_path: str, current_filename: str = "") -> Path:
+    """Resolve an include path without allowing it to escape the graph directory."""
+    if "\x00" in include_path:
+        raise ValueError("include path contains a null byte")
+    if current_filename and not (current_filename.startswith("<") and current_filename.endswith(">")):
+        base_dir = Path(current_filename).resolve().parent
+    else:
+        base_dir = Path.cwd().resolve()
+    raw_path = Path(include_path).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base_dir / raw_path).resolve()
+    if os.path.commonpath([str(base_dir), str(candidate)]) != str(base_dir):
+        raise ValueError(f"include path escapes graph directory: {include_path}")
+    return candidate
 class TT(Enum):
     IDENT=auto(); STRING=auto(); COMMAND=auto(); NUMBER=auto()
     LBRACE=auto(); RBRACE=auto(); EQUALS=auto(); COMMA=auto()
@@ -366,14 +380,17 @@ class Parser:
             elif self._at_id("include"):
                 self._advance()
                 inc_path = self._expect(TT.STRING).value
-                if self.fn and os.path.exists(self.fn):
-                    inc_path = os.path.join(os.path.dirname(os.path.abspath(self.fn)), inc_path)
-                if os.path.isfile(inc_path):
-                    inc_source = open(inc_path).read()
-                    if inc_path.endswith(".cg"):
-                        inc_ast = Parser(lex(inc_source, inc_path), inc_path).parse()
+                try:
+                    resolved_include = _resolve_include_path(inc_path, self.fn)
+                except ValueError as exc:
+                    raise self._err(str(exc))
+                if resolved_include.is_file():
+                    inc_source = resolved_include.read_text()
+                    inc_filename = str(resolved_include)
+                    if resolved_include.suffix == ".cg":
+                        inc_ast = Parser(lex(inc_source, inc_filename), inc_source, inc_filename).parse()
                     else:
-                        inc_ast = parse_cgr(inc_source, inc_path)
+                        inc_ast = parse_cgr(inc_source, inc_filename)
                     existing = {v.name for v in vs}
                     for v in inc_ast.variables:
                         if v.name not in existing: vs.append(v)
@@ -1174,13 +1191,14 @@ def parse_cgr(source: str, filename: str = "") -> ASTProgram:
             if not inc_m:
                 raise err(f"Invalid include statement (expected: include \"path.cgr\")", ln, text)
             inc_path = inc_m.group(1)
-            # Resolve relative to the current file's directory
-            if filename:
-                inc_path = os.path.join(os.path.dirname(os.path.abspath(filename)), inc_path)
-            if not os.path.isfile(inc_path):
-                raise err(f"Included file not found: {inc_path}", ln, text)
-            inc_source = open(inc_path).read()
-            inc_ast = parse_cgr(inc_source, inc_path)
+            try:
+                resolved_include = _resolve_include_path(inc_path, filename)
+            except ValueError as exc:
+                raise err(str(exc), ln, text)
+            if not resolved_include.is_file():
+                raise err(f"Included file not found: {resolved_include}", ln, text)
+            inc_source = resolved_include.read_text()
+            inc_ast = parse_cgr(inc_source, str(resolved_include))
             # Merge: variables (don't overwrite existing), uses, nodes
             existing_var_names = {v.name for v in variables}
             for v in inc_ast.variables:

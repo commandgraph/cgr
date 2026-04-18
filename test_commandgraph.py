@@ -4323,6 +4323,29 @@ class TestInclude:
         assert len(port_var) == 1
         assert port_var[0].value == "9090"
 
+    def test_cgr_include_rejects_parent_traversal(self, tmp_path):
+        outside = tmp_path / "outside.cgr"
+        outside.write_text('set stolen = "nope"\n')
+        graph_dir = tmp_path / "graphs"
+        graph_dir.mkdir()
+        main = graph_dir / "main.cgr"
+        main.write_text('include "../outside.cgr"\n')
+
+        with pytest.raises(cg.CGRParseError, match="escapes graph directory"):
+            cg.parse_cgr(main.read_text(), str(main))
+
+    def test_cg_include_rejects_parent_traversal(self, tmp_path):
+        outside = tmp_path / "outside.cg"
+        outside.write_text('var stolen = "nope"\n')
+        graph_dir = tmp_path / "graphs"
+        graph_dir.mkdir()
+        main = graph_dir / "main.cg"
+        source = 'include "../outside.cg"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.ParseError, match="escapes graph directory"):
+            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Template error messages
