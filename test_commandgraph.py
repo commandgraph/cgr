@@ -3762,6 +3762,23 @@ class TestServeSecurity(TestIDEServerAPI):
         with pytest.raises(SystemExit):
             cg.cmd_serve(filepath=str(graph_path), port=8421, host="0.0.0.0", no_open=True)
 
+    def test_serve_rejects_initial_non_graph_file(self, tmp_path):
+        non_graph = tmp_path / "notes.txt"
+        non_graph.write_text("not a graph")
+
+        with pytest.raises(SystemExit):
+            cg.cmd_serve(filepath=str(non_graph), port=8421, host="127.0.0.1", no_open=True)
+
+    def test_resolve_initial_serve_file_accepts_graph_file(self, tmp_path):
+        graph_path = tmp_path / "serve-test.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                run $ echo hi
+        """))
+
+        assert cg._resolve_initial_serve_file(str(graph_path)) == graph_path.resolve()
+
     def test_proxy_host_header_requires_allowlist(self):
         assert not cg._is_allowed_serve_host(
             "workspace-123.example.dev",
@@ -3792,6 +3809,15 @@ class TestServeSecurity(TestIDEServerAPI):
         r = self._api("GET", "/api/file/view?path=/etc/passwd")
         assert r.get("error") is not None
 
+    def test_file_view_rejects_allowed_extension_outside_sandbox(self, tmp_path):
+        outside = tmp_path / "outside.txt"
+        outside.write_text("outside")
+
+        r = self._api("GET", f"/api/file/view?path={outside}")
+
+        assert r.get("error") is not None
+        assert "content" not in r
+
     def test_file_view_valid(self):
         """Accessing the graph file itself should work."""
         r = self._api("GET", f"/api/file/view?path={self._cgr_file}")
@@ -3805,6 +3831,28 @@ class TestServeSecurity(TestIDEServerAPI):
         link.symlink_to(target)
         r = self._api("POST", "/api/file/save", {"path": str(link), "content": "changed"})
         assert r["error"] == "Refusing to write through symlink"
+
+    def test_file_save_rejects_symlinked_directory_escape(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target = outside / "escape.txt"
+        target.write_text("original")
+        link_dir = Path(self._tmp_path) / "linked-outside"
+        link_dir.symlink_to(outside, target_is_directory=True)
+
+        r = self._api("POST", "/api/file/save", {"path": str(link_dir / "escape.txt"), "content": "changed"})
+
+        assert r.get("error") is not None
+        assert target.read_text() == "original"
+
+    def test_file_save_rejects_allowed_extension_outside_sandbox(self, tmp_path):
+        target = tmp_path / "outside.txt"
+        target.write_text("original")
+
+        r = self._api("POST", "/api/file/save", {"path": str(target), "content": "changed"})
+
+        assert r.get("error") is not None
+        assert target.read_text() == "original"
 
 
 class TestSingleFileBuild:

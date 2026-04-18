@@ -2,7 +2,7 @@
 
 **Start describing what you want. Let CommandGraph chart the course.**
 
-Write a plain-text file that reads like English (or use an agent on your behalf!). The engine builds a dependency graph, parallelizes what it can, and executes over SSH or locally.
+Write a plain-text file that reads like English, or use an automation agent like Codex or Claude Code on your behalf. The engine builds a dependency graph, parallelizes what it can, and executes over SSH or locally.
 
 One Python file with zero dependencies. No agents on your servers. No daemon. No database.
 

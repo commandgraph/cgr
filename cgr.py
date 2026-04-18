@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: d98548b1962d3ff6
+# Built from source hash: 1266b6989d0b87b7
 import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -11133,24 +11133,95 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             extra_allowed_hosts=extra_allowed_hosts,
         )
 
+    def _allowed_ide_roots() -> list[Path]:
+        roots: list[Path] = []
+        repo_dirs = _build_repo_search_path(explicit_repo=current_repo,
+                                             graph_file=str(current_file) if current_file else None)
+        for rd in repo_dirs:
+            rd_resolved = Path(rd).resolve()
+            if rd_resolved.exists() and rd_resolved.is_dir() and rd_resolved not in roots:
+                roots.append(rd_resolved)
+        if current_file:
+            graph_dir = Path(current_file).parent.resolve()
+            if graph_dir.exists() and graph_dir.is_dir() and graph_dir not in roots:
+                roots.append(graph_dir)
+        work_root = work_dir.resolve()
+        if work_root.exists() and work_root.is_dir() and work_root not in roots:
+            roots.append(work_root)
+        return roots
+
+    def _safe_relative_parts(root: Path, target_dir: Path) -> tuple[str, ...] | None:
+        try:
+            rel = target_dir.relative_to(root)
+        except ValueError:
+            return None
+        if rel == Path("."):
+            return ()
+        parts = rel.parts
+        if any(part in ("", ".", "..") or "/" in part or "\\" in part or "\x00" in part for part in parts):
+            return None
+        return parts
+
+    def _open_allowed_directory(target_dir: Path) -> int:
+        """Open an allowed directory by walking from a trusted root without following symlinks."""
+        target_dir = target_dir.resolve(strict=True)
+        for root in sorted(_allowed_ide_roots(), key=lambda p: len(p.parts), reverse=True):
+            parts = _safe_relative_parts(root, target_dir)
+            if parts is None:
+                continue
+            flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                flags |= os.O_DIRECTORY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            dir_fd = os.open(root, flags)
+            try:
+                for part in parts:
+                    next_fd = os.open(part, flags, dir_fd=dir_fd)
+                    os.close(dir_fd)
+                    dir_fd = next_fd
+                dir_stat = os.stat(target_dir)
+                fd_stat = os.fstat(dir_fd)
+                if (dir_stat.st_dev, dir_stat.st_ino) != (fd_stat.st_dev, fd_stat.st_ino):
+                    raise ValueError("Invalid file path")
+                return dir_fd
+            except Exception:
+                os.close(dir_fd)
+                raise
+        raise ValueError("Invalid file path")
+
     def _atomic_write_text(path: Path, content: str, *, allowed_ext: set[str], require_exists: bool = True):
         safe_path = _resolve_safe_ide_path(path, allowed_ext=allowed_ext, require_exists=require_exists)
         if safe_path is None:
             raise ValueError("Invalid file path")
-        safe_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{safe_path.name}.", suffix=".tmp", dir=str(safe_path.parent))
+        if not safe_path.parent.exists() or not safe_path.parent.is_dir():
+            raise ValueError("Invalid file path")
+        dir_fd = _open_allowed_directory(safe_path.parent)
+        tmp_name = None
         try:
+            for _ in range(100):
+                candidate = f".{safe_path.name}.{secrets.token_urlsafe(8)}.tmp"
+                try:
+                    fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dir_fd)
+                    tmp_name = candidate
+                    break
+                except FileExistsError:
+                    continue
+            if tmp_name is None:
+                raise OSError("Could not create temporary file")
             with os.fdopen(fd, "w") as f:
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_name, safe_path)
+            os.replace(tmp_name, safe_path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            tmp_name = None
         finally:
-            if os.path.exists(tmp_name):
+            if tmp_name is not None:
                 try:
-                    os.unlink(tmp_name)
+                    os.unlink(tmp_name, dir_fd=dir_fd)
                 except OSError:
                     pass
+            os.close(dir_fd)
 
     def _vault_error_response(msg, line=0):
         payload = {"error": _strip_ansi(msg), "line": line}
@@ -11731,19 +11802,14 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                 fpath_raw = qs.get("path", "")
                 if not fpath_raw:
                     self._json({"error": "Missing 'path' parameter"}, 400); return
-                fpath = Path(fpath_raw).resolve()
-                if not fpath.exists():
-                    self._json({"error": f"File not found: {fpath_raw}"}, 404); return
                 # Security: extension whitelist
                 allowed_ext = {".cgr", ".cg", ".ini", ".conf", ".cfg", ".env", ".txt", ".yaml", ".yml", ".json"}
-                if fpath.suffix.lower() not in allowed_ext:
-                    self._json({"error": f"File type not allowed: {fpath.suffix}"}, 403); return
+                fpath = _resolve_allowed_side_editor_path(fpath_raw, allowed_ext, require_exists=True)
+                if not fpath:
+                    self._json({"error": f"File not found or not allowed: {fpath_raw}"}, 403); return
                 # Security: size cap (100KB)
                 if fpath.stat().st_size > 102400:
                     self._json({"error": "File too large (max 100KB)"}, 413); return
-                # Security: path must be in allowed directories
-                if not _is_safe_file_path(str(fpath)):
-                    self._json({"error": "Access denied: file outside allowed directories"}, 403); return
                 try:
                     content = fpath.read_text()
                 except Exception as e:

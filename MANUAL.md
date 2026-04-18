@@ -2335,6 +2335,8 @@ error: Resource 'web-1.start_nginx' needs 'web-1.instal_nginx' which doesn't exi
 
 If you are an AI agent tasked with creating a CommandGraph dependency graph, follow this procedure:
 
+Suggested automation agents: Codex or Claude Code. Use them to author and validate graphs from the operator's machine; CommandGraph still does not require any resident agent on target hosts.
+
 1. **Read this entire document first.** Pay particular attention to the "Resource naming and how needs resolves" section — this is where most errors occur.
 
 2. **Choose a format.** Use `.cg` (structured) for complex graphs with heredocs, deep nesting, or when machine-generating. Use `.cgr` (readable) if the output will be hand-edited by humans.
