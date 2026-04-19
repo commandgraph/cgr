@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 34cb2cf6197b5053
+# Built from source hash: a99e462919a822c1
 import argparse, codecs, datetime, errno, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, stat, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -7815,7 +7815,10 @@ def cmd_how(filepath: str):
         max_len = max(len(n) for n, _ in raw_vars)
         for name, expr in raw_vars:
             is_secret = name in secret_names or _is_secret_set_expr(expr) or _is_sensitive_default_name(name)
-            _print_hidden_default(name, max_len, is_secret)
+            if is_secret:
+                _print_hidden_secret_default(max_len)
+            else:
+                _print_hidden_default(name, max_len)
         print()
 
 
@@ -9950,11 +9953,12 @@ def _masked_secret_display() -> str:
     return "<hidden>"
 
 
-def _print_hidden_default(name: str, max_len: int, is_secret: bool):
-    if is_secret:
-        marker = f"  {dim('[secret]')}"
-        print(f"    {cyan('[secret]'.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
-        return
+def _print_hidden_secret_default(max_len: int):
+    marker = f"  {dim('[secret]')}"
+    print(f"    {cyan('[secret]'.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
+
+
+def _print_hidden_default(name: str, max_len: int):
     print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}")
 
 

@@ -6627,6 +6627,25 @@ class TestSecretBackends:
         assert "region" in out
         assert '"us-east-1"' not in out
 
+    def test_how_redacts_sensitive_default_names(self, tmp_path, capsys):
+        graph_path = tmp_path / "secret-name-test.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            set api_key = env("CGR_TEST_API_KEY")
+            set region = "us-east-1"
+
+            target "t" local:
+              [step]:
+                run $ echo done
+        """))
+
+        cg.cmd_how(str(graph_path))
+        out = capsys.readouterr().out
+        assert "api_key" not in out
+        assert "CGR_TEST_API_KEY" not in out
+        assert "<hidden>" in out
+        assert "[secret]" in out
+        assert "region" in out
+
     def test_how_redacts_default_expressions_even_with_non_sensitive_name(self, tmp_path, capsys):
         graph_path = tmp_path / "sensitive-default.cgr"
         graph_path.write_text(textwrap.dedent("""\
