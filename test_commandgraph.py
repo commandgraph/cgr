@@ -4484,6 +4484,62 @@ class TestInclude:
         with pytest.raises(cg.ParseError, match="escapes graph directory"):
             cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
 
+    def test_cgr_include_rejects_file_symlink_escape(self, tmp_path):
+        outside = tmp_path / "outside.cgr"
+        outside.write_text('set stolen = "nope"\n')
+        graph_dir = tmp_path / "graphs"
+        graph_dir.mkdir()
+        (graph_dir / "linked.cgr").symlink_to(outside)
+        main = graph_dir / "main.cgr"
+        source = 'include "linked.cgr"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.CGRParseError, match="escapes graph directory"):
+            cg.parse_cgr(source, str(main))
+
+    def test_cg_include_rejects_file_symlink_escape(self, tmp_path):
+        outside = tmp_path / "outside.cg"
+        outside.write_text('var stolen = "nope"\n')
+        graph_dir = tmp_path / "graphs"
+        graph_dir.mkdir()
+        (graph_dir / "linked.cg").symlink_to(outside)
+        main = graph_dir / "main.cg"
+        source = 'include "linked.cg"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.ParseError, match="escapes graph directory"):
+            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+
+    def test_cgr_nested_include_rejects_file_symlink_escape(self, tmp_path):
+        outside = tmp_path / "outside.cgr"
+        outside.write_text('set stolen = "nope"\n')
+        graph_dir = tmp_path / "graphs"
+        nested_dir = graph_dir / "nested"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "linked.cgr").symlink_to(outside)
+        (nested_dir / "base.cgr").write_text('include "linked.cgr"\n')
+        main = graph_dir / "main.cgr"
+        source = 'include "nested/base.cgr"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.CGRParseError, match="escapes graph directory"):
+            cg.parse_cgr(source, str(main))
+
+    def test_cg_nested_include_rejects_file_symlink_escape(self, tmp_path):
+        outside = tmp_path / "outside.cg"
+        outside.write_text('var stolen = "nope"\n')
+        graph_dir = tmp_path / "graphs"
+        nested_dir = graph_dir / "nested"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "linked.cg").symlink_to(outside)
+        (nested_dir / "base.cg").write_text('include "linked.cg"\n')
+        main = graph_dir / "main.cg"
+        source = 'include "nested/base.cg"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.ParseError, match="escapes graph directory"):
+            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+
     def test_cgr_include_rejects_absolute_path(self, tmp_path):
         base = tmp_path / "base.cgr"
         base.write_text('set from_abs = "nope"\n')

@@ -28,9 +28,10 @@ RESOURCE_STMTS = {"description","needs","check","run","script","as","timeout",
                   "get","post","put","patch","delete","auth","header","body","expect"}
 
 class Parser:
-    def __init__(self, tokens, source, filename=""):
+    def __init__(self, tokens, source, filename="", include_base_dir: Path | None = None):
         self.tokens=tokens; self.pos=0
         self.sl=source.split("\n"); self.fn=filename
+        self.include_base_dir=include_base_dir
 
     def _peek(self): return self.tokens[min(self.pos,len(self.tokens)-1)]
     def _advance(self):
@@ -66,16 +67,26 @@ class Parser:
                 self._advance()
                 inc_path = self._expect(TT.STRING).value
                 try:
-                    resolved_include = _resolve_include_path(inc_path, self.fn)
+                    resolved_include, inc_source = _read_include_file(
+                        inc_path,
+                        self.fn,
+                        self.include_base_dir,
+                    )
                 except ValueError as exc:
                     raise self._err(str(exc))
-                if resolved_include.is_file():
-                    inc_source = resolved_include.read_text()
+                except FileNotFoundError:
+                    continue
+                else:
                     inc_filename = str(resolved_include)
                     if resolved_include.suffix == ".cg":
-                        inc_ast = Parser(lex(inc_source, inc_filename), inc_source, inc_filename).parse()
+                        inc_ast = Parser(
+                            lex(inc_source, inc_filename),
+                            inc_source,
+                            inc_filename,
+                            resolved_include.parent,
+                        ).parse()
                     else:
-                        inc_ast = parse_cgr(inc_source, inc_filename)
+                        inc_ast = parse_cgr(inc_source, inc_filename, resolved_include.parent)
                     existing = {v.name for v in vs}
                     for v in inc_ast.variables:
                         if v.name not in existing: vs.append(v)

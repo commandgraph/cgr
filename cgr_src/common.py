@@ -1,7 +1,7 @@
 """Shared imports, version metadata, terminal formatting, and utility helpers."""
 from __future__ import annotations
 
-import argparse, codecs, datetime, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
+import argparse, codecs, datetime, errno, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, stat, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -54,8 +54,7 @@ def _html_esc(s: str) -> str:
              .replace('"', "&quot;")
              .replace("'", "&#x27;"))
 
-def _resolve_include_path(include_path: str, current_filename: str = "") -> Path:
-    """Resolve an include path without allowing it to escape the graph directory."""
+def _include_path_parts(include_path: str) -> tuple[str, ...]:
     if any(ch in include_path for ch in "\x00\r\n"):
         raise ValueError("include path contains an invalid character")
     if "\\" in include_path:
@@ -69,14 +68,61 @@ def _resolve_include_path(include_path: str, current_filename: str = "") -> Path
         raise ValueError("include path must not be empty")
     if ".." in path_parts:
         raise ValueError("include path escapes graph directory")
+    return path_parts
+
+def _include_base_dir(current_filename: str = "") -> Path:
     if current_filename and not (current_filename.startswith("<") and current_filename.endswith(">")):
-        base_dir = Path(current_filename).resolve().parent
-    else:
-        base_dir = Path.cwd().resolve()
-    candidate = base_dir.joinpath(*path_parts).resolve()
-    if os.path.commonpath([str(base_dir), str(candidate)]) != str(base_dir):
+        return Path(current_filename).resolve().parent
+    return Path.cwd().resolve()
+
+def _resolve_include_path(include_path: str, current_filename: str = "", base_dir: Path | None = None) -> Path:
+    """Resolve an include path without allowing it to escape the graph directory."""
+    path_parts = _include_path_parts(include_path)
+    include_base = base_dir.resolve() if base_dir is not None else _include_base_dir(current_filename)
+    candidate = include_base.joinpath(*path_parts).resolve()
+    if os.path.commonpath([str(include_base), str(candidate)]) != str(include_base):
         raise ValueError(f"include path escapes graph directory: {include_path}")
     return candidate
+
+def _read_include_file(include_path: str, current_filename: str = "", base_dir: Path | None = None) -> tuple[Path, str]:
+    """Read a validated include file from inside the graph directory."""
+    path_parts = _include_path_parts(include_path)
+    include_base = base_dir.resolve() if base_dir is not None else _include_base_dir(current_filename)
+    resolved = _resolve_include_path(include_path, current_filename, include_base)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow
+    file_flags = os.O_RDONLY | nofollow
+
+    dir_fd = os.open(include_base, dir_flags)
+    try:
+        for part in path_parts[:-1]:
+            try:
+                next_fd = os.open(part, dir_flags, dir_fd=dir_fd)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise ValueError("include path escapes graph directory") from exc
+                raise
+            os.close(dir_fd)
+            dir_fd = next_fd
+
+        try:
+            file_fd = os.open(path_parts[-1], file_flags, dir_fd=dir_fd)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ValueError("include path escapes graph directory") from exc
+            raise
+        try:
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                raise FileNotFoundError(str(resolved))
+            with os.fdopen(file_fd, "r", encoding="utf-8") as f:
+                file_fd = None
+                return resolved, f.read()
+        except Exception:
+            if file_fd is not None:
+                os.close(file_fd)
+            raise
+    finally:
+        os.close(dir_fd)
 
 __all__ = [
     "Any",
@@ -95,6 +141,7 @@ __all__ = [
     "defaultdict",
     "deque",
     "dim",
+    "errno",
     "fcntl",
     "field",
     "green",
@@ -115,6 +162,7 @@ __all__ = [
     "selectors",
     "shlex",
     "signal",
+    "stat",
     "subprocess",
     "sys",
     "tempfile",
@@ -133,6 +181,7 @@ __all__ = [
     "_html_esc",
     "_parse_duration_str",
     "_parse_timeout_text",
+    "_read_include_file",
     "_resolve_include_path",
     "_strip_ansi",
 ]

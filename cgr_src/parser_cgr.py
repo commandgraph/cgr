@@ -26,7 +26,7 @@ def _parse_cgr_dep_ref(ref: str) -> str:
         return ".".join(_slug(part) for part in ref.split("/") if part.strip())
     return _slug(ref)
 
-def parse_cgr(source: str, filename: str = "") -> ASTProgram:
+def parse_cgr(source: str, filename: str = "", _include_base_dir: Path | None = None) -> ASTProgram:
     """Parse a .cgr (human-readable) file into the same AST as the .cg parser."""
     lines_raw = source.split("\n")
     # Pre-process: strip comments, track original line numbers
@@ -179,13 +179,16 @@ def parse_cgr(source: str, filename: str = "") -> ASTProgram:
                 raise err(f"Invalid include statement (expected: include \"path.cgr\")", ln, text)
             inc_path = inc_m.group(1)
             try:
-                resolved_include = _resolve_include_path(inc_path, filename)
+                resolved_include, inc_source = _read_include_file(
+                    inc_path,
+                    filename,
+                    _include_base_dir,
+                )
             except ValueError as exc:
                 raise err(str(exc), ln, text)
-            if not resolved_include.is_file():
-                raise err(f"Included file not found: {resolved_include}", ln, text)
-            inc_source = resolved_include.read_text()
-            inc_ast = parse_cgr(inc_source, str(resolved_include))
+            except FileNotFoundError as exc:
+                raise err(f"Included file not found: {exc}", ln, text)
+            inc_ast = parse_cgr(inc_source, str(resolved_include), resolved_include.parent)
             # Merge: variables (don't overwrite existing), uses, nodes
             existing_var_names = {v.name for v in variables}
             for v in inc_ast.variables:
