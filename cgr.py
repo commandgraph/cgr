@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 606daf7cde864832
+# Built from source hash: 34cb2cf6197b5053
 import argparse, codecs, datetime, errno, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, stat, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -9951,8 +9951,11 @@ def _masked_secret_display() -> str:
 
 
 def _print_hidden_default(name: str, max_len: int, is_secret: bool):
-    marker = f"  {dim('[secret]')}" if is_secret else ""
-    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
+    if is_secret:
+        marker = f"  {dim('[secret]')}"
+        print(f"    {cyan('[secret]'.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
+        return
+    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}")
 
 
 def _add_vault_pass_args(ap):

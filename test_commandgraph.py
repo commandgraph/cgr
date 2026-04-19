@@ -6601,6 +6601,7 @@ class TestSecretBackends:
         out = capsys.readouterr().out
         assert "cmd:printf hidden-token" not in out
         assert "hidden-token" not in out
+        assert "token" not in out
         assert "<hidden>" in out
         assert "[secret]" in out
         assert "region" in out

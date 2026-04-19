@@ -2461,8 +2461,11 @@ def _masked_secret_display() -> str:
 
 
 def _print_hidden_default(name: str, max_len: int, is_secret: bool):
-    marker = f"  {dim('[secret]')}" if is_secret else ""
-    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
+    if is_secret:
+        marker = f"  {dim('[secret]')}"
+        print(f"    {cyan('[secret]'.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
+        return
+    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}")
 
 
 def _add_vault_pass_args(ap):
