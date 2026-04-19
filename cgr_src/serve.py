@@ -1467,7 +1467,6 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
         print(f"  File: {cyan(str(current_file))}")
     if current_repo:
         print(f"  Repo: {dim(current_repo)}")
-    print(f"  CSRF token: {dim(ide_csrf_token)}")
     print(f"  Token file: {dim(str(token_path))}")
     print(f"  {dim('Press Ctrl+C to stop')}\n")
 

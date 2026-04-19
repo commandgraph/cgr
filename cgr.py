@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 2882e9152713b44b
+# Built from source hash: 606daf7cde864832
 import argparse, codecs, datetime, errno, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, stat, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -7815,9 +7815,7 @@ def cmd_how(filepath: str):
         max_len = max(len(n) for n, _ in raw_vars)
         for name, expr in raw_vars:
             is_secret = name in secret_names or _is_secret_set_expr(expr) or _is_sensitive_default_name(name)
-            display_expr = _masked_secret_display()
-            secret_tag = f"  {dim('[secret]')}" if is_secret else ""
-            print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {display_expr}{secret_tag}")
+            _print_hidden_default(name, max_len, is_secret)
         print()
 
 
@@ -9950,6 +9948,11 @@ def _secure_delete_text_file(path_str: str):
 def _masked_secret_display() -> str:
     """Return a non-reversible display string for secret values."""
     return "<hidden>"
+
+
+def _print_hidden_default(name: str, max_len: int, is_secret: bool):
+    marker = f"  {dim('[secret]')}" if is_secret else ""
+    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
 
 
 def _add_vault_pass_args(ap):
@@ -12419,7 +12422,6 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
         print(f"  File: {cyan(str(current_file))}")
     if current_repo:
         print(f"  Repo: {dim(current_repo)}")
-    print(f"  CSRF token: {dim(ide_csrf_token)}")
     print(f"  Token file: {dim(str(token_path))}")
     print(f"  {dim('Press Ctrl+C to stop')}\n")
 

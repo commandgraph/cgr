@@ -3769,6 +3769,39 @@ class TestServeSecurity(TestIDEServerAPI):
         with pytest.raises(SystemExit):
             cg.cmd_serve(filepath=str(non_graph), port=8421, host="127.0.0.1", no_open=True)
 
+    def test_serve_startup_output_does_not_log_csrf_token(self, tmp_path, monkeypatch, capsys):
+        import http.server
+
+        graph_path = tmp_path / "serve-test.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            target "t" local:
+              [step]:
+                run $ echo hi
+        """))
+
+        class FakeHTTPServer:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def serve_forever(self):
+                raise KeyboardInterrupt
+
+            def shutdown(self):
+                pass
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(http.server, "HTTPServer", FakeHTTPServer)
+
+        cg.cmd_serve(filepath=str(graph_path), port=8421, host="127.0.0.1", no_open=True)
+
+        out = capsys.readouterr().out
+        token_path = tmp_path / ".config" / "cgr" / ".ide-token"
+        token = token_path.read_text().strip()
+        assert token
+        assert token not in out
+        assert "CSRF token" not in out
+        assert "Token file:" in out
+
     def test_resolve_initial_serve_file_accepts_graph_file(self, tmp_path):
         graph_path = tmp_path / "serve-test.cgr"
         graph_path.write_text(textwrap.dedent("""\

@@ -325,9 +325,7 @@ def cmd_how(filepath: str):
         max_len = max(len(n) for n, _ in raw_vars)
         for name, expr in raw_vars:
             is_secret = name in secret_names or _is_secret_set_expr(expr) or _is_sensitive_default_name(name)
-            display_expr = _masked_secret_display()
-            secret_tag = f"  {dim('[secret]')}" if is_secret else ""
-            print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {display_expr}{secret_tag}")
+            _print_hidden_default(name, max_len, is_secret)
         print()
 
 
@@ -2460,6 +2458,11 @@ def _secure_delete_text_file(path_str: str):
 def _masked_secret_display() -> str:
     """Return a non-reversible display string for secret values."""
     return "<hidden>"
+
+
+def _print_hidden_default(name: str, max_len: int, is_secret: bool):
+    marker = f"  {dim('[secret]')}" if is_secret else ""
+    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
 
 
 def _add_vault_pass_args(ap):
