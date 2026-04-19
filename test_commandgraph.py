@@ -3809,11 +3809,51 @@ class TestServeSecurity(TestIDEServerAPI):
         r = self._api("GET", "/api/file/view?path=/etc/passwd")
         assert r.get("error") is not None
 
+    def test_file_view_rejects_relative_traversal(self, tmp_path):
+        outside = tmp_path / "outside.txt"
+        outside.write_text("outside")
+        rel_escape = os.path.relpath(outside, Path(self._tmp_path))
+
+        r = self._api("GET", f"/api/file/view?path={rel_escape}")
+
+        assert r.get("error") is not None
+        assert "content" not in r
+
+    def test_file_view_rejects_absolute_traversal_under_allowed_prefix(self):
+        import urllib.parse
+
+        work_root = Path(self._tmp_path)
+        outside = work_root.parent / f"{work_root.name}-outside.txt"
+        outside.write_text("outside")
+        attack_path = work_root / ".." / outside.name
+
+        path = urllib.parse.quote(str(attack_path), safe="")
+        r = self._api("GET", f"/api/file/view?path={path}")
+
+        assert r.get("error") is not None
+        assert "content" not in r
+
     def test_file_view_rejects_allowed_extension_outside_sandbox(self, tmp_path):
         outside = tmp_path / "outside.txt"
         outside.write_text("outside")
 
         r = self._api("GET", f"/api/file/view?path={outside}")
+
+        assert r.get("error") is not None
+        assert "content" not in r
+
+    def test_file_view_rejects_symlinked_directory_escape(self, tmp_path):
+        import urllib.parse
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target = outside / "escape.txt"
+        target.write_text("outside")
+        link_dir = Path(self._tmp_path) / "linked-outside-view"
+        link_dir.symlink_to(outside, target_is_directory=True)
+
+        path = urllib.parse.quote(str(link_dir / "escape.txt"), safe="")
+        r = self._api("GET", f"/api/file/view?path={path}")
 
         assert r.get("error") is not None
         assert "content" not in r

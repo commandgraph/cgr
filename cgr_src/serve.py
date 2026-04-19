@@ -677,9 +677,10 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             "external_files": ext_files,
         }
 
-    def _is_safe_file_path(fpath_str):
-        """Check if a file path is within allowed directories (repo dirs + graph dir)."""
-        fpath = Path(fpath_str).resolve()
+    def _is_safe_file_path(fpath: Path):
+        """Check if a resolved file path is within allowed directories."""
+        if not isinstance(fpath, Path) or not fpath.is_absolute():
+            return False
         # Allow files in repo directories
         repo_dirs = _build_repo_search_path(explicit_repo=current_repo,
                                              graph_file=str(current_file) if current_file else None)
@@ -697,28 +698,43 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             return True
         return False
 
+    def _lexically_safe_ide_path(path_like):
+        """Return an absolute path candidate after blocking traversal syntax."""
+        if not isinstance(path_like, (str, Path)):
+            return None
+        raw = str(path_like)
+        if not raw or raw != raw.strip():
+            return None
+        if any(ch in raw for ch in "\x00\r\n") or "\\" in raw:
+            return None
+        is_absolute = raw.startswith("/")
+        body = raw[1:] if is_absolute else raw
+        parts = body.split("/")
+        if not body or any(part in ("", ".", "..") for part in parts):
+            return None
+        if is_absolute:
+            return Path("/").joinpath(*parts)
+        return work_dir.joinpath(*parts)
+
     def _resolve_safe_ide_path(path_like, *, allowed_ext: set[str] | None = None,
                                require_exists: bool = True, allow_dirs: bool = False):
         """Resolve an IDE file path only if it remains inside allowed roots."""
-        try:
-            raw_path = Path(path_like)
-        except TypeError:
-            return None
-        if any(ch in str(raw_path) for ch in "\x00\r\n"):
-            return None
-        if raw_path.exists() and raw_path.is_symlink():
+        candidate = _lexically_safe_ide_path(path_like)
+        if candidate is None:
             return None
         try:
-            resolved = raw_path.resolve(strict=require_exists)
+            resolved = candidate.resolve(strict=require_exists)
         except Exception:
+            return None
+        if not _is_safe_file_path(resolved):
+            return None
+        if candidate.is_symlink():
             return None
         if require_exists and not resolved.exists():
             return None
         if not allow_dirs and resolved.exists() and resolved.is_dir():
             return None
         if allowed_ext is not None and resolved.suffix.lower() not in allowed_ext:
-            return None
-        if not _is_safe_file_path(str(resolved)):
             return None
         return resolved
 
@@ -739,7 +755,7 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             resolved = candidate.resolve(strict=False)
         except Exception:
             return {"resolved": None, "exists": False}
-        if not _is_safe_file_path(str(resolved)):
+        if not _is_safe_file_path(resolved):
             return {"resolved": None, "exists": False}
         return {"resolved": str(resolved), "exists": resolved.exists()}
 
