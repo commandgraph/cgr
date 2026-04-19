@@ -265,6 +265,20 @@ def _extract_set_vars(source: str) -> list[tuple[str, str]]:
     return result
 
 
+def _is_secret_set_expr(expr: str) -> bool:
+    """Return True when a raw set expression declares a secret backend."""
+    return bool(re.match(r'^secret\b', expr.strip()))
+
+
+def _is_sensitive_default_name(name: str) -> bool:
+    """Return True when a default variable name commonly denotes a secret."""
+    normalized = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
+    return bool(re.search(
+        r'(^|_)(secret|token|password|passwd|pwd|api_key|apikey|access_key|private_key|credential|credentials|auth|bearer)(_|$)',
+        normalized,
+    ))
+
+
 def cmd_how(filepath: str):
     """Show header documentation and configurable variables for a graph file."""
     path = Path(filepath)
@@ -300,12 +314,14 @@ def cmd_how(filepath: str):
         print()
 
     if raw_vars:
-        print(f"  {bold('Defaults')}  {dim('(override with --set NAME=VALUE)')}")
+        print(f"  {bold('Defaults')}  {dim('(override with --set NAME=...)')}")
         print()
         max_len = max(len(n) for n, _ in raw_vars)
         for name, expr in raw_vars:
-            secret_tag = f"  {dim('[secret]')}" if name in secret_names else ""
-            print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {expr}{secret_tag}")
+            is_secret = name in secret_names or _is_secret_set_expr(expr) or _is_sensitive_default_name(name)
+            display_expr = _masked_secret_display() if is_secret else expr
+            secret_tag = f"  {dim('[secret]')}" if is_secret else ""
+            print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {display_expr}{secret_tag}")
         print()
 
 
@@ -2543,8 +2559,7 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
             if show_values:
                 print(yellow("  warning: plaintext secret display is disabled; showing masked values instead."))
             for k in secrets:
-                display_value = _masked_secret_display()
-                print(f"  {cyan(k)} = {dim(display_value)}")
+                print(f"  {cyan(k)}")
             if not secrets:
                 print(dim("  (empty)"))
         except (ValueError, RuntimeError) as e:

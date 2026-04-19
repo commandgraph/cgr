@@ -56,14 +56,24 @@ def _html_esc(s: str) -> str:
 
 def _resolve_include_path(include_path: str, current_filename: str = "") -> Path:
     """Resolve an include path without allowing it to escape the graph directory."""
-    if "\x00" in include_path:
-        raise ValueError("include path contains a null byte")
+    if any(ch in include_path for ch in "\x00\r\n"):
+        raise ValueError("include path contains an invalid character")
+    if "\\" in include_path:
+        raise ValueError("include path must use '/' separators")
+    if include_path.startswith("/") or re.match(r"^[A-Za-z]:[/\\]", include_path):
+        raise ValueError("include path must be relative to the graph directory")
+    if include_path.startswith("~"):
+        raise ValueError("include path must not use home-directory expansion")
+    path_parts = tuple(part for part in include_path.split("/") if part not in ("", "."))
+    if not path_parts:
+        raise ValueError("include path must not be empty")
+    if ".." in path_parts:
+        raise ValueError("include path escapes graph directory")
     if current_filename and not (current_filename.startswith("<") and current_filename.endswith(">")):
         base_dir = Path(current_filename).resolve().parent
     else:
         base_dir = Path.cwd().resolve()
-    raw_path = Path(include_path).expanduser()
-    candidate = raw_path.resolve() if raw_path.is_absolute() else (base_dir / raw_path).resolve()
+    candidate = base_dir.joinpath(*path_parts).resolve()
     if os.path.commonpath([str(base_dir), str(candidate)]) != str(base_dir):
         raise ValueError(f"include path escapes graph directory: {include_path}")
     return candidate

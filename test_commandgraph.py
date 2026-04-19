@@ -4403,7 +4403,7 @@ class TestInclude:
         main = tmp_path / "main.cgr"
         main.write_text(textwrap.dedent(f"""\
             --- Main ---
-            include "{base}"
+            include "{base.name}"
             set main_var = "from_main"
             target "main" local:
               [main step]:
@@ -4424,7 +4424,7 @@ class TestInclude:
         main = tmp_path / "main.cgr"
         main.write_text(textwrap.dedent(f"""\
             set port = "9090"
-            include "{base}"
+            include "{base.name}"
             target "t" local:
               [s]: run $ echo ok
         """))
@@ -4454,6 +4454,86 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.ParseError, match="escapes graph directory"):
+            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+
+    def test_cgr_include_rejects_symlink_escape(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "base.cgr").write_text('set stolen = "nope"\n')
+        graph_dir = tmp_path / "graphs"
+        graph_dir.mkdir()
+        (graph_dir / "linked").symlink_to(outside, target_is_directory=True)
+        main = graph_dir / "main.cgr"
+        source = 'include "linked/base.cgr"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.CGRParseError, match="escapes graph directory"):
+            cg.parse_cgr(source, str(main))
+
+    def test_cg_include_rejects_symlink_escape(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "base.cg").write_text('var stolen = "nope"\n')
+        graph_dir = tmp_path / "graphs"
+        graph_dir.mkdir()
+        (graph_dir / "linked").symlink_to(outside, target_is_directory=True)
+        main = graph_dir / "main.cg"
+        source = 'include "linked/base.cg"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.ParseError, match="escapes graph directory"):
+            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+
+    def test_cgr_include_rejects_absolute_path(self, tmp_path):
+        base = tmp_path / "base.cgr"
+        base.write_text('set from_abs = "nope"\n')
+        main = tmp_path / "main.cgr"
+        source = f'include "{base}"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.CGRParseError, match="must be relative"):
+            cg.parse_cgr(source, str(main))
+
+    def test_cg_include_rejects_absolute_path(self, tmp_path):
+        base = tmp_path / "base.cg"
+        base.write_text('var from_abs = "nope"\n')
+        main = tmp_path / "main.cg"
+        source = f'include "{base}"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.ParseError, match="must be relative"):
+            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+
+    def test_cgr_include_rejects_home_expansion(self, tmp_path):
+        main = tmp_path / "main.cgr"
+        source = 'include "~/outside.cgr"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.CGRParseError, match="home-directory expansion"):
+            cg.parse_cgr(source, str(main))
+
+    def test_cg_include_rejects_home_expansion(self, tmp_path):
+        main = tmp_path / "main.cg"
+        source = 'include "~/outside.cg"\n'
+        main.write_text(source)
+
+        with pytest.raises(cg.ParseError, match="home-directory expansion"):
+            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+
+    def test_cgr_include_rejects_backslash_path(self, tmp_path):
+        main = tmp_path / "main.cgr"
+        source = r'include "..\outside.cgr"' + "\n"
+        main.write_text(source)
+
+        with pytest.raises(cg.CGRParseError, match="must use '/' separators"):
+            cg.parse_cgr(source, str(main))
+
+    def test_cg_include_rejects_backslash_path(self, tmp_path):
+        main = tmp_path / "main.cg"
+        source = r'include "..\outside.cg"' + "\n"
+        main.write_text(source)
+
+        with pytest.raises(cg.ParseError, match="must use '/' separators"):
             cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
 
 
@@ -6401,6 +6481,65 @@ class TestSecretBackends:
         out = capsys.readouterr().out
         assert "supersecret" not in out
 
+    def test_how_redacts_secret_default_expression(self, tmp_path, capsys):
+        graph_path = tmp_path / "secret-test.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            set token = secret "cmd:printf hidden-token"
+            set region = "us-east-1"
+
+            target "t" local:
+              [step]:
+                run $ echo done
+        """))
+
+        cg.cmd_how(str(graph_path))
+        out = capsys.readouterr().out
+        assert "cmd:printf hidden-token" not in out
+        assert "hidden-token" not in out
+        assert "<hidden>" in out
+        assert "[secret]" in out
+        assert "region" in out
+        assert '"us-east-1"' in out
+
+    def test_how_redacts_secret_default_expression_when_parse_fails(self, tmp_path, monkeypatch, capsys):
+        graph_path = tmp_path / "secret-test.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            set token = secret "env:CGR_TEST_HOW_SECRET"
+            set region = "us-east-1"
+
+            target "t" local:
+              [step]:
+                run $ echo done
+        """))
+        monkeypatch.delenv("CGR_TEST_HOW_SECRET", raising=False)
+
+        cg.cmd_how(str(graph_path))
+        out = capsys.readouterr().out
+        assert "env:CGR_TEST_HOW_SECRET" not in out
+        assert "<hidden>" in out
+        assert "[secret]" in out
+        assert "region" in out
+        assert '"us-east-1"' in out
+
+    def test_how_redacts_sensitive_named_default_expression(self, tmp_path, capsys):
+        graph_path = tmp_path / "sensitive-default.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            set api_key = "leaky-default"
+            set region = "us-east-1"
+
+            target "t" local:
+              [step]:
+                run $ echo done
+        """))
+
+        cg.cmd_how(str(graph_path))
+        out = capsys.readouterr().out
+        assert "leaky-default" not in out
+        assert "<hidden>" in out
+        assert "[secret]" in out
+        assert "region" in out
+        assert '"us-east-1"' in out
+
     def test_get_vault_pass_errors_without_source(self, monkeypatch, capsys):
         monkeypatch.delenv("CGR_VAULT_PASS", raising=False)
         with pytest.raises(SystemExit) as exc:
@@ -6427,7 +6566,7 @@ class TestSecretBackends:
         cg.cmd_secrets("view", str(secrets_path), vault_args=args)
         out = capsys.readouterr().out
         assert "api_key" in out
-        assert "<hidden>" in out
+        assert "=" not in out
         assert "top-secret" not in out
 
     def test_cmd_secrets_view_show_values_still_masks_output(self, tmp_path, capsys):
@@ -6438,7 +6577,7 @@ class TestSecretBackends:
         cg.cmd_secrets("view", str(secrets_path), vault_args=args)
         out = capsys.readouterr().out
         assert "api_key" in out
-        assert "<hidden>" in out
+        assert "=" not in out
         assert "plaintext secret display is disabled" in out
         assert "top-secret" not in out
 
