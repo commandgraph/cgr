@@ -18,7 +18,7 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: a5c1b078c44ecc86
+# Built from source hash: 2882e9152713b44b
 import argparse, codecs, datetime, errno, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, stat, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
@@ -89,9 +89,7 @@ def _include_path_parts(include_path: str) -> tuple[str, ...]:
     return path_parts
 
 def _include_base_dir(current_filename: str = "") -> Path:
-    if current_filename and not (current_filename.startswith("<") and current_filename.endswith(">")):
-        return Path(current_filename).resolve().parent
-    return Path.cwd().resolve()
+    raise ValueError("include requires a graph file path")
 
 def _resolve_include_path(include_path: str, current_filename: str = "", base_dir: Path | None = None) -> Path:
     """Resolve an include path without allowing it to escape the graph directory."""
@@ -7509,10 +7507,11 @@ def _load(filepath, repo_dir=None, extra_vars=None, raise_on_error=False, invent
         if raise_on_error: raise ValueError(f"not found: {path}")
         print(red(f"error: not found: {path}"),file=sys.stderr); sys.exit(1)
     source=path.read_text()
+    include_base_dir = path.resolve().parent
 
     # Detect format by extension
     if path.suffix == ".cgr":
-        try: ast=parse_cgr(source, str(path))
+        try: ast=parse_cgr(source, str(path), include_base_dir)
         except CGRParseError as e:
             if raise_on_error: raise ValueError(e.msg) from e
             print(e.pretty(),file=sys.stderr); sys.exit(1)
@@ -7523,7 +7522,7 @@ def _load(filepath, repo_dir=None, extra_vars=None, raise_on_error=False, invent
             print(red(f"Lex error: {e.msg}"),file=sys.stderr)
             if e.src: print(dim(f"  {e.line:>4} │ ")+e.src,file=sys.stderr)
             sys.exit(1)
-        try: ast=Parser(tokens,source,str(path)).parse()
+        try: ast=Parser(tokens,source,str(path),include_base_dir).parse()
         except ParseError as e:
             if raise_on_error: raise ValueError(e.msg) from e
             print(e.pretty(),file=sys.stderr); sys.exit(1)
@@ -7778,13 +7777,18 @@ def cmd_how(filepath: str):
         print(red(f"error: file not found: {filepath}")); sys.exit(1)
 
     source = path.read_text()
+    include_base_dir = path.resolve().parent
     title, doc_body = _extract_file_header(source)
     raw_vars = _extract_set_vars(source)
 
     # Best-effort parse to flag secrets
     secret_names: set[str] = set()
     try:
-        ast = parse_cg(source, filepath) if filepath.endswith(".cg") else parse_cgr(source, filepath)
+        if filepath.endswith(".cg"):
+            tokens = lex(source, filepath)
+            ast = Parser(tokens, source, filepath, include_base_dir).parse()
+        else:
+            ast = parse_cgr(source, filepath, include_base_dir)
         secret_names = {v.name for v in ast.variables if v.is_secret}
     except Exception:
         pass
@@ -7811,7 +7815,7 @@ def cmd_how(filepath: str):
         max_len = max(len(n) for n, _ in raw_vars)
         for name, expr in raw_vars:
             is_secret = name in secret_names or _is_secret_set_expr(expr) or _is_sensitive_default_name(name)
-            display_expr = _masked_secret_display() if is_secret else expr
+            display_expr = _masked_secret_display()
             secret_tag = f"  {dim('[secret]')}" if is_secret else ""
             print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {display_expr}{secret_tag}")
         print()
@@ -9022,7 +9026,7 @@ def cmd_convert(filepath, output_file=None):
     if path.suffix == ".cgr":
         # Parse as CGR, emit as .cg
         try:
-            ast = parse_cgr(source, str(path))
+            ast = parse_cgr(source, str(path), path.resolve().parent)
         except CGRParseError as e:
             print(e.pretty(), file=sys.stderr); sys.exit(1)
         _rewrite_cgr_named_instantiation_refs_for_cg(ast, str(path))
@@ -9032,7 +9036,7 @@ def cmd_convert(filepath, output_file=None):
         # Parse as .cg, emit as .cgr
         try:
             tokens = lex(source, str(path))
-            ast = Parser(tokens, source, str(path)).parse()
+            ast = Parser(tokens, source, str(path), path.resolve().parent).parse()
         except (LexError, ParseError) as e:
             msg = e.pretty() if hasattr(e, 'pretty') else str(e)
             print(msg, file=sys.stderr); sys.exit(1)
@@ -9056,7 +9060,7 @@ def cmd_fmt(filepath):
         print(red(f"error: cgr fmt only works on .cgr files")); sys.exit(1)
     source = path.read_text()
     try:
-        ast = parse_cgr(source, str(path))
+        ast = parse_cgr(source, str(path), path.resolve().parent)
     except CGRParseError as e:
         print(e.pretty(), file=sys.stderr); sys.exit(1)
 
@@ -9607,10 +9611,10 @@ def cmd_test_template(repo_dir: str|None = None, template_path: str|None = None,
             # Phase 1: Parse
             source = tpl_path.read_text()
             if tpl_path.suffix == ".cgr":
-                prog = parse_cgr(source, str(tpl_path))
+                prog = parse_cgr(source, str(tpl_path), tpl_path.resolve().parent)
             else:
                 tokens = lex(source, str(tpl_path))
-                parser = Parser(tokens, source, str(tpl_path))
+                parser = Parser(tokens, source, str(tpl_path), tpl_path.resolve().parent)
                 prog = parser.parse()
 
             if not prog.templates:
@@ -10050,9 +10054,9 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
             secrets = _load_secrets(filepath, passphrase)
             if show_values:
                 print(yellow("  warning: plaintext secret display is disabled; showing masked values instead."))
-            for k in secrets:
-                print(f"  {cyan(k)}")
-            if not secrets:
+            if secrets:
+                print(dim("  (secrets present)"))
+            else:
                 print(dim("  (empty)"))
         except (ValueError, RuntimeError) as e:
             print(red(f"error: {e}")); sys.exit(1)
@@ -11388,11 +11392,13 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
 
     def _parse_ide_graph_source(source: str, fname: str | None = None):
         """Parse IDE source text based on the active file extension."""
-        parse_name = fname or "<editor>"
-        if fname and fname.endswith(".cg"):
+        parse_path = _resolve_edit_target(fname) if fname else None
+        parse_name = str(parse_path) if parse_path else (fname or "<editor>")
+        include_base_dir = parse_path.parent if parse_path else None
+        if parse_name.endswith(".cg"):
             tokens = lex(source, parse_name)
-            return Parser(tokens, source, parse_name).parse()
-        return parse_cgr(source, parse_name)
+            return Parser(tokens, source, parse_name, include_base_dir).parse()
+        return parse_cgr(source, parse_name, include_base_dir)
 
     def _run_apply_bg(source, fname, graph=None, vault_passphrase=None):
         """Run apply in a background thread, accumulating events."""
@@ -11762,9 +11768,9 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             source = fpath.read_text()
             if fpath.suffix.lower() == ".cg":
                 tokens = lex(source, str(fpath))
-                program = Parser(tokens, source, str(fpath)).parse()
+                program = Parser(tokens, source, str(fpath), fpath.resolve().parent).parse()
             else:
-                program = parse_cgr(source, str(fpath))
+                program = parse_cgr(source, str(fpath), fpath.resolve().parent)
             return bool(program.templates) and not program.nodes
         except Exception:
             return False
@@ -12058,10 +12064,10 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                             try:
                                 source = tpl_file.read_text()
                                 if tpl_file.suffix == ".cgr":
-                                    prog = parse_cgr(source, str(tpl_file))
+                                    prog = parse_cgr(source, str(tpl_file), tpl_file.resolve().parent)
                                 else:
                                     tokens = lex(source, str(tpl_file))
-                                    prog = Parser(tokens, source, str(tpl_file)).parse()
+                                    prog = Parser(tokens, source, str(tpl_file), tpl_file.resolve().parent).parse()
                                 for t in prog.templates:
                                     params = [{"name": p.name, "default": p.default} for p in t.params]
                                     templates.append({"path": tpl_path, "name": t.name, "params": params, "description": t.description})
@@ -12291,9 +12297,9 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                 try:
                     if str(current_file).endswith(".cg"):
                         tokens = lex(source, str(current_file))
-                        ast = Parser(tokens, source, str(current_file)).parse()
+                        ast = Parser(tokens, source, str(current_file), current_file.resolve().parent).parse()
                     else:
-                        ast = parse_cgr(source, str(current_file))
+                        ast = parse_cgr(source, str(current_file), current_file.resolve().parent)
                     graph = resolve(ast, repo_dir=current_repo, graph_file=str(current_file),
                                     vault_passphrase=vault_pass,
                                     resolve_deferred_secrets=False)
@@ -12664,10 +12670,11 @@ def _load(filepath, repo_dir=None, extra_vars=None, raise_on_error=False, invent
         if raise_on_error: raise ValueError(f"not found: {path}")
         print(red(f"error: not found: {path}"),file=sys.stderr); sys.exit(1)
     source=path.read_text()
+    include_base_dir = path.resolve().parent
 
     # Detect format by extension
     if path.suffix == ".cgr":
-        try: ast=parse_cgr(source, str(path))
+        try: ast=parse_cgr(source, str(path), include_base_dir)
         except CGRParseError as e:
             if raise_on_error: raise ValueError(e.msg) from e
             print(e.pretty(),file=sys.stderr); sys.exit(1)
@@ -12678,7 +12685,7 @@ def _load(filepath, repo_dir=None, extra_vars=None, raise_on_error=False, invent
             print(red(f"Lex error: {e.msg}"),file=sys.stderr)
             if e.src: print(dim(f"  {e.line:>4} │ ")+e.src,file=sys.stderr)
             sys.exit(1)
-        try: ast=Parser(tokens,source,str(path)).parse()
+        try: ast=Parser(tokens,source,str(path),include_base_dir).parse()
         except ParseError as e:
             if raise_on_error: raise ValueError(e.msg) from e
             print(e.pretty(),file=sys.stderr); sys.exit(1)

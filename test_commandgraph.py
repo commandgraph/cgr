@@ -4392,6 +4392,22 @@ class TestHTTPSteps:
 class TestInclude:
     """Test the include directive for composing graph files."""
 
+    def test_cgr_include_requires_file_context(self, tmp_path):
+        base = tmp_path / "base.cgr"
+        base.write_text('set base_var = "from_base"\n')
+        source = f'include "{base.name}"\n'
+
+        with pytest.raises(cg.CGRParseError, match="requires a graph file path"):
+            cg.parse_cgr(source, "<test>")
+
+    def test_cg_include_requires_file_context(self, tmp_path):
+        base = tmp_path / "base.cg"
+        base.write_text('var base_var = "from_base"\n')
+        source = f'include "{base.name}"\n'
+
+        with pytest.raises(cg.ParseError, match="requires a graph file path"):
+            cg.Parser(cg.lex(source, "<test>"), source, "<test>").parse()
+
     def test_cgr_include(self, tmp_path):
         base = tmp_path / "base.cgr"
         base.write_text(textwrap.dedent("""\
@@ -4409,7 +4425,7 @@ class TestInclude:
               [main step]:
                 run $ echo "main"
         """))
-        ast = cg.parse_cgr(main.read_text(), str(main))
+        ast = cg.parse_cgr(main.read_text(), str(main), main.parent)
         var_names = [v.name for v in ast.variables]
         assert "base_var" in var_names
         assert "main_var" in var_names
@@ -4428,7 +4444,7 @@ class TestInclude:
             target "t" local:
               [s]: run $ echo ok
         """))
-        ast = cg.parse_cgr(main.read_text(), str(main))
+        ast = cg.parse_cgr(main.read_text(), str(main), main.parent)
         port_var = [v for v in ast.variables if v.name == "port"]
         assert len(port_var) == 1
         assert port_var[0].value == "9090"
@@ -4442,7 +4458,7 @@ class TestInclude:
         main.write_text('include "../outside.cgr"\n')
 
         with pytest.raises(cg.CGRParseError, match="escapes graph directory"):
-            cg.parse_cgr(main.read_text(), str(main))
+            cg.parse_cgr(main.read_text(), str(main), main.parent)
 
     def test_cg_include_rejects_parent_traversal(self, tmp_path):
         outside = tmp_path / "outside.cg"
@@ -4454,7 +4470,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.ParseError, match="escapes graph directory"):
-            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+            cg.Parser(cg.lex(source, str(main)), source, str(main), main.parent).parse()
 
     def test_cgr_include_rejects_symlink_escape(self, tmp_path):
         outside = tmp_path / "outside"
@@ -4468,7 +4484,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.CGRParseError, match="escapes graph directory"):
-            cg.parse_cgr(source, str(main))
+            cg.parse_cgr(source, str(main), main.parent)
 
     def test_cg_include_rejects_symlink_escape(self, tmp_path):
         outside = tmp_path / "outside"
@@ -4482,7 +4498,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.ParseError, match="escapes graph directory"):
-            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+            cg.Parser(cg.lex(source, str(main)), source, str(main), main.parent).parse()
 
     def test_cgr_include_rejects_file_symlink_escape(self, tmp_path):
         outside = tmp_path / "outside.cgr"
@@ -4495,7 +4511,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.CGRParseError, match="escapes graph directory"):
-            cg.parse_cgr(source, str(main))
+            cg.parse_cgr(source, str(main), main.parent)
 
     def test_cg_include_rejects_file_symlink_escape(self, tmp_path):
         outside = tmp_path / "outside.cg"
@@ -4508,7 +4524,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.ParseError, match="escapes graph directory"):
-            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+            cg.Parser(cg.lex(source, str(main)), source, str(main), main.parent).parse()
 
     def test_cgr_nested_include_rejects_file_symlink_escape(self, tmp_path):
         outside = tmp_path / "outside.cgr"
@@ -4523,7 +4539,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.CGRParseError, match="escapes graph directory"):
-            cg.parse_cgr(source, str(main))
+            cg.parse_cgr(source, str(main), main.parent)
 
     def test_cg_nested_include_rejects_file_symlink_escape(self, tmp_path):
         outside = tmp_path / "outside.cg"
@@ -4538,7 +4554,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.ParseError, match="escapes graph directory"):
-            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+            cg.Parser(cg.lex(source, str(main)), source, str(main), main.parent).parse()
 
     def test_cgr_include_rejects_absolute_path(self, tmp_path):
         base = tmp_path / "base.cgr"
@@ -4548,7 +4564,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.CGRParseError, match="must be relative"):
-            cg.parse_cgr(source, str(main))
+            cg.parse_cgr(source, str(main), main.parent)
 
     def test_cg_include_rejects_absolute_path(self, tmp_path):
         base = tmp_path / "base.cg"
@@ -4558,7 +4574,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.ParseError, match="must be relative"):
-            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+            cg.Parser(cg.lex(source, str(main)), source, str(main), main.parent).parse()
 
     def test_cgr_include_rejects_home_expansion(self, tmp_path):
         main = tmp_path / "main.cgr"
@@ -4566,7 +4582,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.CGRParseError, match="home-directory expansion"):
-            cg.parse_cgr(source, str(main))
+            cg.parse_cgr(source, str(main), main.parent)
 
     def test_cg_include_rejects_home_expansion(self, tmp_path):
         main = tmp_path / "main.cg"
@@ -4574,7 +4590,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.ParseError, match="home-directory expansion"):
-            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+            cg.Parser(cg.lex(source, str(main)), source, str(main), main.parent).parse()
 
     def test_cgr_include_rejects_backslash_path(self, tmp_path):
         main = tmp_path / "main.cgr"
@@ -4582,7 +4598,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.CGRParseError, match="must use '/' separators"):
-            cg.parse_cgr(source, str(main))
+            cg.parse_cgr(source, str(main), main.parent)
 
     def test_cg_include_rejects_backslash_path(self, tmp_path):
         main = tmp_path / "main.cg"
@@ -4590,7 +4606,7 @@ class TestInclude:
         main.write_text(source)
 
         with pytest.raises(cg.ParseError, match="must use '/' separators"):
-            cg.Parser(cg.lex(source, str(main)), source, str(main)).parse()
+            cg.Parser(cg.lex(source, str(main)), source, str(main), main.parent).parse()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -6555,7 +6571,7 @@ class TestSecretBackends:
         assert "<hidden>" in out
         assert "[secret]" in out
         assert "region" in out
-        assert '"us-east-1"' in out
+        assert '"us-east-1"' not in out
 
     def test_how_redacts_secret_default_expression_when_parse_fails(self, tmp_path, monkeypatch, capsys):
         graph_path = tmp_path / "secret-test.cgr"
@@ -6575,12 +6591,12 @@ class TestSecretBackends:
         assert "<hidden>" in out
         assert "[secret]" in out
         assert "region" in out
-        assert '"us-east-1"' in out
+        assert '"us-east-1"' not in out
 
-    def test_how_redacts_sensitive_named_default_expression(self, tmp_path, capsys):
+    def test_how_redacts_default_expressions_even_with_non_sensitive_name(self, tmp_path, capsys):
         graph_path = tmp_path / "sensitive-default.cgr"
         graph_path.write_text(textwrap.dedent("""\
-            set api_key = "leaky-default"
+            set release_channel = "leaky-default"
             set region = "us-east-1"
 
             target "t" local:
@@ -6592,9 +6608,10 @@ class TestSecretBackends:
         out = capsys.readouterr().out
         assert "leaky-default" not in out
         assert "<hidden>" in out
-        assert "[secret]" in out
+        assert "[secret]" not in out
+        assert "release_channel" in out
         assert "region" in out
-        assert '"us-east-1"' in out
+        assert '"us-east-1"' not in out
 
     def test_get_vault_pass_errors_without_source(self, monkeypatch, capsys):
         monkeypatch.delenv("CGR_VAULT_PASS", raising=False)
@@ -6621,7 +6638,8 @@ class TestSecretBackends:
                                   show_values=False)
         cg.cmd_secrets("view", str(secrets_path), vault_args=args)
         out = capsys.readouterr().out
-        assert "api_key" in out
+        assert "secrets present" in out
+        assert "api_key" not in out
         assert "=" not in out
         assert "top-secret" not in out
 
@@ -6632,7 +6650,8 @@ class TestSecretBackends:
                                   show_values=True)
         cg.cmd_secrets("view", str(secrets_path), vault_args=args)
         out = capsys.readouterr().out
-        assert "api_key" in out
+        assert "secrets present" in out
+        assert "api_key" not in out
         assert "=" not in out
         assert "plaintext secret display is disabled" in out
         assert "top-secret" not in out

@@ -252,10 +252,11 @@ def _load(filepath, repo_dir=None, extra_vars=None, raise_on_error=False, invent
         if raise_on_error: raise ValueError(f"not found: {path}")
         print(red(f"error: not found: {path}"),file=sys.stderr); sys.exit(1)
     source=path.read_text()
+    include_base_dir = path.resolve().parent
 
     # Detect format by extension
     if path.suffix == ".cgr":
-        try: ast=parse_cgr(source, str(path))
+        try: ast=parse_cgr(source, str(path), include_base_dir)
         except CGRParseError as e:
             if raise_on_error: raise ValueError(e.msg) from e
             print(e.pretty(),file=sys.stderr); sys.exit(1)
@@ -266,7 +267,7 @@ def _load(filepath, repo_dir=None, extra_vars=None, raise_on_error=False, invent
             print(red(f"Lex error: {e.msg}"),file=sys.stderr)
             if e.src: print(dim(f"  {e.line:>4} │ ")+e.src,file=sys.stderr)
             sys.exit(1)
-        try: ast=Parser(tokens,source,str(path)).parse()
+        try: ast=Parser(tokens,source,str(path),include_base_dir).parse()
         except ParseError as e:
             if raise_on_error: raise ValueError(e.msg) from e
             print(e.pretty(),file=sys.stderr); sys.exit(1)

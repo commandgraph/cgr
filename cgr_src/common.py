@@ -71,9 +71,7 @@ def _include_path_parts(include_path: str) -> tuple[str, ...]:
     return path_parts
 
 def _include_base_dir(current_filename: str = "") -> Path:
-    if current_filename and not (current_filename.startswith("<") and current_filename.endswith(">")):
-        return Path(current_filename).resolve().parent
-    return Path.cwd().resolve()
+    raise ValueError("include requires a graph file path")
 
 def _resolve_include_path(include_path: str, current_filename: str = "", base_dir: Path | None = None) -> Path:
     """Resolve an include path without allowing it to escape the graph directory."""

@@ -440,11 +440,13 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
 
     def _parse_ide_graph_source(source: str, fname: str | None = None):
         """Parse IDE source text based on the active file extension."""
-        parse_name = fname or "<editor>"
-        if fname and fname.endswith(".cg"):
+        parse_path = _resolve_edit_target(fname) if fname else None
+        parse_name = str(parse_path) if parse_path else (fname or "<editor>")
+        include_base_dir = parse_path.parent if parse_path else None
+        if parse_name.endswith(".cg"):
             tokens = lex(source, parse_name)
-            return Parser(tokens, source, parse_name).parse()
-        return parse_cgr(source, parse_name)
+            return Parser(tokens, source, parse_name, include_base_dir).parse()
+        return parse_cgr(source, parse_name, include_base_dir)
 
     def _run_apply_bg(source, fname, graph=None, vault_passphrase=None):
         """Run apply in a background thread, accumulating events."""
@@ -814,9 +816,9 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
             source = fpath.read_text()
             if fpath.suffix.lower() == ".cg":
                 tokens = lex(source, str(fpath))
-                program = Parser(tokens, source, str(fpath)).parse()
+                program = Parser(tokens, source, str(fpath), fpath.resolve().parent).parse()
             else:
-                program = parse_cgr(source, str(fpath))
+                program = parse_cgr(source, str(fpath), fpath.resolve().parent)
             return bool(program.templates) and not program.nodes
         except Exception:
             return False
@@ -1110,10 +1112,10 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                             try:
                                 source = tpl_file.read_text()
                                 if tpl_file.suffix == ".cgr":
-                                    prog = parse_cgr(source, str(tpl_file))
+                                    prog = parse_cgr(source, str(tpl_file), tpl_file.resolve().parent)
                                 else:
                                     tokens = lex(source, str(tpl_file))
-                                    prog = Parser(tokens, source, str(tpl_file)).parse()
+                                    prog = Parser(tokens, source, str(tpl_file), tpl_file.resolve().parent).parse()
                                 for t in prog.templates:
                                     params = [{"name": p.name, "default": p.default} for p in t.params]
                                     templates.append({"path": tpl_path, "name": t.name, "params": params, "description": t.description})
@@ -1343,9 +1345,9 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                 try:
                     if str(current_file).endswith(".cg"):
                         tokens = lex(source, str(current_file))
-                        ast = Parser(tokens, source, str(current_file)).parse()
+                        ast = Parser(tokens, source, str(current_file), current_file.resolve().parent).parse()
                     else:
-                        ast = parse_cgr(source, str(current_file))
+                        ast = parse_cgr(source, str(current_file), current_file.resolve().parent)
                     graph = resolve(ast, repo_dir=current_repo, graph_file=str(current_file),
                                     vault_passphrase=vault_pass,
                                     resolve_deferred_secrets=False)

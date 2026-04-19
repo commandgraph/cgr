@@ -288,7 +288,7 @@ set ssh_user = env("USER", "ubuntu")
 set ssh_port = "22"
 ```
 
-`cgr how` renders the header and then a **Defaults** table showing each `set` declaration with its raw expression (`env("USER", "ubuntu")` rather than the evaluated value), so users can see exactly what to override.
+`cgr how` renders the header and then a **Defaults** table showing each top-level `set` declaration name. Default expressions are hidden so graph files cannot accidentally echo secrets or credentials into terminal logs.
 
 Conventions for the comment block:
 - Start with a one-line summary sentence.
@@ -2108,7 +2108,7 @@ This makes the HTML file a self-contained pitch: send someone `webserver.html`, 
 | `doctor` | Check environment: Python version, SSH client, sudo, template repo, Vault passphrase, graph files in CWD. |
 | `secrets` | Manage encrypted `.secrets` files for offline secret storage. |
 | `ping FILE` | Verify SSH connectivity to all targets defined in the graph. |
-| `how FILE` | Show the file's documentation header and a **Defaults** table of all `set` declarations with their raw expressions. Works without resolving the graph. |
+| `how FILE` | Show the file's documentation header and a **Defaults** table of all top-level `set` declarations. Default expressions are hidden. Works without resolving the graph. |
 | `explain FILE STEP` | Show the full dependency chain for a step. |
 | `why FILE STEP` | Show what steps depend on a step (reverse of explain). |
 | `check FILE` | Re-run all check clauses against the live system and report drift. |
