@@ -453,7 +453,7 @@ def main():
     ssc.add_argument("action",choices=["create","edit","view","add","rm","audit"])
     ssc.add_argument("file",help="Secrets file path")
     ssc.add_argument("key",nargs="?",default=None,help="Key name (for add/rm)")
-    ssc.add_argument("value",nargs="?",default=None,help="Value (for add)")
+    ssc.add_argument("value",nargs="?",default=None,help=argparse.SUPPRESS)
     _add_vault_pass_args(ssc)
     ssc.add_argument("--max-age",default=None,metavar="DAYS",help="Max secret age in days for audit (default: 90)")
     ssc.add_argument("--show-values", action="store_true",

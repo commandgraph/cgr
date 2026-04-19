@@ -3863,6 +3863,27 @@ class TestServeSecurity(TestIDEServerAPI):
         r = self._api("GET", f"/api/file/view?path={self._cgr_file}")
         assert "content" in r
         assert "Test Graph" in r["content"]
+        assert r.get("token")
+
+    def test_file_save_valid_uses_view_token(self):
+        target = Path(self._tmp_path) / "editable.txt"
+        target.write_text("original")
+        view = self._api("GET", f"/api/file/view?path={target}")
+        assert view.get("token")
+
+        r = self._api("POST", "/api/file/save", {"token": view["token"], "content": "changed"})
+
+        assert r["ok"] is True
+        assert target.read_text() == "changed"
+
+    def test_file_save_rejects_path_without_view_token(self):
+        target = Path(self._tmp_path) / "direct-save.txt"
+        target.write_text("original")
+
+        r = self._api("POST", "/api/file/save", {"path": str(target), "content": "changed"})
+
+        assert r.get("error") is not None
+        assert target.read_text() == "original"
 
     def test_file_save_rejects_symlink(self):
         target = Path(self._tmp_path) / "allowed.txt"
@@ -3870,7 +3891,8 @@ class TestServeSecurity(TestIDEServerAPI):
         link = Path(self._tmp_path) / "allowed-link.txt"
         link.symlink_to(target)
         r = self._api("POST", "/api/file/save", {"path": str(link), "content": "changed"})
-        assert r["error"] == "Refusing to write through symlink"
+        assert r.get("error") is not None
+        assert target.read_text() == "ok"
 
     def test_file_save_rejects_symlinked_directory_escape(self, tmp_path):
         outside = tmp_path / "outside"
@@ -6405,7 +6427,7 @@ class TestSecretBackends:
         cg.cmd_secrets("view", str(secrets_path), vault_args=args)
         out = capsys.readouterr().out
         assert "api_key" in out
-        assert "<hidden:10 chars>" in out
+        assert "<hidden>" in out
         assert "top-secret" not in out
 
     def test_cmd_secrets_view_show_values_still_masks_output(self, tmp_path, capsys):
@@ -6416,9 +6438,57 @@ class TestSecretBackends:
         cg.cmd_secrets("view", str(secrets_path), vault_args=args)
         out = capsys.readouterr().out
         assert "api_key" in out
-        assert "<hidden:10 chars>" in out
+        assert "<hidden>" in out
         assert "plaintext secret display is disabled" in out
         assert "top-secret" not in out
+
+    def test_cmd_secrets_create_writes_empty_encrypted_file_with_private_mode(self, tmp_path, monkeypatch, capsys):
+        secrets_path = tmp_path / "vault.enc"
+        args = argparse.Namespace(vault_pass="correct", vault_pass_ask=False, vault_pass_file=None)
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+
+        cg.cmd_secrets("create", str(secrets_path), vault_args=args)
+
+        data = secrets_path.read_bytes()
+        out = capsys.readouterr().out
+        assert cg._decrypt_data(data, "correct") == b""
+        assert b'KEY = "value"' not in data
+        assert "correct" not in out
+        assert secrets_path.stat().st_mode & 0o777 == 0o600
+
+    def test_cmd_secrets_add_prompts_for_value_and_encrypts_file(self, tmp_path, monkeypatch, capsys):
+        secrets_path = tmp_path / "vault.enc"
+        _write_encrypted_secrets(secrets_path, "correct", {})
+        args = argparse.Namespace(vault_pass="correct", vault_pass_ask=False, vault_pass_file=None)
+        entered_value = 'dummy "quoted" test value'
+        import getpass
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(getpass, "getpass", lambda prompt: entered_value)
+
+        cg.cmd_secrets("add", str(secrets_path), key="api_key", vault_args=args)
+
+        data = secrets_path.read_bytes()
+        out = capsys.readouterr().out
+        assert cg._load_secrets(str(secrets_path), "correct") == {"api_key": entered_value}
+        assert entered_value.encode() not in data
+        assert entered_value not in out
+        assert secrets_path.stat().st_mode & 0o777 == 0o600
+
+    def test_cmd_secrets_add_rejects_positional_value(self, tmp_path, capsys):
+        secrets_path = tmp_path / "vault.enc"
+        _write_encrypted_secrets(secrets_path, "correct", {})
+        args = argparse.Namespace(vault_pass="correct", vault_pass_ask=False, vault_pass_file=None)
+        supplied_value = "dummy_test_secret_value"
+
+        with pytest.raises(SystemExit) as exc:
+            cg.cmd_secrets("add", str(secrets_path), key="api_key", value=supplied_value, vault_args=args)
+
+        data = secrets_path.read_bytes()
+        out = capsys.readouterr().out
+        assert exc.value.code == 1
+        assert cg._load_secrets(str(secrets_path), "correct") == {}
+        assert supplied_value.encode() not in data
+        assert supplied_value not in out
 
     def test_cmd_secrets_rm_missing_key_leaves_file_intact(self, tmp_path, capsys):
         secrets_path = tmp_path / "vault.enc"

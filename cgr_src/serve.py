@@ -147,6 +147,7 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
     apply_procs = {}
     apply_proc_states = {}
     ide_csrf_token = secrets.token_urlsafe(32)
+    side_file_tokens: dict[str, str] = {}
     token_dir = Path.home() / ".config" / "cgr"
     token_path = token_dir / ".ide-token"
 
@@ -1034,10 +1035,15 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                     content = fpath.read_text()
                 except Exception as e:
                     self._json({"error": f"Cannot read file: {e}"}, 500); return
+                file_token = secrets.token_urlsafe(24)
+                side_file_tokens[file_token] = str(fpath)
+                while len(side_file_tokens) > 128:
+                    side_file_tokens.pop(next(iter(side_file_tokens)))
                 self._json({
                     "path": str(fpath),
                     "name": fpath.name,
                     "content": content,
+                    "token": file_token,
                 })
 
             elif parsed.path == "/api/state":
@@ -1310,18 +1316,17 @@ def cmd_serve(filepath=None, port=8420, host="127.0.0.1", repo_dir=None,
                 if not self._require_csrf(body):
                     return
                 # Secure write for side-editor (templates, inventory, etc.)
-                fpath_raw = body.get("path", "")
+                file_token = body.get("token", "")
                 content = body.get("content", "")
-                if not fpath_raw:
-                    self._json({"error": "Missing 'path' parameter"}, 400); return
-                if isinstance(fpath_raw, str):
-                    raw_candidate = Path(fpath_raw.strip())
-                    if raw_candidate.exists() and raw_candidate.is_symlink():
-                        self._json({"error": "Refusing to write through symlink"}, 403); return
+                if not isinstance(file_token, str) or not file_token:
+                    self._json({"error": "Missing file token"}, 400); return
+                token_path = side_file_tokens.get(file_token)
+                if not token_path:
+                    self._json({"error": "Invalid file token"}, 403); return
                 allowed_ext = {".cgr", ".cg", ".ini", ".conf", ".cfg", ".txt", ".yaml", ".yml", ".json"}
-                fpath = _resolve_allowed_side_editor_path(fpath_raw, allowed_ext, require_exists=True)
+                fpath = _resolve_allowed_side_editor_path(token_path, allowed_ext, require_exists=True)
                 if not fpath:
-                    self._json({"error": f"File not found or not allowed: {fpath_raw}"}, 403); return
+                    self._json({"error": "File not found or not allowed"}, 403); return
                 try:
                     _atomic_write_text(fpath, content, allowed_ext=allowed_ext, require_exists=True)
                     self._json({"ok": True, "path": str(fpath)})

@@ -2435,11 +2435,9 @@ def _secure_delete_text_file(path_str: str):
             pass
 
 
-def _masked_secret_display(value: str) -> str:
+def _masked_secret_display() -> str:
     """Return a non-reversible display string for secret values."""
-    if not value:
-        return "<hidden>"
-    return f"<hidden:{len(value)} chars>"
+    return "<hidden>"
 
 
 def _add_vault_pass_args(ap):
@@ -2461,12 +2459,61 @@ def _load_secrets(secrets_path: str, passphrase: str) -> dict[str, str]:
         line = line.strip()
         if not line or line.startswith('#'):
             continue
-        m = re.match(r'(\w+)\s*=\s*"([^"]*)"', line)
-        if not m:
-            m = re.match(r'(\w+)\s*=\s*(\S+)', line)
+        m = re.match(r'(\w+)\s*=\s*("(?:(?:\\.)|[^"\\])*"|\S+)', line)
         if m:
-            result[m.group(1)] = m.group(2)
+            raw_value = m.group(2)
+            if raw_value.startswith('"'):
+                try:
+                    result[m.group(1)] = json.loads(raw_value)
+                    continue
+                except json.JSONDecodeError:
+                    pass
+            result[m.group(1)] = raw_value
     return result
+
+
+def _read_secret_add_value(cli_value: str | None) -> str:
+    if cli_value is not None:
+        print(red("error: Refusing to read secret values from command-line arguments. Omit VALUE and enter it at the prompt, or pipe it on stdin."))
+        sys.exit(1)
+    if sys.stdin.isatty():
+        import getpass
+        return getpass.getpass("Secret value: ")
+    return sys.stdin.read().rstrip("\r\n")
+
+
+def _format_secret_assignment(key: str, secret_value: str, *, include_timestamp: bool = False) -> str:
+    if not re.match(r'^\w+$', key):
+        print(red("error: Secret key must contain only letters, numbers, and underscores."))
+        sys.exit(1)
+    if "\n" in secret_value or "\r" in secret_value:
+        print(red("error: Secret values cannot contain newlines."))
+        sys.exit(1)
+    line = f"{key} = {json.dumps(secret_value)}"
+    if include_timestamp:
+        line += f'  # @updated {time.strftime("%Y-%m-%d")}'
+    return line
+
+
+def _write_encrypted_secrets(path: Path, plaintext: bytes, passphrase: str):
+    encrypted = _encrypt_data(plaintext, passphrase)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            fd = None
+            f.write(encrypted)
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
@@ -2483,9 +2530,7 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
             confirm = getpass.getpass("Confirm passphrase: ")
             if confirm != passphrase:
                 print(red("error: Passphrases do not match.")); sys.exit(1)
-        initial = b"# CommandGraph secrets file\n# Format: KEY = \"value\"\n\n"
-        encrypted = _encrypt_data(initial, passphrase)
-        path.write_bytes(encrypted)
+        _write_encrypted_secrets(path, b"", passphrase)
         print(green(f"✓ Created encrypted secrets file: {filepath}"))
 
     elif action == "view":
@@ -2497,8 +2542,8 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
             secrets = _load_secrets(filepath, passphrase)
             if show_values:
                 print(yellow("  warning: plaintext secret display is disabled; showing masked values instead."))
-            for k, v in secrets.items():
-                display_value = _masked_secret_display(v)
+            for k in secrets:
+                display_value = _masked_secret_display()
                 print(f"  {cyan(k)} = {dim(display_value)}")
             if not secrets:
                 print(dim("  (empty)"))
@@ -2508,8 +2553,9 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
     elif action == "add":
         if not path.exists():
             print(red(f"error: {filepath} not found")); sys.exit(1)
-        if not key or value is None:
-            print(red("Usage: cgr secrets add FILE KEY VALUE")); sys.exit(1)
+        if not key:
+            print(red("Usage: cgr secrets add FILE KEY")); sys.exit(1)
+        secret_value = _read_secret_add_value(value)
         passphrase = _get_vault_pass(vault_args)
         try:
             data = path.read_bytes()
@@ -2522,18 +2568,17 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
         for line in plaintext.splitlines():
             m = re.match(r'(\w+)\s*=', line.strip())
             if m and m.group(1) == key:
-                new_lines.append(f'{key} = "{value}"')
+                new_lines.append(_format_secret_assignment(key, secret_value))
                 updated = True
             else:
                 new_lines.append(line)
         if not updated:
-            new_lines.append(f'{key} = "{value}"  # @updated {time.strftime("%Y-%m-%d")}')
+            new_lines.append(_format_secret_assignment(key, secret_value, include_timestamp=True))
         else:
             # Update the timestamp on the modified line
             new_lines = [re.sub(r'#\s*@updated\s+\S+', f'# @updated {time.strftime("%Y-%m-%d")}', l)
                          if l.strip().startswith(f'{key} ') else l for l in new_lines]
-        encrypted = _encrypt_data("\n".join(new_lines).encode(), passphrase)
-        path.write_bytes(encrypted)
+        _write_encrypted_secrets(path, "\n".join(new_lines).encode(), passphrase)
         print(green(f"✓ {'Updated' if updated else 'Added'} '{key}' in {filepath}"))
 
     elif action == "rm":
@@ -2557,8 +2602,7 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
                 new_lines.append(line)
         if not removed:
             print(yellow(f"  Key '{key}' not found in {filepath}")); return
-        encrypted = _encrypt_data("\n".join(new_lines).encode(), passphrase)
-        path.write_bytes(encrypted)
+        _write_encrypted_secrets(path, "\n".join(new_lines).encode(), passphrase)
         print(green(f"✓ Removed '{key}' from {filepath}"))
 
     elif action == "edit":
@@ -2591,8 +2635,7 @@ def cmd_secrets(action, filepath, key=None, value=None, vault_args=None):
             if rc != 0:
                 print(red(f"error: editor exited with {rc}")); return
             new_text = Path(tmp_path).read_text(encoding='utf-8')
-            encrypted = _encrypt_data(new_text.encode(), passphrase)
-            path.write_bytes(encrypted)
+            _write_encrypted_secrets(path, new_text.encode(), passphrase)
             print(green(f"✓ Secrets file updated: {filepath}"))
         finally:
             _secure_delete_text_file(tmp_path)

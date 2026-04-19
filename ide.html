@@ -1913,6 +1913,7 @@ async function exportReport(fmt) {
 // ── File viewer (tabbed in graph area) ─────────────────
 let currentExternalFiles = [];
 let sideFilePath = null;    // resolved path of the open file
+let sideFileToken = null;   // server-issued token for saving the open file
 let sideFileType = null;    // 'template' | 'inventory' | 'secrets'
 let sideEditing = false;    // true when user has enabled editing
 let sideOrigContent = '';   // original content for dirty detection
@@ -1989,6 +1990,7 @@ async function openSideEditor(resolvedPath, type, displayPath, scrollToStep) {
     secrets: 'background:rgba(210,153,34,.15);color:var(--amber)' };
 
   sideFilePath = resolvedPath;
+  sideFileToken = null;
   sideFileType = type;
   sideEditing = false;
 
@@ -2036,6 +2038,7 @@ async function openSideEditor(resolvedPath, type, displayPath, scrollToStep) {
       updateFvHighlight();
       editBtn.style.display = 'none';
     } else {
+      sideFileToken = r.token || null;
       sideOrigContent = r.content;
       fvCodeEl.value = r.content;
       updateFvHighlight();
@@ -2087,6 +2090,7 @@ function closeSideEditor() {
   document.getElementById('fileviewPanel').style.display = 'none';
   switchGraphTab('graph');
   sideFilePath = null;
+  sideFileToken = null;
   sideFileType = null;
   sideEditing = false;
   if (currentExternalFiles.length) renderFilesTab(currentExternalFiles);
@@ -2122,7 +2126,7 @@ async function saveSideEditor() {
   const msg = document.getElementById('fvMsg');
   const text = fvCodeEl.value;
   try {
-    const result = await api('POST', '/api/file/save', { path: sideFilePath, content: text });
+    const result = await api('POST', '/api/file/save', { token: sideFileToken, content: text });
     if (result.error) {
       msg.textContent = 'Save failed: ' + result.error;
       msg.style.color = 'var(--red)';
