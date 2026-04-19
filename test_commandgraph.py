@@ -6603,7 +6603,8 @@ class TestSecretBackends:
         assert "hidden-token" not in out
         assert "token" not in out
         assert "<hidden>" in out
-        assert "[secret]" in out
+        assert "[hidden]" in out
+        assert "[secret]" not in out
         assert "region" in out
         assert '"us-east-1"' not in out
 
@@ -6623,7 +6624,8 @@ class TestSecretBackends:
         out = capsys.readouterr().out
         assert "env:CGR_TEST_HOW_SECRET" not in out
         assert "<hidden>" in out
-        assert "[secret]" in out
+        assert "[hidden]" in out
+        assert "[secret]" not in out
         assert "region" in out
         assert '"us-east-1"' not in out
 
@@ -6643,7 +6645,8 @@ class TestSecretBackends:
         assert "api_key" not in out
         assert "CGR_TEST_API_KEY" not in out
         assert "<hidden>" in out
-        assert "[secret]" in out
+        assert "[hidden]" in out
+        assert "[secret]" not in out
         assert "region" in out
 
     def test_how_redacts_default_expressions_even_with_non_sensitive_name(self, tmp_path, capsys):
@@ -6784,6 +6787,99 @@ class TestSecretBackends:
 
 
 class TestSecretOutputRedactionFollowup:
+    def test_validate_redacts_secret_template_params_in_provenance(self, tmp_path, monkeypatch, capsys):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "send.cgr").write_text(textwrap.dedent("""\
+            template send(token):
+              [step]:
+                run $ echo ${token}
+        """))
+        graph_path = tmp_path / "secret-template.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            using send
+            set token = secret "env:MY_SECRET"
+            target "t" local:
+              [use template] from send:
+                token = "${token}"
+        """))
+
+        monkeypatch.setenv("MY_SECRET", "supersecret")
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "validate", "--repo", str(repo), str(graph_path)])
+        cg.main()
+        out = capsys.readouterr().out
+        assert "supersecret" not in out
+        assert "***REDACTED***" in out
+
+    def test_validate_json_redacts_secret_template_params_in_provenance(self, tmp_path, monkeypatch, capsys):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "send.cgr").write_text(textwrap.dedent("""\
+            template send(token):
+              [step]:
+                run $ echo ${token}
+        """))
+        graph_path = tmp_path / "secret-template.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            using send
+            set token = secret "env:MY_SECRET"
+            target "t" local:
+              [use template] from send:
+                token = "${token}"
+        """))
+
+        monkeypatch.setenv("MY_SECRET", "supersecret")
+        monkeypatch.setattr(sys, "argv", ["cgr.py", "validate", "--json", "--repo", str(repo), str(graph_path)])
+        cg.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["provenance"][0]["params"]["token"] == "***REDACTED***"
+
+    def test_explain_redacts_secret_template_params_in_provenance(self, tmp_path, monkeypatch, capsys):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "send.cgr").write_text(textwrap.dedent("""\
+            template send(token):
+              [step]:
+                run $ echo ${token}
+        """))
+        graph_path = tmp_path / "secret-template.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            using send
+            set token = secret "env:MY_SECRET"
+            target "t" local:
+              [use template] from send:
+                token = "${token}"
+        """))
+
+        monkeypatch.setenv("MY_SECRET", "supersecret")
+        graph = cg._load(str(graph_path), repo_dir=str(repo), raise_on_error=True)
+        cg.cmd_explain(graph, "step")
+        out = capsys.readouterr().out
+        assert "supersecret" not in out
+        assert "***REDACTED***" in out
+
+    def test_apply_report_redacts_secret_template_params_in_provenance(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "send.cgr").write_text(textwrap.dedent("""\
+            template send(token):
+              [step]:
+                run $ echo ${token}
+        """))
+        graph_path = tmp_path / "secret-template.cgr"
+        graph_path.write_text(textwrap.dedent("""\
+            using send
+            set token = secret "env:MY_SECRET"
+            target "t" local:
+              [use template] from send:
+                token = "${token}"
+        """))
+
+        monkeypatch.setenv("MY_SECRET", "supersecret")
+        graph = cg._load(str(graph_path), repo_dir=str(repo), raise_on_error=True)
+        report = cg._build_apply_report(graph, [], 0, graph_file=str(graph_path))
+        assert report["provenance"][0]["params"]["token"] == "***REDACTED***"
+
     def test_print_exec_verbose_shows_full_stdout_and_stderr(self, capsys):
         src = textwrap.dedent("""\
             target "t" local:

@@ -671,7 +671,8 @@ def main():
                 "node_ordering": graph.node_ordering,
                 "provenance": [
                     {"source": pv.source_file, "template": pv.template_name,
-                     "version": pv.version, "params": pv.params_used}
+                     "version": pv.version,
+                     "params": _redact_obj(pv.params_used, graph.sensitive_values)}
                     for pv in graph.provenance_log
                 ],
                 "wave_detail": [[rid for rid in w] for w in graph.waves],
@@ -722,7 +723,8 @@ def main():
             print(f"\n  Provenance:")
             for pv in graph.provenance_log:
                 ver_tag = f" v{pv.version}" if pv.version else ""
-                print(f"    ← {cyan(pv.source_file)}{ver_tag} ({pv.template_name}) params={pv.params_used}")
+                params = _redact_obj(pv.params_used, graph.sensitive_values)
+                print(f"    ← {cyan(pv.source_file)}{ver_tag} ({pv.template_name}) params={params}")
         # Show collect keys
         ckeys = sorted(set(r.collect_key for r in graph.all_resources.values() if r.collect_key))
         if ckeys:

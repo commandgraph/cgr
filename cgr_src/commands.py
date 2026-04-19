@@ -189,7 +189,8 @@ def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
         "total_resources": len(results),
         "dedup": {h: ids for h, ids in graph.dedup_map.items() if len(ids) > 1},
         "provenance": [
-            {"source": p.source_file, "template": p.template_name, "params": p.params_used}
+            {"source": p.source_file, "template": p.template_name,
+             "params": _redact_obj(p.params_used, graph.sensitive_values)}
             for p in graph.provenance_log
         ],
         "results": [
@@ -326,9 +327,9 @@ def cmd_how(filepath: str):
         for name, expr in raw_vars:
             is_secret = name in secret_names or _is_secret_set_expr(expr) or _is_sensitive_default_name(name)
             if is_secret:
-                _print_hidden_secret_default(max_len)
+                _print_masked_default("[hidden]", max_len)
             else:
-                _print_hidden_default(name, max_len)
+                _print_masked_default(name, max_len)
         print()
 
 
@@ -576,7 +577,7 @@ def cmd_explain(graph, step_name):
         pv = res.provenance
         ver_tag = f" v{pv.version}" if pv.version else ""
         print(f"  {dim('Template:')}    {cyan(pv.source_file)}{ver_tag}")
-        print(f"  {dim('Params:')}      {pv.params_used}")
+        print(f"  {dim('Params:')}      {_redact_obj(pv.params_used, graph.sensitive_values)}")
 
     # Dedup
     if res.identity_hash in graph.dedup_map:
@@ -2458,18 +2459,13 @@ def _secure_delete_text_file(path_str: str):
             pass
 
 
-def _masked_secret_display() -> str:
-    """Return a non-reversible display string for secret values."""
+def _masked_display() -> str:
+    """Return a non-reversible display string for hidden values."""
     return "<hidden>"
 
 
-def _print_hidden_secret_default(max_len: int):
-    marker = f"  {dim('[secret]')}"
-    print(f"    {cyan('[secret]'.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}{marker}")
-
-
-def _print_hidden_default(name: str, max_len: int):
-    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_secret_display()}")
+def _print_masked_default(name: str, max_len: int):
+    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_display()}")
 
 
 def _add_vault_pass_args(ap):
