@@ -401,7 +401,7 @@ def _parse_cgr_template_child_instantiation(
 
     return ASTResource(
         name=_slug(child_name), description=child_name, needs=needs,
-        check=None, run=None, run_as=None, timeout=300,
+        check=None, run=None, run_as=None, timeout=None,
         retries=0, retry_delay=5, retry_backoff=False, on_fail="stop",
         when=None, env={}, is_verify=False, line=ln,
         timeout_reset_on_output=False,
@@ -1425,7 +1425,7 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
     return ASTResource(
         name=slug, description=name, needs=needs,
         check=check, run=run_cmd, run_as=hp.get("run_as"), script_path=script_path,
-        timeout=hp.get("timeout", 300), retries=hp.get("retries", 0),
+        timeout=hp.get("timeout"), retries=hp.get("retries", 0),
         retry_delay=hp.get("retry_delay", 5), retry_backoff=hp.get("retry_backoff", False), on_fail=hp.get("on_fail", "stop"),
         when=when, env=env, is_verify=False, line=ln,
         timeout_reset_on_output=hp.get("timeout_reset_on_output", False),
@@ -1464,7 +1464,7 @@ def _parse_cgr_verify(desc: str, body: list, ln: int, err) -> ASTResource:
     needs: list[str] = []
     run_cmd: str | None = None
     retries = 0; retry_delay = 5
-    timeout = 30
+    timeout = None
     timeout_reset_on_output = False
 
     i = 0

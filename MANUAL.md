@@ -216,7 +216,7 @@ Written inline on the step header line, comma-separated:
 | Property | Example | Default |
 |----------|---------|---------|
 | `as USER` | `as root` | current user |
-| `timeout Ns` or `timeout Nm` | `timeout 3m` | 300s |
+| `timeout Ns` or `timeout Nm` | `timeout 3m` | no timeout |
 | `timeout Ns reset on output` | `timeout 30s reset on output` | disabled |
 | `retry Nx wait Ns` | `retry 2x wait 10s` | no retries |
 | `retry Nx backoff Xs` | `retry 3x backoff 30s` | exponential backoff, no cap |
@@ -1213,7 +1213,7 @@ resource install_nginx {
 | `check` | No | `null` | Shell command (backtick-delimited). If exits 0, the resource is **skipped** (already satisfied). Set to `` `false` `` to force the resource to always run. |
 | `run` | **Yes** | — | Shell command to execute. This is the action. |
 | `as` | No | current user | Run as this Unix user (uses `sudo -u`). |
-| `timeout` | No | `300` | Max seconds before the command is killed. Append `s` or `m` for units. Add `reset on output` to treat it as an inactivity timeout instead. |
+| `timeout` | No | none | Max seconds before the command is killed. If omitted, the step does not time out. Append `s` or `m` for units. Add `reset on output` to treat it as an inactivity timeout instead. |
 | `retry` | No | `0` | Number of retry attempts after failure. |
 | `delay` | No | `5` | Seconds between retries. Follows `retry`. |
 | `on_fail` | No | `stop` | What to do on failure: `stop` (abort the graph), `warn` (continue, mark as warned), `ignore` (treat as success). |

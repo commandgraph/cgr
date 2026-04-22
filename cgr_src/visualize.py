@@ -624,7 +624,7 @@ function renderDetail(rid) {{
   else typeBadge = `<span class="d-badge" style="background:rgba(63,185,80,0.15);color:var(--green)">run</span>`;
   h += `<div class="d-section"><h3>Type</h3>${{typeBadge}}`;
   if (res.run_as) h += ` <span class="d-badge" style="background:rgba(210,153,34,0.15);color:var(--amber)">as ${{esc(res.run_as)}}</span>`;
-  if (res.timeout !== 300 || res.timeout_reset_on_output) h += ` <span class="d-badge" style="background:var(--bg3);color:var(--text2)">${{res.timeout_reset_on_output ? 'idle timeout' : 'timeout'}} ${{res.timeout}}s</span>`;
+  if (res.timeout != null) h += ` <span class="d-badge" style="background:var(--bg3);color:var(--text2)">${{res.timeout_reset_on_output ? 'idle timeout' : 'timeout'}} ${{res.timeout}}s</span>`;
   if (res.retries > 0) h += ` <span class="d-badge" style="background:var(--bg3);color:var(--text2)">retry x${{res.retries}}</span>`;
   h += `</div>`;
 

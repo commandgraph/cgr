@@ -326,7 +326,7 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
 
             out_chunks: list[str] = []
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            t_deadline = time.monotonic() + timeout
+            t_deadline = time.monotonic() + timeout if timeout is not None else None
             try:
                 while True:
                     if cancel_check and cancel_check():
@@ -338,10 +338,13 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
                             proc.wait(timeout=1)
                         output = "".join(out_chunks).replace("\r\n", "\n").replace("\r", "\n")
                         return 130, output, "Cancelled"
-                    remaining = t_deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(full, timeout)
-                    ready, _, _ = select.select([master_fd], [], [], min(0.1, remaining))
+                    if t_deadline is None:
+                        remaining = None
+                    else:
+                        remaining = t_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(full, timeout)
+                    ready, _, _ = select.select([master_fd], [], [], min(0.1, remaining) if remaining is not None else 0.1)
                     if ready:
                         while True:
                             try:
@@ -355,7 +358,7 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
                             text = decoder.decode(data)
                             if text:
                                 out_chunks.append(text)
-                                if reset_on_output:
+                                if reset_on_output and timeout is not None:
                                     t_deadline = time.monotonic() + timeout
                                 if on_output:
                                     on_output("stdout", text)
@@ -373,7 +376,7 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
                                 text = decoder.decode(data)
                                 if text:
                                     out_chunks.append(text)
-                                    if reset_on_output:
+                                    if reset_on_output and timeout is not None:
                                         t_deadline = time.monotonic() + timeout
                                     if on_output:
                                         on_output("stdout", text)
@@ -388,7 +391,7 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
                 tail = decoder.decode(b"", final=True)
                 if tail:
                     out_chunks.append(tail)
-                    if reset_on_output:
+                    if reset_on_output and timeout is not None:
                         t_deadline = time.monotonic() + timeout
                     if on_output:
                         on_output("stdout", tail)
@@ -434,7 +437,7 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
         if proc.stderr is not None:
             sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
 
-        t_deadline = time.monotonic() + timeout
+        t_deadline = time.monotonic() + timeout if timeout is not None else None
         while sel.get_map():
             if cancel_check and cancel_check():
                 _terminate_proc_tree(proc, signal.SIGTERM)
@@ -444,10 +447,13 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
                     _terminate_proc_tree(proc, signal.SIGKILL)
                     proc.wait(timeout=1)
                 return 130, "".join(stdout_chunks), "Cancelled"
-            remaining = t_deadline - time.monotonic()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(full, timeout)
-            events = sel.select(timeout=min(0.1, remaining))
+            if t_deadline is None:
+                remaining = None
+            else:
+                remaining = t_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(full, timeout)
+            events = sel.select(timeout=min(0.1, remaining) if remaining is not None else 0.1)
             for key, _ in events:
                 stream_name = key.data
                 data = os.read(key.fileobj.fileno(), 4096)
@@ -458,7 +464,7 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
                 text = decoders[stream_name].decode(data)
                 if not text:
                     continue
-                if reset_on_output:
+                if reset_on_output and timeout is not None:
                     t_deadline = time.monotonic() + timeout
                 if stream_name == "stdout":
                     stdout_chunks.append(text)
@@ -473,7 +479,7 @@ def _run_cmd(cmd, node, res, *, timeout, on_output=None, register_proc=None, unr
             tail = decoder.decode(b"", final=True)
             if not tail:
                 continue
-            if reset_on_output:
+            if reset_on_output and timeout is not None:
                 t_deadline = time.monotonic() + timeout
             if stream_name == "stdout":
                 stdout_chunks.append(tail)
@@ -678,22 +684,22 @@ class WebhookGateServer:
         for event in waiters:
             event.set()
 
-    def wait(self, path: str, timeout: float, cancel_check=None) -> bool:
+    def wait(self, path: str, timeout: float | None, cancel_check=None) -> bool:
         path = _normalize_webhook_path(path)
         with self._lock:
             if path in self._triggered:
                 return True
             event = threading.Event()
             self._waiters[path].append(event)
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if timeout is not None else None
         try:
             while True:
                 if cancel_check and cancel_check():
                     return False
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
                     return False
-                if event.wait(min(0.2, remaining)):
+                if event.wait(min(0.2, remaining) if remaining is not None else 0.2):
                     return True
         finally:
             with self._lock:
@@ -709,22 +715,27 @@ class WebhookGateServer:
         self._thread.join(timeout=2)
 
 
-def _wait_for_file_path(path: str, node, res, timeout: int, cancel_check=None) -> tuple[int, str, str]:
-    deadline = time.monotonic() + timeout
+def _wait_for_file_path(path: str, node, res, timeout: int | None, cancel_check=None) -> tuple[int, str, str]:
+    deadline = time.monotonic() + timeout if timeout is not None else None
     while True:
         if cancel_check and cancel_check():
             return 130, "", "Cancelled"
         if node.via_method == "ssh":
-            remaining = max(1, int(deadline - time.monotonic()))
-            rc, _, stderr = _run_cmd(f"test -e {shlex.quote(path)}", node, res, timeout=min(5, remaining))
+            remaining = None if deadline is None else max(1, int(deadline - time.monotonic()))
+            rc, _, stderr = _run_cmd(
+                f"test -e {shlex.quote(path)}",
+                node,
+                res,
+                timeout=min(5, remaining) if remaining is not None else 5,
+            )
             if rc == 0:
                 return 0, path, ""
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 break
         else:
             if Path(path).exists():
                 return 0, path, ""
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 break
         time.sleep(0.25)
     return 124, "", f"Timed out after {timeout}s waiting for file {path}"
@@ -801,7 +812,8 @@ def _exec_http_local(res):
             data = res.http_body.encode("utf-8")
     try:
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=res.timeout) as resp:
+        urlopen_kwargs = {"timeout": res.timeout} if res.timeout is not None else {}
+        with urllib.request.urlopen(req, **urlopen_kwargs) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             status = resp.status
             if _check_http_expect(status, res.http_expect):
@@ -845,11 +857,12 @@ def _exec_http_ssh(res, node):
         elif res.http_body_type == "form":
             parts.extend(["-H", "Content-Type: application/x-www-form-urlencoded"])
         parts.extend(["-d", res.http_body])
-    parts.extend(["--max-time", str(res.timeout)])
+    if res.timeout is not None:
+        parts.extend(["--max-time", str(res.timeout)])
     parts.append(res.http_url)
     # Build curl command string
     cmd = " ".join(_sq(p) for p in parts)
-    rc, stdout, stderr = _run_cmd(cmd, node, res, timeout=res.timeout + 5)
+    rc, stdout, stderr = _run_cmd(cmd, node, res, timeout=(res.timeout + 5) if res.timeout is not None else None)
     if rc != 0:
         return rc, stdout, stderr
     # Parse status code from curl -w output (last line)
@@ -1342,7 +1355,10 @@ def _exec_prov_ssh(res, node, graph_file=None):
                 ssh_parts += ["-p", p]
                 ssh_e = " ".join(shlex.quote(x) for x in ssh_parts)
                 rsync_cmd = ["rsync", "-az", "--partial"] + extra_opts + ["-e", ssh_e, src, f"{tgt}:{dest}"]
-                proc = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=res.timeout)
+                run_kwargs = {"capture_output": True, "text": True}
+                if res.timeout is not None:
+                    run_kwargs["timeout"] = res.timeout
+                proc = subprocess.run(rsync_cmd, **run_kwargs)
                 if proc.returncode != 0:
                     if transfer == "rsync":
                         _ssh_revert()
@@ -1362,7 +1378,10 @@ def _exec_prov_ssh(res, node, graph_file=None):
                 if sock:
                     scp_cmd += ["-o", f"ControlPath={sock}"]
                 scp_cmd += extra_opts + ["-P", p, src, f"{tgt}:{dest}"]
-                proc = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=res.timeout)
+                run_kwargs = {"capture_output": True, "text": True}
+                if res.timeout is not None:
+                    run_kwargs["timeout"] = res.timeout
+                proc = subprocess.run(scp_cmd, **run_kwargs)
                 if proc.returncode != 0:
                     _ssh_revert()
                     return 1, "", f"put (scp) failed: {proc.stderr}"
@@ -1588,7 +1607,8 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
     check_rc=None
     if res.check and res.check.strip().lower()!="false":
         # dry-run always runs checks to show real blast radius (what would execute)
-        check_rc,_,_=_run_cmd(res.check,node,res,timeout=min(res.timeout,30), register_proc=register_proc, unregister_proc=unregister_proc, cancel_check=cancel_check)
+        check_timeout = min(res.timeout, 30) if res.timeout is not None else 30
+        check_rc,_,_=_run_cmd(res.check,node,res,timeout=check_timeout, register_proc=register_proc, unregister_proc=unregister_proc, cancel_check=cancel_check)
         if check_rc==0:
             return ExecResult(resource_id=res.id,status=Status.SKIP_CHECK,check_rc=0,
                               duration_ms=int((time.monotonic()-t0)*1000),reason="check passed — already satisfied")
@@ -1655,7 +1675,8 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
                         lr, lo, le = 0, webhook_server.endpoint(res.wait_target), ""
                     else:
                         timed_out = not (cancel_check and cancel_check())
-                        lr, lo, le = (124, "", f"Timed out after {res.timeout}s waiting for webhook {res.wait_target}") if timed_out else (130, "", "Cancelled")
+                        timeout_msg = f"Timed out after {res.timeout}s waiting for webhook {res.wait_target}"
+                        lr, lo, le = (124, "", timeout_msg) if timed_out else (130, "", "Cancelled")
             else:
                 wait_path = _resolve_script_fs_path(res.wait_target or "", graph_file) if node.via_method == "local" else (res.wait_target or "")
                 if on_output:

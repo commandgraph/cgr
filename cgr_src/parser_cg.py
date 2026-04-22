@@ -320,7 +320,7 @@ class Parser:
     def _p_resource_body(self, name, group_defaults=None, is_template_root=False) -> ASTResource:
         d=group_defaults or {}
         desc=""; needs=[]; check=None; run_cmd=None; script_path=None; run_as=d.get("as")
-        timeout=d.get("timeout",300); retries=0; retry_delay=5; retry_backoff=False
+        timeout=d.get("timeout"); retries=0; retry_delay=5; retry_backoff=False
         timeout_reset_on_output=d.get("timeout_reset_on_output", False)
         on_fail=d.get("on_fail","stop"); when=None; env={}; env_when={}; children=[]; flags=[]; until=None; interactive=False
         collect_key=None
@@ -650,7 +650,7 @@ class Parser:
         desc=self._advance().value if self._at(TT.STRING) else "Verification"
         self._expect(TT.LBRACE)
         needs=[]; run_cmd=None; retries=0; retry_delay=5
-        on_fail="warn"; timeout=30; run_as=None
+        on_fail="warn"; timeout=None; run_as=None
         timeout_reset_on_output=False
         while not self._at(TT.RBRACE) and not self._at(TT.EOF):
             s=self._peek()

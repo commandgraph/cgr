@@ -19,7 +19,7 @@ class ASTParam:     name: str; default: str | None; line: int
 class ASTResource:
     name: str; description: str; needs: list[str]
     check: str|None; run: str|None; run_as: str|None
-    timeout: int; retries: int; retry_delay: int; retry_backoff: bool
+    timeout: int|None; retries: int; retry_delay: int; retry_backoff: bool
     on_fail: str; when: str|None; env: dict[str,str]
     is_verify: bool; line: int
     timeout_reset_on_output: bool = False

@@ -191,7 +191,7 @@ class Status(Enum):
 class Resource:
     id: str; short_name: str; node_name: str; description: str
     needs: list[str]; check: str|None; run: str; run_as: str|None
-    timeout: int; retries: int; retry_delay: int; retry_backoff: bool; on_fail: OnFail
+    timeout: int|None; retries: int; retry_delay: int; retry_backoff: bool; on_fail: OnFail
     when: str|None; env: dict[str,str]; is_verify: bool; line: int
     timeout_reset_on_output: bool = False
     script_path: str|None = None

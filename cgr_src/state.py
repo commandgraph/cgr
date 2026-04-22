@@ -1042,7 +1042,8 @@ def cmd_state_test(graph_file: str, graph: Graph, repo_dir: str|None = None):
         node = graph.nodes.get(res.node_name)
         if not node: continue
 
-        rc, _, stderr = _run_cmd(res.check, node, res, timeout=min(res.timeout, 15))
+        check_timeout = min(res.timeout, 15) if res.timeout is not None else 15
+        rc, _, stderr = _run_cmd(res.check, node, res, timeout=check_timeout)
         if rc == 0:
             valid += 1
             print(f"  {green('✓ valid')}  {bold(f'{res.short_name:28s}')}  {dim('check still passes')}")

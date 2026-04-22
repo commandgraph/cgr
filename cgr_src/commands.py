@@ -362,7 +362,8 @@ def cmd_check(graph, *, max_parallel=4, verbose=False, json_output=False):
         if not node:
             return (rid, None, "", "node not found")
         try:
-            rc, stdout, stderr = _run_cmd(res.check, node, res, timeout=min(res.timeout, 15))
+            check_timeout = min(res.timeout, 15) if res.timeout is not None else 15
+            rc, stdout, stderr = _run_cmd(res.check, node, res, timeout=check_timeout)
             return (rid, rc, stderr, None)
         except Exception as e:
             return (rid, None, "", str(e))
@@ -981,7 +982,7 @@ def _emit_cgr_resource(res: ASTResource, lines: list, indent: int = 2):
     header_parts = []
     if res.run_as:
         header_parts.append(f"as {res.run_as}")
-    if res.timeout != 300 or res.timeout_reset_on_output:
+    if res.timeout is not None:
         timeout_part = f"timeout {res.timeout}s"
         if res.timeout_reset_on_output:
             timeout_part += " reset on output"
@@ -1000,7 +1001,7 @@ def _emit_cgr_resource(res: ASTResource, lines: list, indent: int = 2):
         if res.needs:
             refs = " ".join(_emit_cgr_dep_ref(n) for n in res.needs)
             lines.append(f"{pfx}  first {refs}")
-        if res.timeout != 30 or res.timeout_reset_on_output:
+        if res.timeout is not None:
             timeout_line = f"{pfx}  timeout {_emit_duration_literal(res.timeout)}"
             if res.timeout_reset_on_output:
                 timeout_line += " reset on output"
@@ -1348,7 +1349,7 @@ def _emit_cg_resource(res: ASTResource, lines: list, indent: int = 2):
             lines.append(f"{body_pfx}run `{res.run}`")
         if res.run_as:
             lines.append(f"{body_pfx}as {res.run_as}")
-        if res.timeout != 300 or res.timeout_reset_on_output:
+        if res.timeout is not None:
             timeout_line = f"{body_pfx}timeout {res.timeout}"
             if res.timeout_reset_on_output:
                 timeout_line += " reset on output"
@@ -1637,14 +1638,6 @@ def _collect_lint_findings(graph, path, strict=False):
                 add_error(res.line, res.short_name, msg)
             else:
                 add_warning(res.line, res.short_name, msg)
-
-        # Default timeout (300s) on non-verify steps
-        if res.timeout == 300 and res.run and not res.is_verify:
-            # Only warn if the command looks like it could be long-running
-            long_cmds = ("apt", "yum", "dnf", "pip", "npm", "docker", "make", "build", "compile")
-            if any(lc in (res.run or "").lower() for lc in long_cmds):
-                add_warning(res.line, res.short_name,
-                    "Default 300s timeout on a potentially long-running command. Consider explicit 'timeout'.")
 
     # 'when' expressions referencing unknown variables (typo detection)
     for rid, res in graph.all_resources.items():
@@ -2464,8 +2457,16 @@ def _masked_display() -> str:
     return "<hidden>"
 
 
+def _masked_default_name(name: str) -> str:
+    """Hide default labels that could disclose secret intent."""
+    if name == "[hidden]" or _is_sensitive_default_name(name):
+        return "[hidden]"
+    return name
+
+
 def _print_masked_default(name: str, max_len: int):
-    print(f"    {cyan(name.ljust(max_len))}  {dim('=')}  {_masked_display()}")
+    display_name = _masked_default_name(name)
+    print(f"    {cyan(display_name.ljust(max_len))}  {dim('=')}  {_masked_display()}")
 
 
 def _add_vault_pass_args(ap):

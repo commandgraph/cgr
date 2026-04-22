@@ -256,6 +256,15 @@ class TestCGRParser:
         assert r.timeout == 30
         assert r.retries == 3
 
+    def test_step_timeout_defaults_to_none(self):
+        src = textwrap.dedent('''\
+            target "local" local:
+              [step]:
+                run $ echo hi
+        ''')
+        ast = cg.parse_cgr(src)
+        assert ast.nodes[0].resources[0].timeout is None
+
     def test_timeout_minutes(self):
         src = textwrap.dedent('''\
             target "local" local:
@@ -334,6 +343,7 @@ class TestCGRParser:
         ast = cg.parse_cgr(src)
         verify = [r for r in ast.nodes[0].resources if r.is_verify]
         assert len(verify) == 1
+        assert verify[0].timeout is None
         assert verify[0].retries == 3
         assert verify[0].retry_delay == 2
 
@@ -6668,6 +6678,13 @@ class TestSecretBackends:
         assert "release_channel" in out
         assert "region" in out
         assert '"us-east-1"' not in out
+
+    def test_print_masked_default_hides_sensitive_default_names(self, capsys):
+        cg._print_masked_default("api_token", len("api_token"))
+        out = capsys.readouterr().out
+        assert "api_token" not in out
+        assert "[hidden]" in out
+        assert "<hidden>" in out
 
     def test_get_vault_pass_errors_without_source(self, monkeypatch, capsys):
         monkeypatch.delenv("CGR_VAULT_PASS", raising=False)

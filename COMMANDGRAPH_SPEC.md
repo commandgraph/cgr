@@ -165,7 +165,7 @@ Properties appear after the `]` and before the `:`, comma-separated:
 | Property | Syntax | Default | Meaning |
 |----------|--------|---------|---------|
 | `as USER` | `as root` | (SSH user or local user) | Run command as this user via sudo |
-| `timeout` | `timeout 30s`, `timeout 2m`, or `timeout 30s reset on output` | `300s` | Kill command after this duration; `reset on output` makes it an inactivity timeout |
+| `timeout` | `timeout 30s`, `timeout 2m`, or `timeout 30s reset on output` | none | Kill command after this duration; if omitted, the step does not time out; `reset on output` makes it an inactivity timeout |
 | `retry` | `retry 3x wait 10s` | 0 retries | Retry on failure, with delay |
 | `if fails` | `if fails stop\|warn\|ignore` | `stop` | What to do on failure |
 
