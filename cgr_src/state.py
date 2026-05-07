@@ -336,6 +336,22 @@ def _output_path(graph_file: str, run_id: str | None = None) -> str:
     suffix = f".{_sanitize_run_id(run_id)}" if run_id else ""
     return graph_file + suffix + ".output"
 
+def _graph_state_run_id(graph: Graph, explicit_run_id: str | None = None) -> str | None:
+    """Return the explicit or graph-declared state salt for this run."""
+    if explicit_run_id:
+        return explicit_run_id
+    keys = getattr(graph, "state_key_vars", None) or []
+    if not keys:
+        return None
+    parts = []
+    for key in keys:
+        parts.append(f"{key}={graph.variables.get(key, '')}")
+    digest = hashlib.sha256("\0".join(parts).encode()).hexdigest()[:12]
+    label = "_".join(keys[:3])
+    if len(keys) > 3:
+        label += "_etc"
+    return f"{label}_{digest}"
+
 
 class OutputFile:
     """Append-only JSONL file for collected command outputs."""
@@ -468,7 +484,9 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
         if not found:
             print(yellow(f"  warning: --skip '{skip_name}' not found, ignoring."))
 
-    sp = state_path or _state_path(graph_file, run_id=run_id)
+    effective_run_id = _graph_state_run_id(graph, run_id)
+    graph.state_run_id = effective_run_id
+    sp = state_path or _state_path(graph_file, run_id=effective_run_id)
     effective_stateless = graph.stateless and not state_path
     if graph.stateless and state_path:
         print(yellow(f"  warning: --state FILE overrides 'set stateless = true'; state will be persisted."))
@@ -476,15 +494,16 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
 
     # Output collector for steps with collect clauses
     has_collect = any(r.collect_key for r in graph.all_resources.values())
-    output = OutputFile(_output_path(graph_file, run_id=run_id)) if has_collect and not dry_run else None
+    output = OutputFile(_output_path(graph_file, run_id=effective_run_id)) if has_collect and not dry_run else None
 
     total = sum(len(w) for w in graph.waves)
 
     # Count how many will be skipped from state
     skip_from_state = 0
     if state and not no_resume:
-        for rid in graph.all_resources:
-            if state.should_skip(rid): skip_from_state += 1
+        for rid, res in graph.all_resources.items():
+            if state.should_skip(rid) and (not res.stamp_files or _local_stamp_satisfied(res)):
+                skip_from_state += 1
 
     # --start-from: warn about skipped unsatisfied dependencies
     if start_from and skip_before:
@@ -523,6 +542,8 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
         print(f"  State: {dim('(stateless — no disk persistence)')}")
     else:
         print(f"  State: {dim(sp)}")
+        if effective_run_id and not run_id:
+            print(f"  State key: {dim(effective_run_id)}")
     if log_file:
         print(f"  Log: {dim(log_file)}")
     print(bold(f"{'═'*64}")); print()
@@ -585,7 +606,7 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                 for rid in wave:
                     if rid in skip_before:
                         to_skip_start.append(rid)
-                    elif state and state.should_skip(rid):
+                    elif state and state.should_skip(rid) and (not graph.all_resources[rid].stamp_files or _local_stamp_satisfied(graph.all_resources[rid])):
                         to_skip_state.append(rid)
                     elif rid in skip_rids:
                         to_skip_manual.append(rid)
@@ -876,12 +897,12 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
 
     _print_summary(results)
     if output and output.all_outputs():
-        op = _output_path(graph_file, run_id=run_id)
+        op = _output_path(graph_file, run_id=effective_run_id)
         n = len(output.all_outputs())
         print(f"  {cyan('📋 Collected')} {n} output(s) → {dim(op)}")
         report_cmd = f"cgr report {graph_file}"
-        if run_id:
-            report_cmd += f" --run-id {shlex.quote(run_id)}"
+        if effective_run_id:
+            report_cmd += f" --run-id {shlex.quote(effective_run_id)}"
         print(f"  View with: {report_cmd}")
         print()
     wall_ms = int((time.monotonic() - wall_t0) * 1000)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from cgr_src.common import *
 from cgr_src.ast_nodes import *
 from cgr_src.resolver import *
+import shutil
 
 def cmd_plan(graph: Graph, *, verbose=False, include_tags=None, exclude_tags=None):
     print(); print(bold("CommandGraph Plan"))
@@ -78,6 +79,13 @@ def cmd_plan(graph: Graph, *, verbose=False, include_tags=None, exclude_tags=Non
             if res.flags:
                 for flag in res.flags:
                     print(f"                {dim('+ ' + _redact(flag, graph.sensitive_values))}")
+            if res.optional_tool:
+                print(f"                {cyan('optional tool:')} {dim(res.optional_tool)}")
+            if res.stamp_files:
+                stamp_text = ", ".join(res.stamp_files)
+                if res.stamp_from:
+                    stamp_text += f" from {res.stamp_from}"
+                print(f"                {cyan('stamp: ')}{dim(stamp_text)}")
 
             # Show dedup info
             if res.identity_hash in graph.dedup_map:
@@ -1555,7 +1563,13 @@ def _eval_when(expr, variables=None):
     Variables are resolved from the dict if provided."""
     if not expr: return True
     e = expr.strip()
+    if "\n" in e:
+        return all(_eval_when(part, variables) for part in e.splitlines() if part.strip())
     vs = variables or {}
+    tool_m = re.match(r'^tool\s+(available|missing)\s+(\S+)\s*$', e)
+    if tool_m:
+        found = shutil.which(tool_m.group(2)) is not None
+        return found if tool_m.group(1) == "available" else not found
     def _resolve(token):
         t = token.strip().strip("'\"")
         vm = re.match(r'^\$\{(\w+)\}$', t)
@@ -1574,6 +1588,71 @@ def _eval_when(expr, variables=None):
     val = _resolve(e)
     return val.lower() not in ("", "false", "0", "no", "none")
 
+def _local_stamp_satisfied(res) -> bool:
+    files = getattr(res, "stamp_files", None) or []
+    if not files:
+        return False
+    if getattr(res, "stamp_from", None):
+        src = Path(res.stamp_from)
+        if not src.exists():
+            return False
+        try:
+            src_bytes = src.read_bytes()
+        except OSError:
+            return False
+        for path in files:
+            p = Path(path)
+            if not p.exists():
+                return False
+            try:
+                if p.read_bytes() != src_bytes:
+                    return False
+            except OSError:
+                return False
+        return True
+    return all(Path(path).exists() for path in files)
+
+def _write_local_stamps(res):
+    files = getattr(res, "stamp_files", None) or []
+    if not files:
+        return
+    src = getattr(res, "stamp_from", None)
+    if src:
+        data = Path(src).read_bytes()
+        for path in files:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, p)
+    else:
+        for path in files:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+
+def _tool_available_on_target(tool: str, node, res, *, cancel_check=None) -> bool:
+    rc, _, _ = _run_cmd(f"command -v {shlex.quote(tool)} >/dev/null 2>&1",
+                        node, res, timeout=15, cancel_check=cancel_check)
+    return rc == 0
+
+def _eval_when_for_resource(expr, node, res, variables=None, *, cancel_check=None) -> bool:
+    if not expr:
+        return True
+    parts = [p.strip() for p in str(expr).splitlines() if p.strip()]
+    if not parts:
+        return True
+    for part in parts:
+        tool_m = re.match(r'^tool\s+(available|missing)\s+(\S+)\s*$', part)
+        if tool_m:
+            found = _tool_available_on_target(tool_m.group(2), node, res, cancel_check=cancel_check)
+            ok = found if tool_m.group(1) == "available" else not found
+        else:
+            ok = _eval_when(part, variables)
+        if not ok:
+            return False
+    return True
+
 def _last_nonempty_line(text: str) -> str|None:
     for line in reversed(text.splitlines()):
         if line.strip():
@@ -1585,9 +1664,22 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
                   cancel_check=None, webhook_server: WebhookGateServer | None = None):
     t0=time.monotonic()
     res = _runtime_resource_view(res, variables)
-    if not _eval_when(res.when, variables):
+    if not _eval_when_for_resource(res.when, node, res, variables, cancel_check=cancel_check):
         return ExecResult(resource_id=res.id,status=Status.SKIP_WHEN,
                           duration_ms=int((time.monotonic()-t0)*1000),reason=f"when: {res.when!r} → false")
+    if _local_stamp_satisfied(res):
+        return ExecResult(resource_id=res.id,status=Status.SKIP_CHECK,check_rc=0,
+                          duration_ms=int((time.monotonic()-t0)*1000),reason="stamp satisfied")
+    if res.optional_tool and not _tool_available_on_target(res.optional_tool, node, res, cancel_check=cancel_check):
+        try:
+            _write_local_stamps(res)
+        except OSError as exc:
+            return ExecResult(resource_id=res.id,status=Status.FAILED,run_rc=1,
+                              stderr=str(exc),duration_ms=int((time.monotonic()-t0)*1000),
+                              reason=f"optional tool missing; failed to write stamp: {exc}")
+        return ExecResult(resource_id=res.id,status=Status.SUCCESS,run_rc=0,
+                          duration_ms=int((time.monotonic()-t0)*1000),
+                          reason=f"optional tool missing: {res.optional_tool}")
     # reduce "key": aggregate collected outputs and return
     if res.reduce_key:
         acc = accumulated_collected or {}
@@ -1657,6 +1749,8 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
     observed_value = None
     is_http = bool(res.http_method and res.http_url)
     effective_run_cmd = _effective_run_cmd(res, graph_file)
+    if not effective_run_cmd and res.stamp_files:
+        effective_run_cmd = "true"
     for att in range(1,mx+1):
         if is_http:
             if node.via_method == "ssh":
@@ -1725,6 +1819,13 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
             if on_output and lo:
                 on_output("stdout", lo if lo.endswith("\n") else lo + "\n")
         if lr==0:
+            try:
+                _write_local_stamps(res)
+            except OSError as exc:
+                return ExecResult(resource_id=res.id,status=Status.FAILED,run_rc=1,check_rc=check_rc,
+                    stdout=lo,stderr=(le + ("\n" if le else "") + f"stamp failed: {exc}").strip(),
+                    duration_ms=int((time.monotonic()-t0)*1000),attempts=att,
+                    observed_value=observed_value)
             vb = {v: val for v, val in (res.on_success_set or [])}
             if res.collect_var and lo:
                 vb[res.collect_var] = lo.strip()

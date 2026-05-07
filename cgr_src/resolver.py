@@ -269,6 +269,9 @@ class Resource:
     until: str|None = None
     cgr_phase_name: str|None = None  # name of the phase "..." when "...": block this resource belongs to
     interactive: bool = False        # force terminal-interactive mode (PTY + stdin forwarding)
+    stamp_files: list[str] = field(default_factory=list)
+    stamp_from: str|None = None
+    optional_tool: str|None = None
 
 @dataclass
 class HostNode:
@@ -287,6 +290,8 @@ class Graph:
     on_failure: Resource|None = None    # hook: runs after failed apply
     graph_file: str|None = None         # path to the source .cgr/.cg file (for relative put/content from)
     stateless: bool = False             # set stateless = true: skip state file persistence
+    state_key_vars: list[str] = field(default_factory=list)
+    state_run_id: str|None = None       # effective state salt used by the latest apply in this process
 
 @dataclass
 class ExecResult:
@@ -362,6 +367,44 @@ def _expand_shell_fragment(text: str|None, vs: dict[str, str]) -> str|None:
             raise ResolveError(f"Undefined variable '${{{key}}}'. Known: {sorted(vs)}")
         return shlex.quote(vs[key])
     return VAR_RE.sub(_var_sub, text)
+
+def _and_when(a: str|None, b: str|None) -> str|None:
+    """Combine two when expressions with simple AND semantics.
+
+    The executor's when evaluator has deliberately small syntax. Keeping
+    grouped expressions as a newline-separated list avoids adding boolean
+    operators to the public expression language.
+    """
+    parts = [p for p in (a, b) if p]
+    return "\n".join(parts) if parts else None
+
+def _eval_when(expr, variables=None):
+    if not expr:
+        return True
+    e = expr.strip()
+    if "\n" in e:
+        return all(_eval_when(part, variables) for part in e.splitlines() if part.strip())
+    # Tool predicates are runtime/environment checks. During resolution, keep
+    # conditional flags/env conservative by treating them as true.
+    if re.match(r'^tool\s+(available|missing)\s+\S+\s*$', e):
+        return True
+    vs = variables or {}
+    def _resolve(token):
+        t = token.strip().strip("'\"")
+        vm = re.match(r'^\$\{(\w+)\}$', t)
+        if vm:
+            t = vm.group(1)
+        return vs.get(t, t)
+    for op in ("!=", "=="):
+        if op in e:
+            l, r = e.split(op, 1)
+            lv = _resolve(l); rv = _resolve(r)
+            return (lv == rv) if op == "==" else (lv != rv)
+    if e.startswith("not "):
+        val = _resolve(e[4:])
+        return val.lower() in ("", "false", "0", "no", "none")
+    val = _resolve(e)
+    return val.lower() not in ("", "false", "0", "no", "none")
 
 def _redact(text: str|None, sensitive: set[str]) -> str|None:
     """Replace any occurrence of sensitive values with ***REDACTED***."""
@@ -602,7 +645,9 @@ def _flatten_ast_resource(
                 inner_template_args=dict(body.inner_template_args), flags=list(body.flags),
                 env_when=dict(body.env_when), until=body.until,
                 wait_kind=body.wait_kind, wait_target=body.wait_target,
-                subgraph_path=body.subgraph_path, subgraph_vars=dict(body.subgraph_vars))
+                subgraph_path=body.subgraph_path, subgraph_vars=dict(body.subgraph_vars),
+                stamp_files=list(body.stamp_files), stamp_from=body.stamp_from,
+                optional_tool=body.optional_tool)
             ec_prefix = f"{prefix}.{item_name}"
             ec_id = _flatten_ast_resource(expanded, node_name, ec_prefix, each_vs, provenance,
                                           collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -668,7 +713,9 @@ def _flatten_ast_resource(
                             inner_template_args=dict(pbody.inner_template_args), flags=list(pbody.flags),
                             env_when=dict(pbody.env_when), until=pbody.until,
                             wait_kind=pbody.wait_kind, wait_target=pbody.wait_target,
-                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars))
+                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars),
+                            stamp_files=list(pbody.stamp_files), stamp_from=pbody.stamp_from,
+                            optional_tool=pbody.optional_tool)
                         v_prefix = f"{prefix}.__phase_{pi}.{pbody.name}"
                         v_id = _flatten_ast_resource(v_res, node_name, v_prefix,
                             each_vs, provenance, collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -695,7 +742,9 @@ def _flatten_ast_resource(
                             inner_template_args=dict(pbody.inner_template_args), flags=list(pbody.flags),
                             env_when=dict(pbody.env_when), until=pbody.until,
                             wait_kind=pbody.wait_kind, wait_target=pbody.wait_target,
-                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars))
+                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars),
+                            stamp_files=list(pbody.stamp_files), stamp_from=pbody.stamp_from,
+                            optional_tool=pbody.optional_tool)
                         ec_prefix = f"{prefix}.__phase_{pi}.{item_name}"
                         ec_id = _flatten_ast_resource(expanded, node_name, ec_prefix,
                             each_vs, provenance, collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -764,6 +813,16 @@ def _flatten_ast_resource(
     if exp_subgraph_path and not effective_run_key:
         subgraph_sig = ",".join(f"{k}={exp_subgraph_vars[k]}" for k in sorted(exp_subgraph_vars))
         effective_run_key = f"__subgraph__ {exp_subgraph_path} {subgraph_sig}".strip()
+    exp_stamp_files = [_expand(p, vs) or p for p in ast_res.stamp_files]
+    exp_stamp_from = _expand(ast_res.stamp_from, vs) if ast_res.stamp_from else None
+    exp_optional_tool = _expand(ast_res.optional_tool, vs) if ast_res.optional_tool else None
+    if exp_stamp_files:
+        stamp_sig = ",".join(exp_stamp_files)
+        if exp_stamp_from:
+            stamp_sig += f"<-{exp_stamp_from}"
+        effective_run_key = (effective_run_key + f" __stamp__ {stamp_sig}").strip()
+    if exp_optional_tool:
+        effective_run_key = (effective_run_key + f" __optional_tool__ {exp_optional_tool}").strip()
     # Expand provisioning fields
     exp_prov_content_inline = _expand(ast_res.prov_content_inline, vs) if ast_res.prov_content_inline is not None else ast_res.prov_content_inline
     exp_prov_content_from = _expand(ast_res.prov_content_from, vs) if ast_res.prov_content_from else None
@@ -880,6 +939,9 @@ def _flatten_ast_resource(
         flags=resolved_flags, env_when=dict(ast_res.env_when), until=ast_res.until,
         cgr_phase_name=ast_res.cgr_phase_name,
         interactive=ast_res.interactive,
+        stamp_files=exp_stamp_files,
+        stamp_from=exp_stamp_from,
+        optional_tool=exp_optional_tool,
     )
     collector[rid] = res
     dedup_hashes[ihash] = rid
@@ -1164,7 +1226,11 @@ def resolve(prog: ASTProgram, repo_dir: str|None = None, graph_file: str|None = 
         # Process inline resources (from groups + top-level)
         all_ast: list[ASTResource] = list(an.resources)
         for g in an.groups:
-            all_ast.extend(g.resources)
+            for gr in g.resources:
+                gr.when = _and_when(g.when, gr.when)
+                if g.name and gr.cgr_phase_name is None:
+                    gr.cgr_phase_name = g.name
+                all_ast.append(gr)
 
         for ar in all_ast:
             _flatten_ast_resource(
@@ -1363,6 +1429,7 @@ def resolve(prog: ASTProgram, repo_dir: str|None = None, graph_file: str|None = 
         on_failure=resolved_on_failure,
         graph_file=graph_file,
         stateless=prog.stateless,
+        state_key_vars=list(prog.state_key_vars),
     )
 
 

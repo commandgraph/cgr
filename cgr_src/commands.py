@@ -157,7 +157,8 @@ def cmd_report(graph_file: str, *, fmt: str = "table", output_file: str|None = N
 def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
                         *, graph_file: str, state_path: str | None = None,
                         run_id: str | None = None) -> dict:
-    sp = state_path or _state_path(graph_file, run_id=run_id)
+    effective_run_id = run_id or getattr(graph, "state_run_id", None) or _graph_state_run_id(graph, None)
+    sp = state_path or _state_path(graph_file, run_id=effective_run_id)
     state = StateFile(sp) if Path(sp).exists() else None
     wave_metrics = []
     run_metric = None
@@ -185,6 +186,7 @@ def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "version": __version__,
         "file": graph_file,
+        "run_id": effective_run_id,
         "wall_clock_ms": wall_ms,
         "total_resources": len(results),
         "dedup": {h: ids for h, ids in graph.dedup_map.items() if len(ids) > 1},
@@ -210,7 +212,7 @@ def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
             "run": run_metric or {"wall_ms": wall_ms},
         },
     }
-    opath = _output_path(graph_file, run_id=run_id)
+    opath = _output_path(graph_file, run_id=effective_run_id)
     if Path(opath).exists():
         of = OutputFile(opath)
         report["outputs"] = {
@@ -1639,33 +1641,49 @@ def _collect_lint_findings(graph, path, strict=False):
             else:
                 add_warning(res.line, res.short_name, msg)
 
+        if run_cmd and re.search(r'(^|[;&|]\s*)rm\s+-[^\n;&|]*r[^\n;&|]*f\b', run_cmd):
+            msg = "Destructive 'rm -rf' operation. Add an explicit safety check, or move complex/destructive logic to a reviewed script."
+            if strict and not allow_complex:
+                add_error(res.line, res.short_name, msg)
+            else:
+                add_warning(res.line, res.short_name, msg)
+
+        if run_cmd and re.search(r'\b(curl|wget)\b', run_cmd) and not re.search(r'\b(sha256sum|shasum|gpg|cosign|minisign)\b', run_cmd):
+            msg = "Network fetch has no visible checksum or signature verification."
+            if strict and not allow_complex:
+                add_error(res.line, res.short_name, msg)
+            else:
+                add_warning(res.line, res.short_name, msg)
+
     # 'when' expressions referencing unknown variables (typo detection)
     for rid, res in graph.all_resources.items():
         if not res.when or res.is_barrier:
             continue
         # Extract bare identifiers from when expression (not quoted strings)
-        when_expr = res.when.strip()
-        for op in ("!=", "=="):
-            if op in when_expr:
-                parts = when_expr.split(op, 1)
-                for part in parts:
-                    token = part.strip().strip("'\"")
-                    # Skip if it looks like a quoted literal, number, or known value
-                    if part.strip().startswith(("'", '"')) or token in ("true", "false", "yes", "no", "0", "1", ""):
-                        continue
-                    if token not in graph.variables:
-                        add_warning(res.line, res.short_name,
-                            f"'when' expression references '{token}' which is not a known variable. "
-                            f"If this is a literal value, quote it: '\"{token}\"'.")
-                break
-        else:
-            # Truthy/falsy check (no operator)
-            token = when_expr.lstrip("not ").strip().strip("'\"")
-            if token and not when_expr.strip().startswith(("'", '"')) and token not in graph.variables:
-                add_warning(res.line, res.short_name,
-                    f"'when' expression references '{token}' which is not a known variable. "
-                    f"If this is a literal value, quote it: '\"{token}\"'.")
-
+        when_exprs = [p.strip() for p in res.when.splitlines() if p.strip()]
+        for when_expr in when_exprs:
+            if re.match(r'^tool\s+(available|missing)\s+\S+\s*$', when_expr):
+                continue
+            for op in ("!=", "=="):
+                if op in when_expr:
+                    parts = when_expr.split(op, 1)
+                    for part in parts:
+                        token = part.strip().strip("'\"")
+                        # Skip if it looks like a quoted literal, number, or known value
+                        if part.strip().startswith(("'", '"')) or token in ("true", "false", "yes", "no", "0", "1", ""):
+                            continue
+                        if token not in graph.variables:
+                            add_warning(res.line, res.short_name,
+                                f"'when' expression references '{token}' which is not a known variable. "
+                                f"If this is a literal value, quote it: '\"{token}\"'.")
+                    break
+            else:
+                # Truthy/falsy check (no operator)
+                token = when_expr.lstrip("not ").strip().strip("'\"")
+                if token and not when_expr.strip().startswith(("'", '"')) and token not in graph.variables:
+                    add_warning(res.line, res.short_name,
+                        f"'when' expression references '{token}' which is not a known variable. "
+                        f"If this is a literal value, quote it: '\"{token}\"'.")
     # 'each' loop steps writing to fixed paths (no loop variable in output)
     each_groups: dict[str, list[Resource]] = {}
     for rid, res in graph.all_resources.items():

@@ -18,8 +18,8 @@ Usage:
 Requires: Python 3.9+.  No external dependencies.
 """
 from __future__ import annotations
-# Built from source hash: 14c92d89135cb337
-import argparse, codecs, datetime, errno, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, signal, stat, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
+# Built from source hash: bb10cea8b6407a38
+import argparse, codecs, datetime, errno, fcntl, hashlib, hmac, io, json, os, pty, re, secrets, select, selectors, shlex, shutil, signal, stat, subprocess, sys, tempfile, termios, textwrap, threading, time, tty, warnings
 from contextlib import nullcontext, redirect_stdout
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -296,6 +296,9 @@ class ASTResource:
     env_when: dict[str, str] = field(default_factory=dict)  # KEY -> when_expr
     until: str|None = None
     cgr_phase_name: str|None = None  # set when step is inside a phase "name" when "COND": block
+    stamp_files: list[str] = field(default_factory=list)
+    stamp_from: str|None = None
+    optional_tool: str|None = None
 
 @dataclass
 class ASTPhase:
@@ -325,6 +328,7 @@ class ASTGroup:
     name: str; run_as: str|None; on_fail: str|None
     timeout: int|None; resources: list[ASTResource]; line: int
     timeout_reset_on_output: bool|None = None
+    when: str|None = None
 
 @dataclass
 class ASTNode:
@@ -368,6 +372,7 @@ class ASTProgram:
     secrets: list[ASTSecrets] = field(default_factory=list)
     gather_facts: bool = False
     stateless: bool = False
+    state_key_vars: list[str] = field(default_factory=list)
     on_complete: ASTResource|None = None   # hook: runs after successful apply
     on_failure: ASTResource|None = None    # hook: runs after failed apply
 
@@ -392,7 +397,7 @@ class ParseError(Exception):
 
 RESOURCE_STMTS = {"description","needs","check","run","script","as","timeout",
                   "retry","on_fail","on_success","on_failure","when","env",
-                  "collect","reduce","flag","until","wait","from",
+                  "collect","reduce","flag","until","wait","from","stamp","optional",
                   "parallel","race","each","stage",
                   "get","post","put","patch","delete","auth","header","body","expect"}
 
@@ -421,10 +426,19 @@ class Parser:
     def _err(self, msg, hint=""): return ParseError(f"{msg}\n  Hint: {hint}" if hint else msg, self._peek(), self.sl, self.fn)
 
     def parse(self) -> ASTProgram:
-        vs=[]; us=[]; ts=[]; ns=[]; te_blocks=[]; invs=[]; secs=[]; gf=False
+        vs=[]; us=[]; ts=[]; ns=[]; te_blocks=[]; invs=[]; secs=[]; gf=False; state_key_vars=[]
         on_comp=None; on_fail=None
         while not self._at(TT.EOF):
             if self._at_id("var"):      vs.append(self._p_var())
+            elif self._at_id("set"):
+                self._advance()
+                self._expect(TT.IDENT, "state")
+                self._expect(TT.IDENT, "key")
+                self._expect(TT.IDENT, "includes")
+                state_key_vars.append(self._expect(TT.IDENT).value)
+                while self._at(TT.COMMA):
+                    self._advance()
+                    state_key_vars.append(self._expect(TT.IDENT).value)
             elif self._at_id("use"):    us.append(self._p_use())
             elif self._at_id("inventory"): invs.append(self._p_inventory())
             elif self._at_id("secrets"): secs.append(self._p_secrets())
@@ -477,7 +491,8 @@ class Parser:
             else: raise self._err(f"Expected var/use/inventory/secrets/gather/template/node/each/on_complete/on_failure, got '{self._peek().value}'")
         return ASTProgram(variables=vs, uses=us, templates=ts, nodes=ns,
                           target_each_blocks=te_blocks, inventories=invs, secrets=secs,
-                          gather_facts=gf, on_complete=on_comp, on_failure=on_fail)
+                          gather_facts=gf, state_key_vars=state_key_vars,
+                          on_complete=on_comp, on_failure=on_fail)
 
     def _p_var(self):
         tok=self._expect(TT.IDENT,"var"); n=self._expect(TT.IDENT); self._expect(TT.EQUALS)
@@ -691,7 +706,7 @@ class Parser:
         desc=""; needs=[]; check=None; run_cmd=None; script_path=None; run_as=d.get("as")
         timeout=d.get("timeout"); retries=0; retry_delay=5; retry_backoff=False
         timeout_reset_on_output=d.get("timeout_reset_on_output", False)
-        on_fail=d.get("on_fail","stop"); when=None; env={}; env_when={}; children=[]; flags=[]; until=None; interactive=False
+        on_fail=d.get("on_fail","stop"); when=d.get("when"); env={}; env_when={}; children=[]; flags=[]; until=None; interactive=False
         collect_key=None
         collect_format=None
         collect_var=None
@@ -702,6 +717,7 @@ class Parser:
         http_body_type=None; http_auth=None; http_expect=None
         wait_kind=None; wait_target=None
         subgraph_path=None; subgraph_vars={}
+        stamp_files=[]; stamp_from=None; optional_tool=None
 
         while not self._at(TT.RBRACE) and not self._at(TT.EOF):
             s=self._peek()
@@ -767,7 +783,19 @@ class Parser:
                 if value_tok.type not in (TT.STRING, TT.NUMBER, TT.IDENT):
                     raise self._err("Expected a value after on_failure set VAR =")
                 on_failure_set.append((var_name, value_tok.value))
-            elif s.value=="when": self._advance(); when=self._expect(TT.STRING).value
+            elif s.value=="when":
+                self._advance()
+                if self._at_id("tool"):
+                    self._advance()
+                    availability = self._expect(TT.IDENT).value
+                    if availability not in ("available", "missing"):
+                        raise self._err("Expected 'available' or 'missing' after 'when tool'")
+                    tool = self._expect(TT.IDENT).value
+                    expr = f"tool {availability} {tool}"
+                    when = f"{when}\n{expr}" if when else expr
+                else:
+                    expr = self._expect(TT.STRING).value
+                    when = f"{when}\n{expr}" if when else expr
             elif s.value=="env":
                 self._advance(); k=self._expect(TT.IDENT).value
                 self._expect(TT.EQUALS); env[k]=self._advance().value
@@ -825,6 +853,19 @@ class Parser:
             elif s.value=="from":
                 self._advance()
                 subgraph_path=self._expect(TT.STRING).value
+            elif s.value=="stamp":
+                self._advance()
+                stamp_files.append(self._advance().value)
+                while self._at(TT.COMMA):
+                    self._advance()
+                    stamp_files.append(self._advance().value)
+                if self._at_id("from"):
+                    self._advance()
+                    stamp_from = self._advance().value
+            elif s.value=="optional":
+                self._advance()
+                self._expect(TT.IDENT, "tool")
+                optional_tool = self._expect(TT.IDENT).value
             elif s.value=="interactive":
                 self._advance(); interactive=True
             # ── Parallel constructs ──────────────────────────────────────
@@ -866,7 +907,8 @@ class Parser:
             subgraph_path=subgraph_path, subgraph_vars=dict(subgraph_vars),
             on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
             collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var,
-            interactive=interactive)
+            interactive=interactive, stamp_files=list(stamp_files),
+            stamp_from=stamp_from, optional_tool=optional_tool)
         # Attach optional fields if parsed
         if 'tags' in dir(): res.tags = tags
         if 'parallel_block' in dir(): res.parallel_block = parallel_block; res.parallel_limit = parallel_limit; res.parallel_fail_policy = parallel_fail_policy
@@ -1048,10 +1090,11 @@ class Parser:
 
     def _p_group(self):
         tok=self._expect(TT.IDENT,"group"); nm=self._expect(TT.IDENT)
-        run_as=None; on_fail=None; timeout=None; timeout_reset_on_output=None
+        run_as=None; on_fail=None; timeout=None; timeout_reset_on_output=None; when=None
         while not self._at(TT.LBRACE) and not self._at(TT.EOF):
             if self._at_id("as"): self._advance(); run_as=self._expect(TT.IDENT).value
             elif self._at_id("on_fail"): self._advance(); on_fail=self._expect(TT.IDENT).value
+            elif self._at_id("when"): self._advance(); when=self._expect(TT.STRING).value
             elif self._at_id("timeout"):
                 timeout, timeout_reset_on_output = self._p_timeout_prop()
             else: break
@@ -1068,7 +1111,8 @@ class Parser:
         self._expect(TT.RBRACE)
         return ASTGroup(name=nm.value, run_as=run_as, on_fail=on_fail,
                         timeout=timeout, resources=resources, line=tok.line,
-                        timeout_reset_on_output=timeout_reset_on_output)
+                        timeout_reset_on_output=timeout_reset_on_output,
+                        when=when)
 
     def _p_ident_list(self):
         # Support dot-qualified identifiers for cross-node refs: needs db.step_name
@@ -1153,6 +1197,7 @@ def parse_cgr(source: str, filename: str = "", _include_base_dir: Path | None = 
     secrets_list: list[ASTSecrets] = []
     gather_facts = False
     stateless = False
+    state_key_vars: list[str] = []
     pos = 0
 
     def peek():
@@ -1180,6 +1225,14 @@ def parse_cgr(source: str, filename: str = "", _include_base_dir: Path | None = 
                 stateless = True; continue
             if re.match(r'set\s+stateless\s*=\s*false\b', text):
                 stateless = False; continue
+            state_key_m = re.match(r'set\s+state\s+key\s+includes\s+(.+)$', text)
+            if state_key_m:
+                names = [p.strip() for p in state_key_m.group(1).split(",") if p.strip()]
+                for name in names:
+                    if not re.match(r'^\w+$', name):
+                        raise err(f"Invalid state key variable '{name}'", ln, text)
+                state_key_vars = names
+                continue
             # secret "env:VAR_NAME" — read from environment variable (redacted in output)
             sec_env_m = re.match(r'set\s+(\w+)\s*=\s*secret\s+"env:([^"]+)"', text)
             if sec_env_m:
@@ -1393,6 +1446,7 @@ def parse_cgr(source: str, filename: str = "", _include_base_dir: Path | None = 
     return ASTProgram(variables=variables, uses=uses, templates=templates, nodes=nodes,
                       target_each_blocks=target_each_blocks, inventories=inventories,
                       secrets=secrets_list, gather_facts=gather_facts, stateless=stateless,
+                      state_key_vars=state_key_vars,
                       on_complete=on_complete_hook if 'on_complete_hook' in dir() else None,
                       on_failure=on_failure_hook if 'on_failure_hook' in dir() else None)
 
@@ -1488,7 +1542,12 @@ def _parse_cgr_template_child_instantiation(
     )
 
 
-def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
+def _combine_when_expr(parent: str|None, child: str|None) -> str|None:
+    parts = [p for p in (parent, child) if p]
+    return "\n".join(parts) if parts else None
+
+
+def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None, inherit_mode="phase"):
     """Parse a list of body lines (from a target or a phase block) into resources + instantiations.
 
     phase_name / phase_when: if set, inject cgr_phase_name and when into every parsed resource.
@@ -1513,7 +1572,27 @@ def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
             while j < len(body_lines) and body_lines[j][1] > bindent:
                 phase_body.append(body_lines[j]); j += 1
             sub_resources, sub_insts = _parse_target_body_items(phase_body, err,
-                                                                 phase_name=pname, phase_when=pwhen)
+                                                                 phase_name=pname, phase_when=pwhen,
+                                                                 inherit_mode="phase")
+            resources.extend(sub_resources)
+            instantiations.extend(sub_insts)
+            i = j; continue
+
+        # group "name" when "COND": — shared condition block for enclosed steps.
+        group_m = re.match(r'group\s+"([^"]+)"\s+when\s+"([^"]+)":\s*$', btext)
+        if not group_m:
+            group_m = re.match(r'group\s+(\w+)\s+when\s+"([^"]+)":\s*$', btext)
+        if group_m:
+            gname = group_m.group(1)
+            gwhen = group_m.group(2)
+            group_body = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                group_body.append(body_lines[j]); j += 1
+            inherited_when = _combine_when_expr(phase_when, gwhen)
+            sub_resources, sub_insts = _parse_target_body_items(
+                group_body, err, phase_name=phase_name or gname, phase_when=inherited_when,
+                inherit_mode="and")
             resources.extend(sub_resources)
             instantiations.extend(sub_insts)
             i = j; continue
@@ -1551,7 +1630,9 @@ def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
                 res = _parse_cgr_step(step_name, step_header, step_body, bln, err)
                 if phase_name is not None:
                     res.cgr_phase_name = phase_name
-                    if res.when is None:
+                    if inherit_mode == "and":
+                        res.when = _combine_when_expr(phase_when, res.when)
+                    elif res.when is None:
                         res.when = phase_when
                 resources.append(res)
             i = j; continue
@@ -1571,7 +1652,9 @@ def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
             res = _parse_cgr_verify(vdesc, vbody, bln, err)
             if phase_name is not None:
                 res.cgr_phase_name = phase_name
-                if res.when is None:
+                if inherit_mode == "and":
+                    res.when = _combine_when_expr(phase_when, res.when)
+                elif res.when is None:
                     res.when = phase_when
             resources.append(res)
             i = j; continue
@@ -1587,7 +1670,9 @@ def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
             res = _parse_cgr_step(sname, "", [(bln, bindent, btext)] + stage_body, bln, err)
             if phase_name is not None:
                 res.cgr_phase_name = phase_name
-                if res.when is None:
+                if inherit_mode == "and":
+                    res.when = _combine_when_expr(phase_when, res.when)
+                elif res.when is None:
                     res.when = phase_when
             resources.append(res)
             i = j; continue
@@ -1689,6 +1774,7 @@ _CGR_CONTINUATION_STOPWORDS = (
     "needs ", "first ", "skip if ", "run ", "script ", "always run ", "env ",
     "when ", "collect ", "flag ", "until ", "parallel", "race", "each ", "stage ",
     "as ", "timeout ", "retry ", "if fails", "wait for ",
+    "stamp ", "optional ",
     "content ", "line ", "put ", "validate ",
     "block ", "ini ", "json ", "assert ",
     "on success:", "on success :", "on failure:", "on failure :",
@@ -1840,6 +1926,9 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
     flags: list[tuple[str, str|None]] = []
     until: str|None = None
     interactive: bool = False
+    stamp_files: list[str] = []
+    stamp_from: str|None = None
+    optional_tool: str|None = None
     # Provisioning fields (Phase 2)
     prov_block_dest: str|None = None; prov_block_marker: str|None = None
     prov_block_inline: str|None = None; prov_block_from: str|None = None
@@ -2392,11 +2481,29 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
 
         # when "expr" or when expr (unquoted — for variable-based conditions)
         if btext.startswith("when "):
+            tool_m = re.match(r'when\s+tool\s+(available|missing)\s+(\S+)\s*$', btext)
+            if tool_m:
+                tool = tool_m.group(2)
+                expr = f"tool {tool_m.group(1)} {tool}"
+                when = _combine_when_expr(when, expr)
+                i += 1; continue
             wm = re.match(r'when\s+"([^"]*)"', btext)
             if wm:
-                when = wm.group(1)
+                parsed_when = wm.group(1)
             else:
-                when = btext[5:].strip()
+                parsed_when = btext[5:].strip()
+            when = _combine_when_expr(when, parsed_when)
+            i += 1; continue
+
+        stamp_m = re.match(r'stamp\s+(.+?)(?:\s+from\s+(.+))?\s*$', btext)
+        if stamp_m:
+            stamp_files = [p.strip() for p in stamp_m.group(1).split(",") if p.strip()]
+            stamp_from = stamp_m.group(2).strip() if stamp_m.group(2) else None
+            i += 1; continue
+
+        optional_tool_m = re.match(r'optional\s+tool\s+(\S+)\s*$', btext)
+        if optional_tool_m:
+            optional_tool = optional_tool_m.group(1)
             i += 1; continue
 
         if btext.startswith("until "):
@@ -2491,8 +2598,9 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         or prov_block_dest or prov_ini_dest or prov_json_dest or prov_asserts
         or reduce_key
     )
+    has_stamp = bool(stamp_files)
     if (run_cmd is None and script_path is None and not has_construct and not has_http and not has_prov
-            and wait_kind is None and subgraph_path is None
+            and wait_kind is None and subgraph_path is None and not has_stamp
             and not (allow_no_run_with_children and children)):
         raise err(f"Step [{name}] has no 'run' command", ln)
     if flags and run_cmd is None:
@@ -2534,7 +2642,9 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
         collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var,
         flags=list(flags), env_when=dict(env_when), until=until,
-        interactive=interactive)
+        interactive=interactive,
+        stamp_files=list(stamp_files), stamp_from=stamp_from,
+        optional_tool=optional_tool)
 
 
 def _parse_cgr_verify(desc: str, body: list, ln: int, err) -> ASTResource:
@@ -3018,6 +3128,9 @@ class Resource:
     until: str|None = None
     cgr_phase_name: str|None = None  # name of the phase "..." when "...": block this resource belongs to
     interactive: bool = False        # force terminal-interactive mode (PTY + stdin forwarding)
+    stamp_files: list[str] = field(default_factory=list)
+    stamp_from: str|None = None
+    optional_tool: str|None = None
 
 @dataclass
 class HostNode:
@@ -3036,6 +3149,8 @@ class Graph:
     on_failure: Resource|None = None    # hook: runs after failed apply
     graph_file: str|None = None         # path to the source .cgr/.cg file (for relative put/content from)
     stateless: bool = False             # set stateless = true: skip state file persistence
+    state_key_vars: list[str] = field(default_factory=list)
+    state_run_id: str|None = None       # effective state salt used by the latest apply in this process
 
 @dataclass
 class ExecResult:
@@ -3111,6 +3226,44 @@ def _expand_shell_fragment(text: str|None, vs: dict[str, str]) -> str|None:
             raise ResolveError(f"Undefined variable '${{{key}}}'. Known: {sorted(vs)}")
         return shlex.quote(vs[key])
     return VAR_RE.sub(_var_sub, text)
+
+def _and_when(a: str|None, b: str|None) -> str|None:
+    """Combine two when expressions with simple AND semantics.
+
+    The executor's when evaluator has deliberately small syntax. Keeping
+    grouped expressions as a newline-separated list avoids adding boolean
+    operators to the public expression language.
+    """
+    parts = [p for p in (a, b) if p]
+    return "\n".join(parts) if parts else None
+
+def _eval_when(expr, variables=None):
+    if not expr:
+        return True
+    e = expr.strip()
+    if "\n" in e:
+        return all(_eval_when(part, variables) for part in e.splitlines() if part.strip())
+    # Tool predicates are runtime/environment checks. During resolution, keep
+    # conditional flags/env conservative by treating them as true.
+    if re.match(r'^tool\s+(available|missing)\s+\S+\s*$', e):
+        return True
+    vs = variables or {}
+    def _resolve(token):
+        t = token.strip().strip("'\"")
+        vm = re.match(r'^\$\{(\w+)\}$', t)
+        if vm:
+            t = vm.group(1)
+        return vs.get(t, t)
+    for op in ("!=", "=="):
+        if op in e:
+            l, r = e.split(op, 1)
+            lv = _resolve(l); rv = _resolve(r)
+            return (lv == rv) if op == "==" else (lv != rv)
+    if e.startswith("not "):
+        val = _resolve(e[4:])
+        return val.lower() in ("", "false", "0", "no", "none")
+    val = _resolve(e)
+    return val.lower() not in ("", "false", "0", "no", "none")
 
 def _redact(text: str|None, sensitive: set[str]) -> str|None:
     """Replace any occurrence of sensitive values with ***REDACTED***."""
@@ -3351,7 +3504,9 @@ def _flatten_ast_resource(
                 inner_template_args=dict(body.inner_template_args), flags=list(body.flags),
                 env_when=dict(body.env_when), until=body.until,
                 wait_kind=body.wait_kind, wait_target=body.wait_target,
-                subgraph_path=body.subgraph_path, subgraph_vars=dict(body.subgraph_vars))
+                subgraph_path=body.subgraph_path, subgraph_vars=dict(body.subgraph_vars),
+                stamp_files=list(body.stamp_files), stamp_from=body.stamp_from,
+                optional_tool=body.optional_tool)
             ec_prefix = f"{prefix}.{item_name}"
             ec_id = _flatten_ast_resource(expanded, node_name, ec_prefix, each_vs, provenance,
                                           collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -3417,7 +3572,9 @@ def _flatten_ast_resource(
                             inner_template_args=dict(pbody.inner_template_args), flags=list(pbody.flags),
                             env_when=dict(pbody.env_when), until=pbody.until,
                             wait_kind=pbody.wait_kind, wait_target=pbody.wait_target,
-                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars))
+                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars),
+                            stamp_files=list(pbody.stamp_files), stamp_from=pbody.stamp_from,
+                            optional_tool=pbody.optional_tool)
                         v_prefix = f"{prefix}.__phase_{pi}.{pbody.name}"
                         v_id = _flatten_ast_resource(v_res, node_name, v_prefix,
                             each_vs, provenance, collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -3444,7 +3601,9 @@ def _flatten_ast_resource(
                             inner_template_args=dict(pbody.inner_template_args), flags=list(pbody.flags),
                             env_when=dict(pbody.env_when), until=pbody.until,
                             wait_kind=pbody.wait_kind, wait_target=pbody.wait_target,
-                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars))
+                            subgraph_path=pbody.subgraph_path, subgraph_vars=dict(pbody.subgraph_vars),
+                            stamp_files=list(pbody.stamp_files), stamp_from=pbody.stamp_from,
+                            optional_tool=pbody.optional_tool)
                         ec_prefix = f"{prefix}.__phase_{pi}.{item_name}"
                         ec_id = _flatten_ast_resource(expanded, node_name, ec_prefix,
                             each_vs, provenance, collector, dedup_hashes, dedup_map, source_line=source_line,
@@ -3513,6 +3672,16 @@ def _flatten_ast_resource(
     if exp_subgraph_path and not effective_run_key:
         subgraph_sig = ",".join(f"{k}={exp_subgraph_vars[k]}" for k in sorted(exp_subgraph_vars))
         effective_run_key = f"__subgraph__ {exp_subgraph_path} {subgraph_sig}".strip()
+    exp_stamp_files = [_expand(p, vs) or p for p in ast_res.stamp_files]
+    exp_stamp_from = _expand(ast_res.stamp_from, vs) if ast_res.stamp_from else None
+    exp_optional_tool = _expand(ast_res.optional_tool, vs) if ast_res.optional_tool else None
+    if exp_stamp_files:
+        stamp_sig = ",".join(exp_stamp_files)
+        if exp_stamp_from:
+            stamp_sig += f"<-{exp_stamp_from}"
+        effective_run_key = (effective_run_key + f" __stamp__ {stamp_sig}").strip()
+    if exp_optional_tool:
+        effective_run_key = (effective_run_key + f" __optional_tool__ {exp_optional_tool}").strip()
     # Expand provisioning fields
     exp_prov_content_inline = _expand(ast_res.prov_content_inline, vs) if ast_res.prov_content_inline is not None else ast_res.prov_content_inline
     exp_prov_content_from = _expand(ast_res.prov_content_from, vs) if ast_res.prov_content_from else None
@@ -3629,6 +3798,9 @@ def _flatten_ast_resource(
         flags=resolved_flags, env_when=dict(ast_res.env_when), until=ast_res.until,
         cgr_phase_name=ast_res.cgr_phase_name,
         interactive=ast_res.interactive,
+        stamp_files=exp_stamp_files,
+        stamp_from=exp_stamp_from,
+        optional_tool=exp_optional_tool,
     )
     collector[rid] = res
     dedup_hashes[ihash] = rid
@@ -3913,7 +4085,11 @@ def resolve(prog: ASTProgram, repo_dir: str|None = None, graph_file: str|None = 
         # Process inline resources (from groups + top-level)
         all_ast: list[ASTResource] = list(an.resources)
         for g in an.groups:
-            all_ast.extend(g.resources)
+            for gr in g.resources:
+                gr.when = _and_when(g.when, gr.when)
+                if g.name and gr.cgr_phase_name is None:
+                    gr.cgr_phase_name = g.name
+                all_ast.append(gr)
 
         for ar in all_ast:
             _flatten_ast_resource(
@@ -4112,6 +4288,7 @@ def resolve(prog: ASTProgram, repo_dir: str|None = None, graph_file: str|None = 
         on_failure=resolved_on_failure,
         graph_file=graph_file,
         stateless=prog.stateless,
+        state_key_vars=list(prog.state_key_vars),
     )
 
 
@@ -4163,6 +4340,8 @@ def _topo_waves(resources: dict[str, Resource]) -> list[list[str]]:
             msg += f"\n  ... and {len(remaining) - 8} more"
         raise ResolveError(msg)
     return waves
+import shutil
+
 def cmd_plan(graph: Graph, *, verbose=False, include_tags=None, exclude_tags=None):
     print(); print(bold("CommandGraph Plan"))
     print(bold("─" * 64))
@@ -4237,6 +4416,13 @@ def cmd_plan(graph: Graph, *, verbose=False, include_tags=None, exclude_tags=Non
             if res.flags:
                 for flag in res.flags:
                     print(f"                {dim('+ ' + _redact(flag, graph.sensitive_values))}")
+            if res.optional_tool:
+                print(f"                {cyan('optional tool:')} {dim(res.optional_tool)}")
+            if res.stamp_files:
+                stamp_text = ", ".join(res.stamp_files)
+                if res.stamp_from:
+                    stamp_text += f" from {res.stamp_from}"
+                print(f"                {cyan('stamp: ')}{dim(stamp_text)}")
 
             # Show dedup info
             if res.identity_hash in graph.dedup_map:
@@ -5714,7 +5900,13 @@ def _eval_when(expr, variables=None):
     Variables are resolved from the dict if provided."""
     if not expr: return True
     e = expr.strip()
+    if "\n" in e:
+        return all(_eval_when(part, variables) for part in e.splitlines() if part.strip())
     vs = variables or {}
+    tool_m = re.match(r'^tool\s+(available|missing)\s+(\S+)\s*$', e)
+    if tool_m:
+        found = shutil.which(tool_m.group(2)) is not None
+        return found if tool_m.group(1) == "available" else not found
     def _resolve(token):
         t = token.strip().strip("'\"")
         vm = re.match(r'^\$\{(\w+)\}$', t)
@@ -5733,6 +5925,71 @@ def _eval_when(expr, variables=None):
     val = _resolve(e)
     return val.lower() not in ("", "false", "0", "no", "none")
 
+def _local_stamp_satisfied(res) -> bool:
+    files = getattr(res, "stamp_files", None) or []
+    if not files:
+        return False
+    if getattr(res, "stamp_from", None):
+        src = Path(res.stamp_from)
+        if not src.exists():
+            return False
+        try:
+            src_bytes = src.read_bytes()
+        except OSError:
+            return False
+        for path in files:
+            p = Path(path)
+            if not p.exists():
+                return False
+            try:
+                if p.read_bytes() != src_bytes:
+                    return False
+            except OSError:
+                return False
+        return True
+    return all(Path(path).exists() for path in files)
+
+def _write_local_stamps(res):
+    files = getattr(res, "stamp_files", None) or []
+    if not files:
+        return
+    src = getattr(res, "stamp_from", None)
+    if src:
+        data = Path(src).read_bytes()
+        for path in files:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, p)
+    else:
+        for path in files:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+
+def _tool_available_on_target(tool: str, node, res, *, cancel_check=None) -> bool:
+    rc, _, _ = _run_cmd(f"command -v {shlex.quote(tool)} >/dev/null 2>&1",
+                        node, res, timeout=15, cancel_check=cancel_check)
+    return rc == 0
+
+def _eval_when_for_resource(expr, node, res, variables=None, *, cancel_check=None) -> bool:
+    if not expr:
+        return True
+    parts = [p.strip() for p in str(expr).splitlines() if p.strip()]
+    if not parts:
+        return True
+    for part in parts:
+        tool_m = re.match(r'^tool\s+(available|missing)\s+(\S+)\s*$', part)
+        if tool_m:
+            found = _tool_available_on_target(tool_m.group(2), node, res, cancel_check=cancel_check)
+            ok = found if tool_m.group(1) == "available" else not found
+        else:
+            ok = _eval_when(part, variables)
+        if not ok:
+            return False
+    return True
+
 def _last_nonempty_line(text: str) -> str|None:
     for line in reversed(text.splitlines()):
         if line.strip():
@@ -5744,9 +6001,22 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
                   cancel_check=None, webhook_server: WebhookGateServer | None = None):
     t0=time.monotonic()
     res = _runtime_resource_view(res, variables)
-    if not _eval_when(res.when, variables):
+    if not _eval_when_for_resource(res.when, node, res, variables, cancel_check=cancel_check):
         return ExecResult(resource_id=res.id,status=Status.SKIP_WHEN,
                           duration_ms=int((time.monotonic()-t0)*1000),reason=f"when: {res.when!r} → false")
+    if _local_stamp_satisfied(res):
+        return ExecResult(resource_id=res.id,status=Status.SKIP_CHECK,check_rc=0,
+                          duration_ms=int((time.monotonic()-t0)*1000),reason="stamp satisfied")
+    if res.optional_tool and not _tool_available_on_target(res.optional_tool, node, res, cancel_check=cancel_check):
+        try:
+            _write_local_stamps(res)
+        except OSError as exc:
+            return ExecResult(resource_id=res.id,status=Status.FAILED,run_rc=1,
+                              stderr=str(exc),duration_ms=int((time.monotonic()-t0)*1000),
+                              reason=f"optional tool missing; failed to write stamp: {exc}")
+        return ExecResult(resource_id=res.id,status=Status.SUCCESS,run_rc=0,
+                          duration_ms=int((time.monotonic()-t0)*1000),
+                          reason=f"optional tool missing: {res.optional_tool}")
     # reduce "key": aggregate collected outputs and return
     if res.reduce_key:
         acc = accumulated_collected or {}
@@ -5816,6 +6086,8 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
     observed_value = None
     is_http = bool(res.http_method and res.http_url)
     effective_run_cmd = _effective_run_cmd(res, graph_file)
+    if not effective_run_cmd and res.stamp_files:
+        effective_run_cmd = "true"
     for att in range(1,mx+1):
         if is_http:
             if node.via_method == "ssh":
@@ -5884,6 +6156,13 @@ def exec_resource(res, node, *, dry_run=False, blast_radius=False, variables=Non
             if on_output and lo:
                 on_output("stdout", lo if lo.endswith("\n") else lo + "\n")
         if lr==0:
+            try:
+                _write_local_stamps(res)
+            except OSError as exc:
+                return ExecResult(resource_id=res.id,status=Status.FAILED,run_rc=1,check_rc=check_rc,
+                    stdout=lo,stderr=(le + ("\n" if le else "") + f"stamp failed: {exc}").strip(),
+                    duration_ms=int((time.monotonic()-t0)*1000),attempts=att,
+                    observed_value=observed_value)
             vb = {v: val for v, val in (res.on_success_set or [])}
             if res.collect_var and lo:
                 vb[res.collect_var] = lo.strip()
@@ -6687,6 +6966,22 @@ def _output_path(graph_file: str, run_id: str | None = None) -> str:
     suffix = f".{_sanitize_run_id(run_id)}" if run_id else ""
     return graph_file + suffix + ".output"
 
+def _graph_state_run_id(graph: Graph, explicit_run_id: str | None = None) -> str | None:
+    """Return the explicit or graph-declared state salt for this run."""
+    if explicit_run_id:
+        return explicit_run_id
+    keys = getattr(graph, "state_key_vars", None) or []
+    if not keys:
+        return None
+    parts = []
+    for key in keys:
+        parts.append(f"{key}={graph.variables.get(key, '')}")
+    digest = hashlib.sha256("\0".join(parts).encode()).hexdigest()[:12]
+    label = "_".join(keys[:3])
+    if len(keys) > 3:
+        label += "_etc"
+    return f"{label}_{digest}"
+
 
 class OutputFile:
     """Append-only JSONL file for collected command outputs."""
@@ -6819,7 +7114,9 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
         if not found:
             print(yellow(f"  warning: --skip '{skip_name}' not found, ignoring."))
 
-    sp = state_path or _state_path(graph_file, run_id=run_id)
+    effective_run_id = _graph_state_run_id(graph, run_id)
+    graph.state_run_id = effective_run_id
+    sp = state_path or _state_path(graph_file, run_id=effective_run_id)
     effective_stateless = graph.stateless and not state_path
     if graph.stateless and state_path:
         print(yellow(f"  warning: --state FILE overrides 'set stateless = true'; state will be persisted."))
@@ -6827,15 +7124,16 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
 
     # Output collector for steps with collect clauses
     has_collect = any(r.collect_key for r in graph.all_resources.values())
-    output = OutputFile(_output_path(graph_file, run_id=run_id)) if has_collect and not dry_run else None
+    output = OutputFile(_output_path(graph_file, run_id=effective_run_id)) if has_collect and not dry_run else None
 
     total = sum(len(w) for w in graph.waves)
 
     # Count how many will be skipped from state
     skip_from_state = 0
     if state and not no_resume:
-        for rid in graph.all_resources:
-            if state.should_skip(rid): skip_from_state += 1
+        for rid, res in graph.all_resources.items():
+            if state.should_skip(rid) and (not res.stamp_files or _local_stamp_satisfied(res)):
+                skip_from_state += 1
 
     # --start-from: warn about skipped unsatisfied dependencies
     if start_from and skip_before:
@@ -6874,6 +7172,8 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
         print(f"  State: {dim('(stateless — no disk persistence)')}")
     else:
         print(f"  State: {dim(sp)}")
+        if effective_run_id and not run_id:
+            print(f"  State key: {dim(effective_run_id)}")
     if log_file:
         print(f"  Log: {dim(log_file)}")
     print(bold(f"{'═'*64}")); print()
@@ -6936,7 +7236,7 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
                 for rid in wave:
                     if rid in skip_before:
                         to_skip_start.append(rid)
-                    elif state and state.should_skip(rid):
+                    elif state and state.should_skip(rid) and (not graph.all_resources[rid].stamp_files or _local_stamp_satisfied(graph.all_resources[rid])):
                         to_skip_state.append(rid)
                     elif rid in skip_rids:
                         to_skip_manual.append(rid)
@@ -7227,12 +7527,12 @@ def cmd_apply_stateful(graph, graph_file, *, dry_run=False, max_parallel=4, no_r
 
     _print_summary(results)
     if output and output.all_outputs():
-        op = _output_path(graph_file, run_id=run_id)
+        op = _output_path(graph_file, run_id=effective_run_id)
         n = len(output.all_outputs())
         print(f"  {cyan('📋 Collected')} {n} output(s) → {dim(op)}")
         report_cmd = f"cgr report {graph_file}"
-        if run_id:
-            report_cmd += f" --run-id {shlex.quote(run_id)}"
+        if effective_run_id:
+            report_cmd += f" --run-id {shlex.quote(effective_run_id)}"
         print(f"  View with: {report_cmd}")
         print()
     wall_ms = int((time.monotonic() - wall_t0) * 1000)
@@ -7669,7 +7969,8 @@ def cmd_report(graph_file: str, *, fmt: str = "table", output_file: str|None = N
 def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
                         *, graph_file: str, state_path: str | None = None,
                         run_id: str | None = None) -> dict:
-    sp = state_path or _state_path(graph_file, run_id=run_id)
+    effective_run_id = run_id or getattr(graph, "state_run_id", None) or _graph_state_run_id(graph, None)
+    sp = state_path or _state_path(graph_file, run_id=effective_run_id)
     state = StateFile(sp) if Path(sp).exists() else None
     wave_metrics = []
     run_metric = None
@@ -7697,6 +7998,7 @@ def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "version": __version__,
         "file": graph_file,
+        "run_id": effective_run_id,
         "wall_clock_ms": wall_ms,
         "total_resources": len(results),
         "dedup": {h: ids for h, ids in graph.dedup_map.items() if len(ids) > 1},
@@ -7722,7 +8024,7 @@ def _build_apply_report(graph: Graph, results: list[ExecResult], wall_ms: int,
             "run": run_metric or {"wall_ms": wall_ms},
         },
     }
-    opath = _output_path(graph_file, run_id=run_id)
+    opath = _output_path(graph_file, run_id=effective_run_id)
     if Path(opath).exists():
         of = OutputFile(opath)
         report["outputs"] = {
@@ -9151,33 +9453,49 @@ def _collect_lint_findings(graph, path, strict=False):
             else:
                 add_warning(res.line, res.short_name, msg)
 
+        if run_cmd and re.search(r'(^|[;&|]\s*)rm\s+-[^\n;&|]*r[^\n;&|]*f\b', run_cmd):
+            msg = "Destructive 'rm -rf' operation. Add an explicit safety check, or move complex/destructive logic to a reviewed script."
+            if strict and not allow_complex:
+                add_error(res.line, res.short_name, msg)
+            else:
+                add_warning(res.line, res.short_name, msg)
+
+        if run_cmd and re.search(r'\b(curl|wget)\b', run_cmd) and not re.search(r'\b(sha256sum|shasum|gpg|cosign|minisign)\b', run_cmd):
+            msg = "Network fetch has no visible checksum or signature verification."
+            if strict and not allow_complex:
+                add_error(res.line, res.short_name, msg)
+            else:
+                add_warning(res.line, res.short_name, msg)
+
     # 'when' expressions referencing unknown variables (typo detection)
     for rid, res in graph.all_resources.items():
         if not res.when or res.is_barrier:
             continue
         # Extract bare identifiers from when expression (not quoted strings)
-        when_expr = res.when.strip()
-        for op in ("!=", "=="):
-            if op in when_expr:
-                parts = when_expr.split(op, 1)
-                for part in parts:
-                    token = part.strip().strip("'\"")
-                    # Skip if it looks like a quoted literal, number, or known value
-                    if part.strip().startswith(("'", '"')) or token in ("true", "false", "yes", "no", "0", "1", ""):
-                        continue
-                    if token not in graph.variables:
-                        add_warning(res.line, res.short_name,
-                            f"'when' expression references '{token}' which is not a known variable. "
-                            f"If this is a literal value, quote it: '\"{token}\"'.")
-                break
-        else:
-            # Truthy/falsy check (no operator)
-            token = when_expr.lstrip("not ").strip().strip("'\"")
-            if token and not when_expr.strip().startswith(("'", '"')) and token not in graph.variables:
-                add_warning(res.line, res.short_name,
-                    f"'when' expression references '{token}' which is not a known variable. "
-                    f"If this is a literal value, quote it: '\"{token}\"'.")
-
+        when_exprs = [p.strip() for p in res.when.splitlines() if p.strip()]
+        for when_expr in when_exprs:
+            if re.match(r'^tool\s+(available|missing)\s+\S+\s*$', when_expr):
+                continue
+            for op in ("!=", "=="):
+                if op in when_expr:
+                    parts = when_expr.split(op, 1)
+                    for part in parts:
+                        token = part.strip().strip("'\"")
+                        # Skip if it looks like a quoted literal, number, or known value
+                        if part.strip().startswith(("'", '"')) or token in ("true", "false", "yes", "no", "0", "1", ""):
+                            continue
+                        if token not in graph.variables:
+                            add_warning(res.line, res.short_name,
+                                f"'when' expression references '{token}' which is not a known variable. "
+                                f"If this is a literal value, quote it: '\"{token}\"'.")
+                    break
+            else:
+                # Truthy/falsy check (no operator)
+                token = when_expr.lstrip("not ").strip().strip("'\"")
+                if token and not when_expr.strip().startswith(("'", '"')) and token not in graph.variables:
+                    add_warning(res.line, res.short_name,
+                        f"'when' expression references '{token}' which is not a known variable. "
+                        f"If this is a literal value, quote it: '\"{token}\"'.")
     # 'each' loop steps writing to fixed paths (no loop variable in output)
     each_groups: dict[str, list[Resource]] = {}
     for rid, res in graph.all_resources.items():

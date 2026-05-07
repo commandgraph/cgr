@@ -1777,6 +1777,25 @@ Ignore state for one run without deleting it:
 $ cgr apply webserver.cgr --no-resume
 ```
 
+Salt the default state path for one run:
+```
+$ cgr apply build.cgr --run-id version_2.9.4
+```
+
+`--run-id ID` changes the default state file from `.state/FILE.state` to
+`.state/FILE.ID.state`. Use it when separate invocations of the same graph
+must not share resume state, such as parameterized builds with different
+`--set` values. `--state FILE` is still the fully explicit form when you want
+to choose the exact journal path.
+
+Graphs can declare the common parameterized case directly:
+```cgr
+set state key includes build_version, build_prusaslicer_deps, build_appimage
+```
+
+The listed variable values are hashed into the default state path. CLI
+`--run-id` takes precedence over this graph-declared state key.
+
 For graphs that always run fresh (CI pipelines, deployment scripts), declare stateless mode in the graph file itself so `--no-resume` is never needed:
 ```
 set stateless = true
@@ -1945,6 +1964,83 @@ target "local" local:
 - Phases do **not** nest. A `phase` inside a `phase` is a parse error.
 - Override the action at runtime: `cgr apply FILE --set action=rollback`
 
+### `group "name" when "COND":` — shared conditions
+
+Use `group` when you want a named block that applies a shared condition to
+enclosed steps without using rollout `phase` terminology:
+
+```cgr
+target "local" local:
+
+  group "build deps" when "${build_prusaslicer_deps} == 'yes'":
+
+    [configure dependencies]:
+      run $ cmake -S deps -B deps/build
+
+    [build dependencies]:
+      first [configure dependencies]
+      run $ cmake --build deps/build
+```
+
+`group when` flattens into normal resources. A step-level `when` narrows the
+group condition with AND semantics. This syntax is supported in `.cgr`; `.cg`
+groups also accept a `when` property.
+
+### `stamp` — local completion markers
+
+`stamp FILE` writes a local controller-side marker only after the step succeeds.
+On later runs, if the marker is present, the step is treated like a passed
+`skip if` check:
+
+```cgr
+[set ccache max size]:
+  stamp .cgr_build/ccache_max_size.ok
+  run $ ccache --set-config=max_size=5G
+```
+
+Use `stamp FILE from KEY_FILE` when a step should rerun after an input key
+changes. On success, CommandGraph copies `KEY_FILE` to `FILE`; the stamp is
+satisfied only when the contents match:
+
+```cgr
+[mark dependencies built]:
+  first [build dependencies]
+  stamp .cgr_build/build_dependencies.version from .cgr_build/LATEST_VERSION
+```
+
+Multiple stamp files are allowed:
+
+```cgr
+stamp .cgr_build/clone.version, .cgr_build/patches.version from .cgr_build/LATEST_VERSION
+```
+
+Stamps are local to the controller, even for SSH targets. For remote markers,
+use an explicit remote `run $ touch PATH`.
+
+### Optional Tools
+
+Use tool predicates in `when` for readable capability branches:
+
+```cgr
+[configure with ccache]:
+  when tool available ccache
+  run $ cmake ... -DCMAKE_C_COMPILER_LAUNCHER=ccache
+
+[configure without ccache]:
+  when tool missing ccache
+  run $ cmake ...
+```
+
+Use `optional tool NAME` for best-effort steps that should succeed without
+running when the tool is absent:
+
+```cgr
+[show ccache stats]:
+  optional tool ccache
+  stamp .cgr_build/ccache_stats.ok
+  run $ ccache --show-stats
+```
+
 **Multiline `run:` inside a phase:**
 
 ```
@@ -2088,7 +2184,7 @@ This makes the HTML file a self-contained pitch: send someone `webserver.html`, 
 | Command | Description |
 |---------|-------------|
 | `plan FILE` | Show execution plan. `-v` shows check/run commands. |
-| `apply FILE` | Execute the graph. `--dry-run` simulates. `--parallel N` sets concurrency. `--report FILE.json` writes JSON results with `wall_clock_ms`. `--output json` prints machine-readable execution results to stdout. `--timeout SECS` aborts after SECS seconds. `--start-from STEP` skips waves before STEP. `--no-resume` ignores state. `-v` shows all commands and output. `--no-color` disables color. |
+| `apply FILE` | Execute the graph. `--dry-run` simulates. `--parallel N` sets concurrency. `--report FILE.json` writes JSON results with `wall_clock_ms`. `--output json` prints machine-readable execution results to stdout. `--timeout SECS` aborts after SECS seconds. `--start-from STEP` skips waves before STEP. `--no-resume` ignores state. `--run-id ID` salts the default state/output paths. `--state FILE` uses an explicit state file. `-v` shows all commands and output. `--no-color` disables color. |
 | `validate FILE` | Parse and validate without executing. Shows node/resource/wave counts and provenance. `-q`/`--quiet` exits 0/1 only (for CI/CD). `--json` outputs machine-readable JSON with all validation details (nodes, resources, waves, variables, provenance, cross-node deps). On error, outputs `{"valid": false, "error": "..."}`. |
 | `visualize FILE` | Generate self-contained interactive HTML visualization. `-o FILE.html` sets the output path. `--state FILE.state` overlays execution results (auto-detected if omitted). |
 | `dot FILE` | Emit Graphviz DOT format to stdout. Pipe to `dot -Tpng -o graph.png`. |

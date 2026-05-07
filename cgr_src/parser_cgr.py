@@ -75,6 +75,7 @@ def parse_cgr(source: str, filename: str = "", _include_base_dir: Path | None = 
     secrets_list: list[ASTSecrets] = []
     gather_facts = False
     stateless = False
+    state_key_vars: list[str] = []
     pos = 0
 
     def peek():
@@ -102,6 +103,14 @@ def parse_cgr(source: str, filename: str = "", _include_base_dir: Path | None = 
                 stateless = True; continue
             if re.match(r'set\s+stateless\s*=\s*false\b', text):
                 stateless = False; continue
+            state_key_m = re.match(r'set\s+state\s+key\s+includes\s+(.+)$', text)
+            if state_key_m:
+                names = [p.strip() for p in state_key_m.group(1).split(",") if p.strip()]
+                for name in names:
+                    if not re.match(r'^\w+$', name):
+                        raise err(f"Invalid state key variable '{name}'", ln, text)
+                state_key_vars = names
+                continue
             # secret "env:VAR_NAME" — read from environment variable (redacted in output)
             sec_env_m = re.match(r'set\s+(\w+)\s*=\s*secret\s+"env:([^"]+)"', text)
             if sec_env_m:
@@ -315,6 +324,7 @@ def parse_cgr(source: str, filename: str = "", _include_base_dir: Path | None = 
     return ASTProgram(variables=variables, uses=uses, templates=templates, nodes=nodes,
                       target_each_blocks=target_each_blocks, inventories=inventories,
                       secrets=secrets_list, gather_facts=gather_facts, stateless=stateless,
+                      state_key_vars=state_key_vars,
                       on_complete=on_complete_hook if 'on_complete_hook' in dir() else None,
                       on_failure=on_failure_hook if 'on_failure_hook' in dir() else None)
 
@@ -410,7 +420,12 @@ def _parse_cgr_template_child_instantiation(
     )
 
 
-def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
+def _combine_when_expr(parent: str|None, child: str|None) -> str|None:
+    parts = [p for p in (parent, child) if p]
+    return "\n".join(parts) if parts else None
+
+
+def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None, inherit_mode="phase"):
     """Parse a list of body lines (from a target or a phase block) into resources + instantiations.
 
     phase_name / phase_when: if set, inject cgr_phase_name and when into every parsed resource.
@@ -435,7 +450,27 @@ def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
             while j < len(body_lines) and body_lines[j][1] > bindent:
                 phase_body.append(body_lines[j]); j += 1
             sub_resources, sub_insts = _parse_target_body_items(phase_body, err,
-                                                                 phase_name=pname, phase_when=pwhen)
+                                                                 phase_name=pname, phase_when=pwhen,
+                                                                 inherit_mode="phase")
+            resources.extend(sub_resources)
+            instantiations.extend(sub_insts)
+            i = j; continue
+
+        # group "name" when "COND": — shared condition block for enclosed steps.
+        group_m = re.match(r'group\s+"([^"]+)"\s+when\s+"([^"]+)":\s*$', btext)
+        if not group_m:
+            group_m = re.match(r'group\s+(\w+)\s+when\s+"([^"]+)":\s*$', btext)
+        if group_m:
+            gname = group_m.group(1)
+            gwhen = group_m.group(2)
+            group_body = []
+            j = i + 1
+            while j < len(body_lines) and body_lines[j][1] > bindent:
+                group_body.append(body_lines[j]); j += 1
+            inherited_when = _combine_when_expr(phase_when, gwhen)
+            sub_resources, sub_insts = _parse_target_body_items(
+                group_body, err, phase_name=phase_name or gname, phase_when=inherited_when,
+                inherit_mode="and")
             resources.extend(sub_resources)
             instantiations.extend(sub_insts)
             i = j; continue
@@ -473,7 +508,9 @@ def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
                 res = _parse_cgr_step(step_name, step_header, step_body, bln, err)
                 if phase_name is not None:
                     res.cgr_phase_name = phase_name
-                    if res.when is None:
+                    if inherit_mode == "and":
+                        res.when = _combine_when_expr(phase_when, res.when)
+                    elif res.when is None:
                         res.when = phase_when
                 resources.append(res)
             i = j; continue
@@ -493,7 +530,9 @@ def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
             res = _parse_cgr_verify(vdesc, vbody, bln, err)
             if phase_name is not None:
                 res.cgr_phase_name = phase_name
-                if res.when is None:
+                if inherit_mode == "and":
+                    res.when = _combine_when_expr(phase_when, res.when)
+                elif res.when is None:
                     res.when = phase_when
             resources.append(res)
             i = j; continue
@@ -509,7 +548,9 @@ def _parse_target_body_items(body_lines, err, phase_name=None, phase_when=None):
             res = _parse_cgr_step(sname, "", [(bln, bindent, btext)] + stage_body, bln, err)
             if phase_name is not None:
                 res.cgr_phase_name = phase_name
-                if res.when is None:
+                if inherit_mode == "and":
+                    res.when = _combine_when_expr(phase_when, res.when)
+                elif res.when is None:
                     res.when = phase_when
             resources.append(res)
             i = j; continue
@@ -611,6 +652,7 @@ _CGR_CONTINUATION_STOPWORDS = (
     "needs ", "first ", "skip if ", "run ", "script ", "always run ", "env ",
     "when ", "collect ", "flag ", "until ", "parallel", "race", "each ", "stage ",
     "as ", "timeout ", "retry ", "if fails", "wait for ",
+    "stamp ", "optional ",
     "content ", "line ", "put ", "validate ",
     "block ", "ini ", "json ", "assert ",
     "on success:", "on success :", "on failure:", "on failure :",
@@ -762,6 +804,9 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
     flags: list[tuple[str, str|None]] = []
     until: str|None = None
     interactive: bool = False
+    stamp_files: list[str] = []
+    stamp_from: str|None = None
+    optional_tool: str|None = None
     # Provisioning fields (Phase 2)
     prov_block_dest: str|None = None; prov_block_marker: str|None = None
     prov_block_inline: str|None = None; prov_block_from: str|None = None
@@ -1314,11 +1359,29 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
 
         # when "expr" or when expr (unquoted — for variable-based conditions)
         if btext.startswith("when "):
+            tool_m = re.match(r'when\s+tool\s+(available|missing)\s+(\S+)\s*$', btext)
+            if tool_m:
+                tool = tool_m.group(2)
+                expr = f"tool {tool_m.group(1)} {tool}"
+                when = _combine_when_expr(when, expr)
+                i += 1; continue
             wm = re.match(r'when\s+"([^"]*)"', btext)
             if wm:
-                when = wm.group(1)
+                parsed_when = wm.group(1)
             else:
-                when = btext[5:].strip()
+                parsed_when = btext[5:].strip()
+            when = _combine_when_expr(when, parsed_when)
+            i += 1; continue
+
+        stamp_m = re.match(r'stamp\s+(.+?)(?:\s+from\s+(.+))?\s*$', btext)
+        if stamp_m:
+            stamp_files = [p.strip() for p in stamp_m.group(1).split(",") if p.strip()]
+            stamp_from = stamp_m.group(2).strip() if stamp_m.group(2) else None
+            i += 1; continue
+
+        optional_tool_m = re.match(r'optional\s+tool\s+(\S+)\s*$', btext)
+        if optional_tool_m:
+            optional_tool = optional_tool_m.group(1)
             i += 1; continue
 
         if btext.startswith("until "):
@@ -1413,8 +1476,9 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         or prov_block_dest or prov_ini_dest or prov_json_dest or prov_asserts
         or reduce_key
     )
+    has_stamp = bool(stamp_files)
     if (run_cmd is None and script_path is None and not has_construct and not has_http and not has_prov
-            and wait_kind is None and subgraph_path is None
+            and wait_kind is None and subgraph_path is None and not has_stamp
             and not (allow_no_run_with_children and children)):
         raise err(f"Step [{name}] has no 'run' command", ln)
     if flags and run_cmd is None:
@@ -1456,7 +1520,9 @@ def _parse_cgr_step(name: str, header: str, body: list, ln: int, err,
         on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
         collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var,
         flags=list(flags), env_when=dict(env_when), until=until,
-        interactive=interactive)
+        interactive=interactive,
+        stamp_files=list(stamp_files), stamp_from=stamp_from,
+        optional_tool=optional_tool)
 
 
 def _parse_cgr_verify(desc: str, body: list, ln: int, err) -> ASTResource:

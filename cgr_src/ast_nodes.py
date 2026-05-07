@@ -91,6 +91,9 @@ class ASTResource:
     env_when: dict[str, str] = field(default_factory=dict)  # KEY -> when_expr
     until: str|None = None
     cgr_phase_name: str|None = None  # set when step is inside a phase "name" when "COND": block
+    stamp_files: list[str] = field(default_factory=list)
+    stamp_from: str|None = None
+    optional_tool: str|None = None
 
 @dataclass
 class ASTPhase:
@@ -120,6 +123,7 @@ class ASTGroup:
     name: str; run_as: str|None; on_fail: str|None
     timeout: int|None; resources: list[ASTResource]; line: int
     timeout_reset_on_output: bool|None = None
+    when: str|None = None
 
 @dataclass
 class ASTNode:
@@ -163,6 +167,7 @@ class ASTProgram:
     secrets: list[ASTSecrets] = field(default_factory=list)
     gather_facts: bool = False
     stateless: bool = False
+    state_key_vars: list[str] = field(default_factory=list)
     on_complete: ASTResource|None = None   # hook: runs after successful apply
     on_failure: ASTResource|None = None    # hook: runs after failed apply
 

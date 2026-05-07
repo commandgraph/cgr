@@ -402,6 +402,33 @@ class TestCGRParser:
         ast = cg.parse_cgr(src)
         assert ast.nodes[0].resources[0].when == "debug"
 
+    def test_state_key_group_stamp_and_optional_tool(self):
+        src = textwrap.dedent('''\
+            set mode = "yes"
+            set variant = "a"
+            set state key includes mode, variant
+            target "local" local:
+              group "build phase" when "${mode} == 'yes'":
+                [stamp only]:
+                  stamp /tmp/cgr-test-marker from /tmp/cgr-test-source
+                [optional missing]:
+                  optional tool definitely_missing_cgr_tool
+                  stamp /tmp/cgr-test-optional
+                  run $ definitely_missing_cgr_tool --version
+                [tool predicate]:
+                  when tool missing definitely_missing_cgr_tool
+                  run $ true
+        ''')
+        graph = _resolve_cgr(src)
+        assert graph.state_key_vars == ["mode", "variant"]
+        stamp = graph.all_resources["local.stamp_only"]
+        assert stamp.stamp_files == ["/tmp/cgr-test-marker"]
+        assert stamp.stamp_from == "/tmp/cgr-test-source"
+        optional = graph.all_resources["local.optional_missing"]
+        assert optional.optional_tool == "definitely_missing_cgr_tool"
+        pred = graph.all_resources["local.tool_predicate"]
+        assert pred.when == "yes == 'yes'\ntool missing definitely_missing_cgr_tool"
+
     def test_tags(self):
         src = textwrap.dedent('''\
             target "local" local:

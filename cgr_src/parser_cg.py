@@ -23,7 +23,7 @@ class ParseError(Exception):
 
 RESOURCE_STMTS = {"description","needs","check","run","script","as","timeout",
                   "retry","on_fail","on_success","on_failure","when","env",
-                  "collect","reduce","flag","until","wait","from",
+                  "collect","reduce","flag","until","wait","from","stamp","optional",
                   "parallel","race","each","stage",
                   "get","post","put","patch","delete","auth","header","body","expect"}
 
@@ -52,10 +52,19 @@ class Parser:
     def _err(self, msg, hint=""): return ParseError(f"{msg}\n  Hint: {hint}" if hint else msg, self._peek(), self.sl, self.fn)
 
     def parse(self) -> ASTProgram:
-        vs=[]; us=[]; ts=[]; ns=[]; te_blocks=[]; invs=[]; secs=[]; gf=False
+        vs=[]; us=[]; ts=[]; ns=[]; te_blocks=[]; invs=[]; secs=[]; gf=False; state_key_vars=[]
         on_comp=None; on_fail=None
         while not self._at(TT.EOF):
             if self._at_id("var"):      vs.append(self._p_var())
+            elif self._at_id("set"):
+                self._advance()
+                self._expect(TT.IDENT, "state")
+                self._expect(TT.IDENT, "key")
+                self._expect(TT.IDENT, "includes")
+                state_key_vars.append(self._expect(TT.IDENT).value)
+                while self._at(TT.COMMA):
+                    self._advance()
+                    state_key_vars.append(self._expect(TT.IDENT).value)
             elif self._at_id("use"):    us.append(self._p_use())
             elif self._at_id("inventory"): invs.append(self._p_inventory())
             elif self._at_id("secrets"): secs.append(self._p_secrets())
@@ -108,7 +117,8 @@ class Parser:
             else: raise self._err(f"Expected var/use/inventory/secrets/gather/template/node/each/on_complete/on_failure, got '{self._peek().value}'")
         return ASTProgram(variables=vs, uses=us, templates=ts, nodes=ns,
                           target_each_blocks=te_blocks, inventories=invs, secrets=secs,
-                          gather_facts=gf, on_complete=on_comp, on_failure=on_fail)
+                          gather_facts=gf, state_key_vars=state_key_vars,
+                          on_complete=on_comp, on_failure=on_fail)
 
     def _p_var(self):
         tok=self._expect(TT.IDENT,"var"); n=self._expect(TT.IDENT); self._expect(TT.EQUALS)
@@ -322,7 +332,7 @@ class Parser:
         desc=""; needs=[]; check=None; run_cmd=None; script_path=None; run_as=d.get("as")
         timeout=d.get("timeout"); retries=0; retry_delay=5; retry_backoff=False
         timeout_reset_on_output=d.get("timeout_reset_on_output", False)
-        on_fail=d.get("on_fail","stop"); when=None; env={}; env_when={}; children=[]; flags=[]; until=None; interactive=False
+        on_fail=d.get("on_fail","stop"); when=d.get("when"); env={}; env_when={}; children=[]; flags=[]; until=None; interactive=False
         collect_key=None
         collect_format=None
         collect_var=None
@@ -333,6 +343,7 @@ class Parser:
         http_body_type=None; http_auth=None; http_expect=None
         wait_kind=None; wait_target=None
         subgraph_path=None; subgraph_vars={}
+        stamp_files=[]; stamp_from=None; optional_tool=None
 
         while not self._at(TT.RBRACE) and not self._at(TT.EOF):
             s=self._peek()
@@ -398,7 +409,19 @@ class Parser:
                 if value_tok.type not in (TT.STRING, TT.NUMBER, TT.IDENT):
                     raise self._err("Expected a value after on_failure set VAR =")
                 on_failure_set.append((var_name, value_tok.value))
-            elif s.value=="when": self._advance(); when=self._expect(TT.STRING).value
+            elif s.value=="when":
+                self._advance()
+                if self._at_id("tool"):
+                    self._advance()
+                    availability = self._expect(TT.IDENT).value
+                    if availability not in ("available", "missing"):
+                        raise self._err("Expected 'available' or 'missing' after 'when tool'")
+                    tool = self._expect(TT.IDENT).value
+                    expr = f"tool {availability} {tool}"
+                    when = f"{when}\n{expr}" if when else expr
+                else:
+                    expr = self._expect(TT.STRING).value
+                    when = f"{when}\n{expr}" if when else expr
             elif s.value=="env":
                 self._advance(); k=self._expect(TT.IDENT).value
                 self._expect(TT.EQUALS); env[k]=self._advance().value
@@ -456,6 +479,19 @@ class Parser:
             elif s.value=="from":
                 self._advance()
                 subgraph_path=self._expect(TT.STRING).value
+            elif s.value=="stamp":
+                self._advance()
+                stamp_files.append(self._advance().value)
+                while self._at(TT.COMMA):
+                    self._advance()
+                    stamp_files.append(self._advance().value)
+                if self._at_id("from"):
+                    self._advance()
+                    stamp_from = self._advance().value
+            elif s.value=="optional":
+                self._advance()
+                self._expect(TT.IDENT, "tool")
+                optional_tool = self._expect(TT.IDENT).value
             elif s.value=="interactive":
                 self._advance(); interactive=True
             # ── Parallel constructs ──────────────────────────────────────
@@ -497,7 +533,8 @@ class Parser:
             subgraph_path=subgraph_path, subgraph_vars=dict(subgraph_vars),
             on_success_set=list(on_success_set), on_failure_set=list(on_failure_set),
             collect_var=collect_var, reduce_key=reduce_key, reduce_var=reduce_var,
-            interactive=interactive)
+            interactive=interactive, stamp_files=list(stamp_files),
+            stamp_from=stamp_from, optional_tool=optional_tool)
         # Attach optional fields if parsed
         if 'tags' in dir(): res.tags = tags
         if 'parallel_block' in dir(): res.parallel_block = parallel_block; res.parallel_limit = parallel_limit; res.parallel_fail_policy = parallel_fail_policy
@@ -679,10 +716,11 @@ class Parser:
 
     def _p_group(self):
         tok=self._expect(TT.IDENT,"group"); nm=self._expect(TT.IDENT)
-        run_as=None; on_fail=None; timeout=None; timeout_reset_on_output=None
+        run_as=None; on_fail=None; timeout=None; timeout_reset_on_output=None; when=None
         while not self._at(TT.LBRACE) and not self._at(TT.EOF):
             if self._at_id("as"): self._advance(); run_as=self._expect(TT.IDENT).value
             elif self._at_id("on_fail"): self._advance(); on_fail=self._expect(TT.IDENT).value
+            elif self._at_id("when"): self._advance(); when=self._expect(TT.STRING).value
             elif self._at_id("timeout"):
                 timeout, timeout_reset_on_output = self._p_timeout_prop()
             else: break
@@ -699,7 +737,8 @@ class Parser:
         self._expect(TT.RBRACE)
         return ASTGroup(name=nm.value, run_as=run_as, on_fail=on_fail,
                         timeout=timeout, resources=resources, line=tok.line,
-                        timeout_reset_on_output=timeout_reset_on_output)
+                        timeout_reset_on_output=timeout_reset_on_output,
+                        when=when)
 
     def _p_ident_list(self):
         # Support dot-qualified identifiers for cross-node refs: needs db.step_name
